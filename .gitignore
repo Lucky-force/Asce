@@ -1,0 +1,24 @@
+# UE 生成物
+Binaries/
+Intermediate/
+DerivedDataCache/
+Saved/
+Build/
+Plugins/
+
+# 只在用户级别的文件夹
+.svs/
+.vs/
+.vscode/
+.idea/
+
+# 用户配置文件
+*.user
+*.sln.DotSettings.user
+
+# 日志/录制
+*.log
+replay_*.log
+
+# 其它
+kilo.json

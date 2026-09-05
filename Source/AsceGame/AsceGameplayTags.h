@@ -1,0 +1,76 @@
+﻿// Fill out your copyright notice in the Description page of Project Settings.
+
+#pragma once
+
+#include "NativeGameplayTags.h"
+
+namespace AsceGameplayTags
+{
+	//通过字符串查找Tag，如果部分匹配为true， 将会找到首个包含此字符串的tag并返回
+	ASCEGAME_API	FGameplayTag FindTagByString(const FString& TagString, bool bMatchPartialString = false);
+
+	// Declare all of the custom native tags that will use
+	// Ability Tags
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(Ability_ActivateFail_IsDead);
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(Ability_ActivateFail_Cooldown);
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(Ability_ActivateFail_Cost);
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(Ability_ActivateFail_TagsBlocked);
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(Ability_ActivateFail_TagsMissing);
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(Ability_ActivateFail_Networking);
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(Ability_ActivateFail_ActivationGroup);
+
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(Ability_Behavior_SurvivesDeath);
+
+	// Input Tags
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(InputTag_Move);
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(InputTag_Look_Mouse);
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(InputTag_Look_Stick);
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(InputTag_Crouch);
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(InputTag_AutoRun);
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(InputTag_Perspective_Unlock);
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(InputTag_Perspective_Move);
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(InputTag_Shift);
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(InputTag_Alternate);
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(InputTag_Control);
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(InputTag_Select);
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(InputTag_Order_Move);
+	
+	// InitState Tags
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(InitState_Spawned);
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(InitState_DataAvailable);
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(InitState_DataInitialized);
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(InitState_GameplayReady);
+
+	// Event Tags
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(GameplayEvent_Death);
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(GameplayEvent_Reset);
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(GameplayEvent_RequestReset);
+
+	// GE Tags
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(SetByCaller_Damage);
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(SetByCaller_Heal);
+
+	// Cheat Tags
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(Cheat_GodMode);
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(Cheat_UnlimitedHealth);
+
+	// Status Tags
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(Status_Crouching);
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(Status_AutoRunning);
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(Status_Death);
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(Status_Death_Dying);
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(Status_Death_Dead);
+
+	// These are mappings from MovementMode enums to GameplayTags associated with those enums (below)
+	// 
+	ASCEGAME_API	extern const TMap<uint8, FGameplayTag> MovementModeTagMap;
+	ASCEGAME_API	extern const TMap<uint8, FGameplayTag> CustomMovementModeTagMap;
+
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(Movement_Mode_Walking);
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(Movement_Mode_NavWalking);
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(Movement_Mode_Falling);
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(Movement_Mode_Swimming);
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(Movement_Mode_Flying);
+
+	ASCEGAME_API	UE_DECLARE_GAMEPLAY_TAG_EXTERN(Movement_Mode_Custom);
+};
