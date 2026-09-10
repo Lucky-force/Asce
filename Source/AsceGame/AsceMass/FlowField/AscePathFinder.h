@@ -161,6 +161,9 @@ public:
 	
 	void SetWorldMapData(FWorldMapData* InWorldMapData) { WorldMapData = InWorldMapData; }
 	
+	// 当前绑定的世界数据（可能被RegisterFlowFieldDebugger换网到Debugger的数据上）
+	FWorldMapData* GetWorldMapData() const { return WorldMapData; }
+	
 	/** 发起一批合并A*请求(单目标+多源)，内部创建一个FMergedPathPlan并返回它的Handle供后续每帧查询方向用。
 	 * OutResults可传nullptr：运行时的高频路径（entity每帧查方向）完全不需要它，
 	 * 只有下面这些场景才用得上——1) 调用方想立刻知道某个Source此刻是否可达(bSuccess)；
@@ -208,7 +211,10 @@ protected:
 
 	void GetSourcePositionSet(const TArray<FVector2D>& EntityWorldLocations, TSet<FSourcePosition>& OutSet) const;
 	
-	FPortal::FPortalIndex GetPortalId(const FSourcePosition& SourcePosition) const;
+	/** 获取Source位置对应的Portal：
+	 * 默认返回该(扇区,岛屿)的第一个匹配Portal（索引序）；若SourceWorldLocation非空，
+	 * 多个匹配Portal时选代表点离source世界位置最近的那个（源侧语义：选离单位近的出口）。 */
+	FPortal::FPortalIndex GetPortalId(const FSourcePosition& SourcePosition, const FVector2D& SourceWorldLocation) const;
 
 	/** 获取Portal的可到达Neighbors以及它们的权重 */
 	void GetPortalGraphNeighbors(FPortal::FPortalIndex PortalIndex, TArray<TPair<FPortal::FPortalIndex, float>>& OutNeighbors) const;

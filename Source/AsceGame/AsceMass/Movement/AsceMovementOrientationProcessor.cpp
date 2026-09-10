@@ -44,8 +44,18 @@ void UAsceMovementOrientationProcessor::Execute(FMassEntityManager& EntityManage
 			}
 
 			FTransform& CurrentTransform = Transforms[i].GetMutableTransform();
-			const float YawDegrees = FMath::RadiansToDegrees(FMath::Atan2(Velocity2D.Y, Velocity2D.X));
-			CurrentTransform.SetRotation(FRotator(0.f, YawDegrees, 0.f).Quaternion());
+			const FVector2D VelocityDir = Velocity2D.GetSafeNormal();
+			if (VelocityDir.IsNearlyZero())
+			{
+				continue; // 速度方向退化，保留当前朝向
+			}
+
+			const float TargetYaw = FMath::RadiansToDegrees(FMath::Atan2(VelocityDir.Y, VelocityDir.X));
+			const float CurrentYaw = CurrentTransform.GetRotation().Rotator().Yaw;
+			const float DeltaYaw = FMath::FindDeltaAngleDegrees(CurrentYaw, TargetYaw);
+			const float MaxTurnThisFrame = TurnSpeedDegreesPerSecond * Ctx.GetDeltaTimeSeconds();
+			const float NewYaw = CurrentYaw + FMath::Clamp(DeltaYaw, -MaxTurnThisFrame, MaxTurnThisFrame);
+			CurrentTransform.SetRotation(FRotator(0.f, NewYaw, 0.f).Quaternion());
 		}
 	});
 }

@@ -24,6 +24,14 @@ public:
 	/** 在AsceReplicationBootstrapSubsystem::PostInitialize（或更早）里，每个能力调一次这个函数 */
 	static void RegisterCapability(TUniquePtr<FAsceReplicationCapabilityBase> Capability);
 
+	// ── 视野复制过滤的 client→TeamKey 注册表──
+	// 复制决策（ProcessClientReplication 开头）按"当前 client 的队伍可见集"过滤实体：
+	// 该表把 FMassClientHandle::GetIndex() 映射到队伍 TeamKey。目前项目还没有 gameplay 层的
+	// 队伍分配结构（无 GameMode/PlayerState 队伍表），这里先给静态注册 API，注册时机由
+	// gameplay 层（如 GameMode::PostLogin / GameFeature）后续调用；未注册的 client 过滤自动跳过。
+	static void SetClientTeam(int32 ClientIndex, int32 TeamKey);
+	static void ClearAllClientTeams();
+	
 	virtual void AddRequirements(FMassEntityQuery& EntityQuery) override;
 	virtual void ProcessClientReplication(FMassExecutionContext& Context, FMassReplicationContext& ReplicationContext) override;
 

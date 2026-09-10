@@ -289,31 +289,29 @@ FMassEntityHandle UAsceSpatialGridSubsystem::FindEntitiesAtScreenPoint(const FVe
 #if WITH_EDITOR
     if (bPaintDebugInfo)
     {
-        DrawDebugSelectionRay(Controller->GetWorld(), Origin, Dir, 100000.f, DrawTime);
+        DrawDebugSelectionRay(Controller->GetWorld(), FVector::ZeroVector/*Origin*/, Dir, 100000.f, DrawTime);
     }
 #endif
     // 2. 遍历穿过的格子 (DDA)
     for (int32 Steps = 0; Steps < 200; ++Steps)
     {
-        if (!IsValidCoord(OriginCell))
+        if (IsValidCoord(OriginCell))
         {
-            break;
-        }
-
-        // 3. 格子内实体做射线-球体 (3D, 不是水平面)
-        for (auto& E : EntitiesDataCells[CoordToIndex(OriginCell)].Entities)
-        {
-            if (Visited.Contains(E.EntityHandle))
+            // 3. 格子内实体做射线-球体 (3D, 不是水平面)
+            for (auto& E : EntitiesDataCells[CoordToIndex(OriginCell)].Entities)
             {
-                continue;
-            }
-            Visited.Add(E.EntityHandle);
+                if (Visited.Contains(E.EntityHandle))
+                {
+                    continue;
+                }
+                Visited.Add(E.EntityHandle);
 
-            float T = RayAABBHit(Origin, Dir, FVector(E.CacheEntityLocation.X, E.CacheEntityLocation.Y, E.CacheEntityLocation.Z + E.CachedEntityRadius / 2), FVector(E.CachedEntityRadius, E.CachedEntityRadius, E.CachedEntityRadius / 2));
-            if (T > 0 && T < ClosestT)
-            {
-                ClosestT = T;
-                Closest = E.EntityHandle;
+                float T = RayAABBHit(Origin, Dir, FVector(E.CacheEntityLocation.X, E.CacheEntityLocation.Y, E.CacheEntityLocation.Z + E.CachedEntityRadius / 2), FVector(E.CachedEntityRadius, E.CachedEntityRadius, E.CachedEntityRadius / 2));
+                if (T > 0 && T < ClosestT)
+                {
+                    ClosestT = T;
+                    Closest = E.EntityHandle;
+                }
             }
         }
 
@@ -487,10 +485,10 @@ void UAsceSpatialGridSubsystem::DrawDebugSelectionRay(UWorld* World, const FVect
     const FVector End = Origin + Direction * MaxDistance;
 
     // 射线
-    DrawDebugLine(World, Origin, End, FColor::Orange, false, Duration, 0, 2.f);
+    DrawDebugLine(World, Origin, End, FColor::Orange, true, Duration, 0, 2.f);
 
     // 起点球
-    DrawDebugSphere(World, Origin, 30.f, 8, FColor::Yellow, false, Duration);
+    DrawDebugSphere(World, Origin, 30.f, 8, FColor::Yellow, true, Duration);
 }
 
 

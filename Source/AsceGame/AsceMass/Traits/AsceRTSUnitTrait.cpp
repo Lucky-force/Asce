@@ -8,6 +8,7 @@
 #include "../Fragments/AsceOrderFragments.h"
 #include "../Fragments/AsceInteractionFragments.h"
 #include "../Fragments/AsceMovementFragments.h"
+#include "../Vision/AsceVisionFragments.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AsceRTSUnitTrait)
 
@@ -38,7 +39,7 @@ void UAsceRTSUnitTrait::BuildTemplate(FMassEntityTemplateBuildContext& BuildCont
 	FAsceHealthFragment& HealthFragment = BuildContext.AddFragment_GetRef<FAsceHealthFragment>();
 	HealthFragment.MaxHealth = MaxHealth;
 	HealthFragment.CurrentHealth = MaxHealth;
-	BuildContext.AddFragment_GetRef<FAsceTeamFragment>().TeamID = TeamID;
+	BuildContext.AddFragment_GetRef<FAsceTeamFragment>().TeamKey = TeamConfigKey;
 
 	// 联机同步用的NetID（服务器权威分配，见AsceNetIDRegistrySubsystem）
 	BuildContext.AddFragment<FMassNetworkIDFragment>();
@@ -54,6 +55,14 @@ void UAsceRTSUnitTrait::BuildTemplate(FMassEntityTemplateBuildContext& BuildCont
 		// Server端也挂这个Fragment只是为了让Archetype两端一致，不会被写入/读取
 		// （UAsceMovementCorrectionProcessor只在Client执行）。
 		BuildContext.AddFragment<FAscePositionCorrectionFragment>();
+		
+		// ── 视野模块（AsceMass/Vision）新增：会移动的单位都提供视野 ──
+		// FAsceVisionViewFragment（视野半径/眼高，参与复制，供双端确定性视野计算）；
+		// FAsceVisionFogStateFragment（本地上帧所在格，不复制，FogProcessor 换格检测用）。
+		FAsceVisionViewFragment& VisionView = BuildContext.AddFragment_GetRef<FAsceVisionViewFragment>();
+		VisionView.SightRadius = static_cast<uint16>(FMath::Clamp(SightRadius, 1, MAX_uint16));
+		VisionView.EyeHeightCm = static_cast<uint16>(FMath::Clamp(Height, 0.f, static_cast<float>(MAX_uint16)));
+		BuildContext.AddFragment<FAsceVisionFogStateFragment>();
 	}
 	if (bCanAttack)
 	{

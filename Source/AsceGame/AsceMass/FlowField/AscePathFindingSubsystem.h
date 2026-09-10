@@ -9,7 +9,6 @@
 #include "AscePathFindingSubsystem.generated.h"
 
 class AAsceWorldMapReplicatorActor;
-class AAsceFlowFieldDebugger;
 
 /**
  * 流场寻路的运行时持有者：Client和Server各自独立创建一份UPathFinder（跟MassEntityManager一样，
@@ -21,14 +20,12 @@ class AAsceFlowFieldDebugger;
  * Processor（AsceMovementSteeringProcessor）通过AddSubsystemRequirement<UAscePathFindingSubsystem>
  * 拿到它，调GetPathFinder()查方向。
  *
- * WorldMapData的网络同步已经接通：权威数据由AAsceWorldMapReplicatorActor持有，
- * Server端在OnWorldBeginPlay里生成唯一一份，Client端靠引擎正常的Actor复制流程接收对应实例，
+ * WorldMapData的网络同步已经接通：权威数据由关卡摆放的 AAsceWorldMapReplicatorActor 持有，
+ * 它自己配置 SectorCount 并在 BeginPlay 里初始化地图尺寸（Fog/SpatialGrid 一并派生），
+ * 再调 RegisterWorldMapReplicator；Client端靠关卡同名 Actor + 引擎复制流程接收数据。
  * 数据内容本身走FWorldMapData自带的FastArraySerializer增量复制（见FWorldMapData::
  * PostReplicatedChange）。Actor就位（Register/UnregisterWorldMapReplicator）之前，
  * PathFinder指向FallbackEmptyWorldMapData兜底，避免读到未初始化内存。
- *
- * 遗留TODO：关卡静态障碍物/地形分析结果具体怎么灌入WorldMapData的初始内容还没做，
- * 见AsceWorldMapReplicatorActor::BeginPlay里的占位InitWorldMapData(4, 4)。
  */
 UCLASS()
 class UAscePathFindingSubsystem : public UWorldSubsystem
@@ -42,13 +39,9 @@ public:
 
 	UPathFinder* GetPathFinder() const { return PathFinder; }
 	FWorldMapData* GetWorldMapDataMutableForAuthority();
+	AAsceWorldMapReplicatorActor* GetWorldMapReplicator() const { return WorldMapReplicator; }
 	void RegisterWorldMapReplicator(AAsceWorldMapReplicatorActor* InReplicator);
 	void UnregisterWorldMapReplicator(AAsceWorldMapReplicatorActor* InReplicator);
-
-	/** Debugger开局自注册：把PathFinder换网到Debugger的WorldMapData上（两者共享同一实例），
-	 * 世界数据编辑（画墙等）结果直接对运行时寻路生效，不需要复制一份。*/
-	void RegisterFlowFieldDebugger(AAsceFlowFieldDebugger* InDebugger);
-	void UnregisterFlowFieldDebugger(AAsceFlowFieldDebugger* InDebugger);
 
 	static UAscePathFindingSubsystem* Get(const UObject* WorldContextObject);
 
@@ -58,9 +51,6 @@ protected:
 
 	UPROPERTY(Transient)
 	TObjectPtr<AAsceWorldMapReplicatorActor> WorldMapReplicator;
-
-	UPROPERTY(Transient)
-	TObjectPtr<AAsceFlowFieldDebugger> FlowFieldDebugger;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UPathFinder> PathFinder;

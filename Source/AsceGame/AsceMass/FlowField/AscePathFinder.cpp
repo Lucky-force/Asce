@@ -31,6 +31,18 @@ FMergedPathPlanHandle UPathFinder::RunMergeablePathRequest(const FVector2D& Goal
 	TSet<FSourcePosition> SourcePositionSet;
 	GetSourcePositionSet(EntityWorldLocations, SourcePositionSet);
 
+	// Source位置→世界坐标 反查：多个entity可能同(扇区,島)，记首个出现坐标作为该Source近似位置，
+	// 供GetPortalId在多个同岛Portal里选离单位近的那个（同一岛的units共用同一个出口选择依据）。
+	TMap<FSourcePosition, FVector2D> SourcePositionToWorldLocation;
+	for (const FVector2D& Location : EntityWorldLocations)
+	{
+		const FSourcePosition Pos = GetSourcePosition(Location);
+		if (!SourcePositionToWorldLocation.Contains(Pos))
+		{
+			SourcePositionToWorldLocation.Add(Pos, Location);
+		}
+	}
+
 	//跨Sector时才需要，惰性计算一次即可（同Sector的Source完全用不上它）
 	FPortal::FPortalIndex GoalPortalIndex = FPortal::FPortalIndex();
 
@@ -49,14 +61,17 @@ FMergedPathPlanHandle UPathFinder::RunMergeablePathRequest(const FVector2D& Goal
 
 		if (!GoalPortalIndex.IsValid())
 		{
-			GoalPortalIndex = GetPortalId(GoalSourcePosition);
+			GoalPortalIndex = GetPortalId(GoalSourcePosition, GoalWorldLocation);
 		}
 		if (!GoalPortalIndex.IsValid())
 		{
 			continue; //目标所在Sector没有可用Portal（孤立区域），跨Sector的Source都无法到达，bSuccess保持false
 		}
 
-		FPortal::FPortalIndex SourcePortalIndex = GetPortalId(SourcePos);
+		const FVector2D* SourceWorldLocation = SourcePositionToWorldLocation.Find(SourcePos);
+		FPortal::FPortalIndex SourcePortalIndex = SourceWorldLocation
+			? GetPortalId(SourcePos, *SourceWorldLocation)
+			: FPortal::FPortalIndex();	// 反查不到坐标（理论上不该发生——SourcePos必来自EntityWorldLocations），按原逻辑返回无效
 		if (!SourcePortalIndex.IsValid())
 		{
 			continue; //Source自己所在的位置没有可用Portal，无法跨出该Sector
@@ -200,7 +215,7 @@ void UPathFinder::GetSourcePositionSet(const TArray<FVector2D>& EntityWorldLocat
 	}
 }
 
-FPortal::FPortalIndex UPathFinder::GetPortalId(const FSourcePosition& SourcePosition) const
+FPortal::FPortalIndex UPathFinder::GetPortalId(const FSourcePosition& SourcePosition, const FVector2D& SourceWorldLocation) const
 {
 	if (SourcePosition.IslandField.IslandId == 0)
 	{
@@ -209,14 +224,30 @@ FPortal::FPortalIndex UPathFinder::GetPortalId(const FSourcePosition& SourcePosi
 
 	FPortal::FPortalIndex Start, End;
 	WorldMapData->GetSectorPortalIndicesRange(SourcePosition.SectorID, Start, End);
+
+	// 同岛多个Portal时选"代表点离source世界坐标最近"的作为起点/出口。
+	// 因为同岛可达目标的多个Portal会共用同一个SectorIslandToExitPortal键，
+	// A*起点=出口，所以起点选近的=entity实际去的是近的出口。
+	FPortal::FPortalIndex BestPortalIndex;
+	float BestDistSq = TNumericLimits<float>::Max();
+
 	for (uint32 Index = Start.RawIndex; Index < End.RawIndex; ++Index)
 	{
 		if (WorldMapData->Portals[Index].OwingIslandField == SourcePosition.IslandField)
 		{
-			return FPortal::FPortalIndex(Index);
+			const FPortal::FPortalIndex Candidate(Index);
+			const float DistSq = GetManhattanDistance(
+				GetPortalRepresentativeWorldPosition(WorldMapData->GetPortal(Candidate)),
+				SourceWorldLocation);
+			if (DistSq < BestDistSq)
+			{
+				BestDistSq = DistSq;
+				BestPortalIndex = Candidate;
+			}
 		}
 	}
-	return FPortal::FPortalIndex();
+
+	return BestPortalIndex;
 }
 
 void UPathFinder::GetPortalGraphNeighbors(FPortal::FPortalIndex PortalIndex, TArray<TPair<FPortal::FPortalIndex, float>>& OutNeighbors) const
@@ -848,7 +879,7 @@ void UPathFinder::RunCostIntegrationPass(const FSector& Sector, const FFlowField
 			return;
 		}
 		const int32 Index = GetLocalGridIndex(Loc);
-		if (Sector.CostFields[Index].Cost >= MAX_uint8)
+		if (Sector.CostFields[Index].IsWall())
 		{
 			return; // 墙，永远不参与积分
 		}
@@ -893,7 +924,7 @@ void UPathFinder::RunCostIntegrationPass(const FSector& Sector, const FFlowField
 			}
 			const int32 GridIndex = StartIndex + i * IndexStride;
 			const FIntVector2 Loc(GridIndex % SECTOR_SIZE, GridIndex / SECTOR_SIZE);
-			if (Sector.CostFields[GridIndex].Cost >= MAX_uint8)
+			if (Sector.CostFields[GridIndex].IsWall())
 			{
 				continue; // 墙，不能作为种子
 			}
@@ -1036,7 +1067,7 @@ void UPathFinder::RunFlowFieldPass(const FSector& Sector, const FIntegrationFiel
 			FFlowField& Field = OutResult.Directions[Index];
 			Field = FFlowField();
 
-			if (Sector.CostFields[Index].Cost >= MAX_uint8 || IntegrationFields[Index].TotalIntegratedCost >= MAX_uint16)
+			if (Sector.CostFields[Index].IsWall() || IntegrationFields[Index].TotalIntegratedCost >= MAX_uint16)
 			{
 				continue; // 墙，或者积分场没能传播到的死区格子：保持不可通行
 			}
@@ -1066,7 +1097,7 @@ void UPathFinder::RunFlowFieldPass(const FSector& Sector, const FIntegrationFiel
 					continue;
 				}
 				const int32 NeighborIndex = GetLocalGridIndex(Neighbor);
-				if (Sector.CostFields[NeighborIndex].Cost >= MAX_uint8)
+				if (Sector.CostFields[NeighborIndex].IsWall())
 				{
 					continue; // 墙
 				}
@@ -1077,8 +1108,8 @@ void UPathFinder::RunFlowFieldPass(const FSector& Sector, const FIntegrationFiel
 					const FIntVector2 Flank1(Loc.X + Dir.X, Loc.Y);
 					const FIntVector2 Flank2(Loc.X, Loc.Y + Dir.Y);
 					if (!IsInsideSectorLocalBounds(Flank1) || !IsInsideSectorLocalBounds(Flank2)
-						|| Sector.CostFields[GetLocalGridIndex(Flank1)].Cost >= MAX_uint8
-						|| Sector.CostFields[GetLocalGridIndex(Flank2)].Cost >= MAX_uint8)
+						|| Sector.CostFields[GetLocalGridIndex(Flank1)].IsWall()
+						|| Sector.CostFields[GetLocalGridIndex(Flank2)].IsWall())
 					{
 						continue;
 					}

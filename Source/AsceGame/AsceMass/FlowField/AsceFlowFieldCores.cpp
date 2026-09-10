@@ -121,7 +121,7 @@ void FWorldMapData::InitWorldMapData(uint8 InSectorCountX, uint8 InSectorCountY)
 
 FPortal::FPortalIndex FWorldMapData::GetPortalIndexByGridIndex(const uint32 GridIndex, bool* IsPortalGrid) const
 {
-	if (CostFields[GridIndex].Cost == MAX_uint8)
+	if (CostFields[GridIndex].IsWall())
 	{
 		*IsPortalGrid = false;
 		return FPortal::FPortalIndex();
@@ -269,11 +269,128 @@ void FWorldMapData::UpdateWorld(float DeltaTime)
 {
 	ProcessCostFields(DeltaTime);
 
+	// 墙结构变化（OnCostFieldUpdate把相关扇区加入PendingWallPushSectors）：
+	// ProcessCostFields消化完之后统一重建一次格簇，避免批量变墙时每格都算一遍
+	if (PendingWallPushSectors.Num() > 0)
+	{
+		RebuildWallClusters();
+		PendingWallPushSectors.Reset();
+	}
+
 	ProcessSectors(DeltaTime);
 
 	ProcessPortals(DeltaTime);
 
 	ProcessIslandFields(DeltaTime);
+}
+
+void FWorldMapData::RebuildWallClusters()
+{
+	const int32 GridNum = static_cast<int32>(GridCountX) * static_cast<int32>(GridCountY);
+	const int32 GridCountXInt = static_cast<int32>(GridCountX);
+	const int32 GridCountYInt = static_cast<int32>(GridCountY);
+	if (CostFields.Num() != GridNum)
+	{
+		return;
+	}
+
+	auto IsWall = [this](int32 GridIndex) -> bool
+	{
+		return (GridIndex >= 0 && GridIndex < CostFields.Num())
+			&& (CostFields[GridIndex].IsWall());
+	};
+
+	// 批次开始清空全局 bitmap（1bit/格；0=未并入任何簇）
+	WallGridBitmap.Init(false, GridNum);
+	auto& Bmp = WallGridBitmap;
+
+	// 新簇列表（重建为"全量"：把本次涉及扇区的墙格全部重新归簇。
+	// 注意：跨扇区连通墙区可能延伸出"待处理扇区"范围，这里按全图重扫一遍墙格归簇，
+	// 扇区队列只是触发入口（扇区级增量需要更多状态，本次先全量——4096格(4x4)全扫微秒级）。
+	// 若后续大图性能紧张，再改回"只归受影响墙区"。
+	WallClusters.Reset();
+
+	// 格→簇查找表：全置 -1（无墙簇），下方归簇时顺手填充
+	GridIndexToCluster.Init(-1, GridNum);
+
+	// 贪心归簇：从左下到右上扫描所有墙格，
+	// 遇到"未归簇的墙格"→ 以它为起点向右扩展连续墙格成一行run → 再向下扩展行，
+	// 每一行都取"与上一行相同的起始X开始、连续能延展的最大区间"——这是一个典型的
+	// 最大矩形合并（greedy best rectangle），保证簇内无洞、水平垂直都撑满。
+	// 行列扩展的定义（贪心）：先水平找这一行能连的最右格Xc，
+	// 然后向下每次找"以Xc内连续"新行……为避免复杂，用简单两级扩展：
+	//   1) 水平：从(StartX, RunY)向右扩到墙断开处 → [StartX, EndX)
+	//   2) 垂直：向下每行检查 该行[StartX, EndX) 是否全部是墙，
+	//            全墙就并入簇（高度+1，若行内有洞则停止本轮垂直扩展）
+	// 这样得到的是"水平连续 + 垂直连续等宽"的矩形——对L/T/十字能拆成多个矩形，
+	// 且每个矩形都是最大撑满的。
+	for (int32 Y = 0; Y < GridCountYInt; ++Y)
+	{
+		for (int32 X = 0; X < GridCountXInt; ++X)
+		{
+			const int32 Index = Y * GridCountXInt + X;
+			if (Bmp[Index])
+			{
+				continue;
+			}
+			if (!IsWall(Index))
+			{
+				continue;
+			}
+
+			// 1) 水平扩展找右界（闭区间 X..RightX）
+			int32 RightX = X;
+			while (RightX + 1 < GridCountXInt)
+			{
+				const int32 RIdx = Y * GridCountXInt + (RightX + 1);
+				if (Bmp[RIdx] || !IsWall(RIdx))
+				{
+					break;
+				}
+				++RightX;
+			}
+
+			// 2) 垂直扩展：向下的每一行，[X..RightX] 全部是墙且未归簇 → 并入
+			int32 BottomY = Y;
+			while (BottomY + 1 < GridCountYInt)
+			{
+				bool bWholeRowWall = true;
+				for (int32 CX = X; CX <= RightX; ++CX)
+				{
+					const int32 RIdx = (BottomY + 1) * GridCountXInt + CX;
+					if (Bmp[RIdx] || !IsWall(RIdx))
+					{
+						bWholeRowWall = false;
+						break;
+					}
+				}
+				if (!bWholeRowWall)
+				{
+					break;
+				}
+				++BottomY;
+			}
+
+			// 记录簇（世界坐标AABB）
+			FWallCluster Cluster;
+			Cluster.Min = FVector2D(X * GRID_SIZE, Y * GRID_SIZE);
+			Cluster.Max = FVector2D((RightX + 1) * GRID_SIZE, (BottomY + 1) * GRID_SIZE);
+			const int32 ClusterIndex = WallClusters.Add(Cluster);
+
+			// bitmap 标记簇内所有格子 + 填充格→簇查找表（O(1)索引，Solver用）
+			for (int32 CY = Y; CY <= BottomY; ++CY)
+			{
+				for (int32 CX = X; CX <= RightX; ++CX)
+				{
+					const int32 CellIndex = CY * GridCountXInt + CX;
+					Bmp[CellIndex] = true;
+					GridIndexToCluster[CellIndex] = ClusterIndex;
+				}
+			}
+
+			// 继续扫描（坐标已标记，下一个未归簇格被跳过后自然落在簇外）
+		}
+	}
 }
 
 void FWorldMapData::ProcessCostFields(float DeltaTime)
@@ -454,7 +571,17 @@ void FWorldMapData::OnCostFieldUpdate(uint32 GridIndex, uint8 NewCost)
 	{
 		return;
 	}
-	
+
+	// 墙状态变化：把该格所属扇区加入待处理集合（TSet自动去重——一帧内同扇区多格变墙只处理一次），
+	// 统一在UpdateWorld的ProcessCostFields之后一次性RebuildWallClusters。
+	// 注意一定要在SectorID被下面覆盖前记录（下面会替换成Sector.SectorID，虽然值一样但语义不同）。
+	// 两端都重建：格簇不随CostFields复制（非网络数据），Server编辑翻墙/Client收到复制翻墙，
+	// 各自基于自己的CostFields做确定性合并（纯格合并bit-exact，两端结果一致）。
+	{
+		FSector::FSectorID OriginalSectorID = SectorID;
+		PendingWallPushSectors.Add(OriginalSectorID);
+	}
+
 	SectorID = Sector.SectorID;
 	
 	if (IsEdgeGrid(GridIndex))
@@ -548,7 +675,7 @@ void FWorldMapData::ProcessSectorPortalsOnEdge(const FSector& Sector)
 		{
 			int SelfGridIndex = SelfStartIndex + i * IndexStride;
 			int NeighborGridIndex = NeighborStartIndex + i * IndexStride;
-			if (InSector.CostFields[SelfGridIndex].Cost < MAX_uint8 && NeighborSector.CostFields[NeighborGridIndex].Cost < MAX_uint8)
+			if (!InSector.CostFields[SelfGridIndex].IsWall() && !NeighborSector.CostFields[NeighborGridIndex].IsWall())
 			{
 				PortalBitmap |= (1 << (SECTOR_SIZE - i - 1));
 			}
@@ -722,7 +849,7 @@ void FWorldMapData::ProcessIslandFieldForSector(FSector& Sector)
 		{
 			continue; // 已被之前的 BFS 覆盖
 		}
-		if (Sector.CostFields[SeedIndex].Cost >= MAX_uint8)
+		if (Sector.CostFields[SeedIndex].IsWall())
 		{
 			continue; // 墙
 		}
@@ -751,7 +878,7 @@ void FWorldMapData::ProcessIslandFieldForSector(FSector& Sector)
 				}
 
 				int32 NeighborIndex = NeighborX + NeighborY * SECTOR_SIZE;
-				if (Sector.CostFields[NeighborIndex].Cost >= MAX_uint8)
+				if (Sector.CostFields[NeighborIndex].IsWall())
 				{
 					continue;
 				}

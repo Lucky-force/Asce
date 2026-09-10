@@ -15,6 +15,7 @@ Plugins/
 # 用户配置文件
 *.user
 *.sln.DotSettings.user
+*.sln
 
 # 日志/录制
 *.log

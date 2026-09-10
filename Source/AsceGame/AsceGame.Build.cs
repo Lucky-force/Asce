@@ -62,6 +62,8 @@ public class AsceGame : ModuleRules
 				"Slate",
 				"SlateCore",
 				"RenderCore",
+				"Renderer", // ScreenPass/PostProcessMaterialInputs 的符号定义在 Renderer（Engine 只给了它的include路径，不链接）
+				"AsceShaders", // 项目全局shader模块（独立PostConfigInit，见其Build.cs）
 				"DeveloperSettings",
 				"EnhancedInput",
 				"NetCore",

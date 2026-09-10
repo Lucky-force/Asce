@@ -13,8 +13,9 @@ class UAscePathFindingSubsystem;
 
 /**
  * 流场寻路调试器：
- *  - BeginPlay 初始化 WorldMapData + PathFinder
- *  - 可选生成测试墙（矩形障碍物）
+ *  - 从关卡摆放的 AAsceWorldMapReplicatorActor 读取 WorldMapData，使用子系统共享的 PathFinder
+ *    （不再自建 WorldMapData/PathFinder）
+ *  - 可选生成测试墙（矩形障碍物，仅权威端）
  *  - 右键点击：从地图中心网格寻路到点击位置，绘制 Portal 链 / LOS / 积分场 / 流场
  *  - 持续绘制：扇区网格、墙壁、传送门
  */
@@ -30,16 +31,12 @@ public:
 	virtual void Tick(float DeltaTime) override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
-	// UAscePathFindingSubsystem::RegisterFlowFieldDebugger 用来把PathFinder换网到这份数据上
-	FWorldMapData* GetWorldMapDataForDebugger() { return &WorldMapData; }
+	// 读取来自关卡摆放的 AAsceWorldMapReplicatorActor 的地图数据（不再自建）
+	FWorldMapData* GetWorldMapDataForDebugger() { return WorldMapData; }
 	UPathFinder* GetPathFinderForDebugger() { return PathFinder; }
 
 	// ── 配置 ───────────────────────────────────────────
-	UPROPERTY(EditAnywhere, Category = "FlowFieldDebug")
-	int32 SectorCountX = 4;
-
-	UPROPERTY(EditAnywhere, Category = "FlowFieldDebug")
-	int32 SectorCountY = 4;
+	// 注：地图尺寸(SectorCount)现在由 AAsceWorldMapReplicatorActor 配置；本调试器只读取它的数据。
 
 	// 绘制高度（离地面）
 	UPROPERTY(EditAnywhere, Category = "FlowFieldDebug")
@@ -74,6 +71,10 @@ public:
 	UPROPERTY(EditAnywhere, Category = "FlowFieldDebug")
 	bool bDrawIslandFields = true;
 
+	// 墙格簇线框（碰撞解算用的墙体AABB可视化）
+	UPROPERTY(EditAnywhere, Category = "FlowFieldDebug")
+	bool bDrawWallClusters = true;
+
 	// 每格像素数（地图纹理分辨率）
 	UPROPERTY(EditAnywhere, Category = "FlowFieldDebug")
 	int32 CellPixelSize = 4;
@@ -104,6 +105,10 @@ public:
 	UPROPERTY(EditAnywhere, Category = "FlowFieldDebug")
 	bool bDrawFlowArrows = true;
 
+	// Source（绿色球）/ Goal（红色球）标记
+	UPROPERTY(EditAnywhere, Category = "FlowFieldDebug")
+	bool bDrawSourceGoalMarkers = true;
+
 	// 控制台命令: FlowFieldDebugPath X Y
 	UFUNCTION(Exec)
 	void FlowFieldDebugPath(float WorldX, float WorldY);
@@ -128,6 +133,9 @@ protected:
 	void OnRightMousePressed();
 	void OnSpacePressed();
 
+	/** 从关卡摆放的 AAsceWorldMapReplicatorActor 绑定地图与共享 PathFinder（可能晚于本Actor就绪，故可重试）。 */
+	void TryBindMap();
+
 	void IssueDebugPathRequest(const FVector2D& GoalWorldPos);
 
 	// 选中变化：从Commander的选中entity刷新source位置
@@ -135,15 +143,16 @@ protected:
 	void RefreshSourcesFromSelection();
 	// 监听第一玩家Controller的Pawn绑定/换绑：RTS指挥官组件挂在Pawn上，BeginPlay时Pawn还没上场
 	void BindToSelectionSource();
-	// OnPossessedPawnChanged回调（AController上的动态委托，NewPawn可能是nullptr）
+	// OnPossessedPawnChanged回调（AController上的动态委托，签名为(OldPawn, NewPawn)，NewPawn可能是nullptr）
 	UFUNCTION()
-	void OnPawnPossessedChanged(APawn* NewPawn, APawn* OldPawn);
+	void OnPawnPossessedChanged(APawn* OldPawn, APawn* NewPawn);
 
 	// ── 绘制 ───────────────────────────────────────────
 	void RedrawAll();
 	void DrawPortals();
 	void DrawPortalChain();
 	void DrawFlowFieldResults();
+	void DrawWallClusters();
 	void UpdateMapTexture();
 	void FlushTexturePixelUpdates();
 	void WriteGridPixelToBuffer(uint8* Pixels, int32 TexWidth, uint32 GridIndex);
@@ -162,11 +171,11 @@ protected:
 	bool IsInDrawRange(const FVector2D& WorldPos) const;
 
 	// ── 数据 ───────────────────────────────────────────
-	UPROPERTY()
-	FWorldMapData WorldMapData;
+	// 指向关卡摆放的 AAsceWorldMapReplicatorActor 的 WorldMapData（不拥有）。
+	FWorldMapData* WorldMapData = nullptr;
 
-	UPROPERTY()
-	TObjectPtr<UPathFinder> PathFinder;
+	// 指向 UAscePathFindingSubsystem 的 PathFinder（不拥有）。
+	UPathFinder* PathFinder = nullptr;
 
 	/** 监听选中变化的Commander（nullptr=没找到，此时source退回空格手动添加） */
 	TWeakObjectPtr<UAsceRTSCommanderComponent> SelectionSourceCommander;
@@ -205,6 +214,12 @@ protected:
 	TSet<uint32> PendingTexturePixelUpdates;
 
 	bool bNeedsRedraw = true;
+
+	// 是否已成功绑定地图/PathFinder
+	bool bMapBound = false;
+
+	// 绑定的地图是否在权威端（编辑只应在权威端进行）
+	bool bMapAuthority = false;
 };
 
 #endif

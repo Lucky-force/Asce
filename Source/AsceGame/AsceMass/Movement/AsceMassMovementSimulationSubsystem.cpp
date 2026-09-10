@@ -10,7 +10,7 @@
 #include "AsceMass/Movement/AsceMovementSteeringProcessor.h"
 #include "AsceMass/Movement/AsceMovementOrientationProcessor.h"
 #include "AsceMass/Movement/AsceMovementCorrectionProcessor.h"
-#include "AsceMass/Movement/AsceMovementSeparationProcessor.h"
+#include "AsceMass/Movement/AsceMassCollisionSolverProcessor.h"
 #include "Movement/MassMovementProcessors.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AsceMassMovementSimulationSubsystem)
@@ -55,14 +55,14 @@ void UAsceMassMovementSimulationSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	UObject* Outer = this;
 	SteeringProcessor = NewObject<UAsceMovementSteeringProcessor>(Outer);
 	ApplyMovementProcessor = NewObject<UMassApplyMovementProcessor>(Outer);
-	SeparationProcessor = NewObject<UAsceMovementSeparationProcessor>(Outer);
+	CollisionSolverProcessor = NewObject<UAsceMassCollisionSolverProcessor>(Outer);
 	OrientationProcessor = NewObject<UAsceMovementOrientationProcessor>(Outer);
 	CorrectionProcessor = NewObject<UAsceMovementCorrectionProcessor>(Outer);
 
 	FMassEntityManager& EntityManager = EntitySubsystem->GetMutableEntityManager();
 	SteeringProcessor->CallInitialize(Outer, EntityManager.AsShared());
 	ApplyMovementProcessor->CallInitialize(Outer, EntityManager.AsShared());
-	SeparationProcessor->CallInitialize(Outer, EntityManager.AsShared());
+	CollisionSolverProcessor->CallInitialize(Outer, EntityManager.AsShared());
 	OrientationProcessor->CallInitialize(Outer, EntityManager.AsShared());
 	CorrectionProcessor->CallInitialize(Outer, EntityManager.AsShared());
 }
@@ -71,7 +71,7 @@ void UAsceMassMovementSimulationSubsystem::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
 
-	if (!SteeringProcessor || !ApplyMovementProcessor || !SeparationProcessor || !OrientationProcessor || !CorrectionProcessor)
+	if (!SteeringProcessor || !ApplyMovementProcessor || !CollisionSolverProcessor || !OrientationProcessor || !CorrectionProcessor)
 	{
 		return;
 	}
@@ -94,7 +94,7 @@ void UAsceMassMovementSimulationSubsystem::Tick(float DeltaTime)
 	EProcessorExecutionFlags CurrentNetModeFlags = ConvertNetModeToExecutionFlags(World->GetNetMode());
 	ExecuteProcessorIfAllowed(*SteeringProcessor, CurrentNetModeFlags, ProcessingContext);
 	ExecuteProcessorIfAllowed(*ApplyMovementProcessor, CurrentNetModeFlags, ProcessingContext);
-	ExecuteProcessorIfAllowed(*SeparationProcessor, CurrentNetModeFlags, ProcessingContext);
+	ExecuteProcessorIfAllowed(*CollisionSolverProcessor, CurrentNetModeFlags, ProcessingContext);
 	ExecuteProcessorIfAllowed(*OrientationProcessor, CurrentNetModeFlags, ProcessingContext);
 	ExecuteProcessorIfAllowed(*CorrectionProcessor, CurrentNetModeFlags, ProcessingContext);
 }

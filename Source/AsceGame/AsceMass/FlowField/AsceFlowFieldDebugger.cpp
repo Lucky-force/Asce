@@ -8,6 +8,7 @@
 #include "Components/DecalComponent.h"
 #include "GameFramework/PlayerController.h"
 #include "AsceMass/FlowField/AscePathFindingSubsystem.h"
+#include "AsceMass/FlowField/AsceWorldMapReplicatorActor.h"
 #include "AsceMass/Components/AsceRTSCommanderComponent.h"
 
 AAsceFlowFieldDebugger::AAsceFlowFieldDebugger(const FObjectInitializer& ObjectInitializer)
@@ -32,53 +33,66 @@ void AAsceFlowFieldDebugger::BeginPlay()
 {
 	Super::BeginPlay();
 
-	// 1. 初始化世界数据
-	WorldMapData.InitWorldMapData(static_cast<uint8>(SectorCountX), static_cast<uint8>(SectorCountY));
+	// 地图数据/PathFinder 现在由关卡摆放的 AAsceWorldMapReplicatorActor + UAscePathFindingSubsystem 提供，
+	// 本调试器不再自建。Actor 的 BeginPlay 顺序不确定，故先尝试绑定，失败则 Tick 里重试。
+	TryBindMap();
+}
 
-	// 2. 创建 PathFinder
-	PathFinder = NewObject<UPathFinder>(this);
-	PathFinder->SetWorldMapData(&WorldMapData);
-
-	// 3. 绑定世界数据变更委托（增量/全量更新纹理）
-	WorldMapData.OnCostFieldChanged.AddUObject(this, &AAsceFlowFieldDebugger::OnCostFieldChanged);
-	WorldMapData.OnStructureChanged.AddUObject(this, &AAsceFlowFieldDebugger::OnStructureChanged);
-
-	// 4. 模拟地图加载器：全量写入初始代价场（可通行=1），驱动 Portal/Island 级联
-	const int32 TotalGrids = WorldMapData.GetGridCountX() * WorldMapData.GetGridCountY();
-	for (int32 GridIndex = 0; GridIndex < TotalGrids; ++GridIndex)
+void AAsceFlowFieldDebugger::TryBindMap()
+{
+	if (bMapBound)
 	{
-		WorldMapData.SetCostField(GridIndex, 1);
+		return;
 	}
 
-	// 4. 生成测试墙
-	if (bGenerateTestWalls)
+	UAscePathFindingSubsystem* PathFindingSubsystem = UAscePathFindingSubsystem::Get(this);
+	AAsceWorldMapReplicatorActor* Replicator =
+		PathFindingSubsystem ? PathFindingSubsystem->GetWorldMapReplicator() : nullptr;
+	if (!Replicator)
 	{
-		for (const FVector4& Rect : TestWallRects)
+		return; // 还没就绪，等下一帧
+	}
+
+	// 复用权威地图与共享 PathFinder
+	WorldMapData = &Replicator->WorldMapData;
+	PathFinder = PathFindingSubsystem->GetPathFinder();
+	bMapAuthority = Replicator->HasAuthority();
+	bMapBound = true;
+
+	// 监听世界数据变更（本地可视更新）
+	WorldMapData->OnCostFieldChanged.AddUObject(this, &AAsceFlowFieldDebugger::OnCostFieldChanged);
+	WorldMapData->OnStructureChanged.AddUObject(this, &AAsceFlowFieldDebugger::OnStructureChanged);
+
+	// 模拟地图加载器（仅权威端）：全量可通行 + 测试墙。
+	// TODO: 由关卡静态障碍物/地形分析结果的真正灌入入口替换。
+	if (Replicator->HasAuthority())
+	{
+		const int32 TotalGrids = WorldMapData->GetGridCountX() * WorldMapData->GetGridCountY();
+		for (int32 GridIndex = 0; GridIndex < TotalGrids; ++GridIndex)
 		{
-			const int32 StartX = FMath::FloorToInt32(Rect.X);
-			const int32 StartY = FMath::FloorToInt32(Rect.Y);
-			const int32 Width  = FMath::FloorToInt32(Rect.Z);
-			const int32 Height = FMath::FloorToInt32(Rect.W);
-			for (int32 Y = StartY; Y < StartY + Height; ++Y)
+			WorldMapData->SetCostField(GridIndex, 1);
+		}
+
+		if (bGenerateTestWalls)
+		{
+			for (const FVector4& Rect : TestWallRects)
 			{
-				for (int32 X = StartX; X < StartX + Width; ++X)
+				const int32 StartX = FMath::FloorToInt32(Rect.X);
+				const int32 StartY = FMath::FloorToInt32(Rect.Y);
+				const int32 Width  = FMath::FloorToInt32(Rect.Z);
+				const int32 Height = FMath::FloorToInt32(Rect.W);
+				for (int32 Y = StartY; Y < StartY + Height; ++Y)
 				{
-					WorldMapData.SetCostField(WorldMapData.GridLocationToGridIndex(FIntVector2(X, Y)), MAX_uint8);
+					for (int32 X = StartX; X < StartX + Width; ++X)
+					{
+						WorldMapData->SetGridWall(WorldMapData->GridLocationToGridIndex(FIntVector2(X, Y)));
+					}
 				}
 			}
 		}
 	}
 
 	BindDebugInput();
-
-	// 5. 注册到PathFindingSubsystem：运行时寻路换网到本Debugger的WorldMapData，
-	//    编辑墙/代价的结果直接对游戏内单位寻路生效（编辑器调试工具成为一部分开发环境）。
-	if (UAscePathFindingSubsystem* PathFindingSubsystem = UAscePathFindingSubsystem::Get(this))
-	{
-		PathFindingSubsystem->RegisterFlowFieldDebugger(this);
-	}
-
-	// 6. 监听选中变化：source从选中entity的位置自动刷新（推荐，替代空格手动添加）
 	BindToSelectionSource();
 
 	bNeedsRedraw = true;
@@ -103,7 +117,7 @@ void AAsceFlowFieldDebugger::BindToSelectionSource()
 	OnPawnPossessedChanged(PC->GetPawn(), nullptr);
 }
 
-void AAsceFlowFieldDebugger::OnPawnPossessedChanged(APawn* NewPawn, APawn* OldPawn)
+void AAsceFlowFieldDebugger::OnPawnPossessedChanged(APawn* OldPawn, APawn* NewPawn)
 {
 	// 先解绑旧的
 	if (SelectionSourceCommander.IsValid())
@@ -202,12 +216,6 @@ void AAsceFlowFieldDebugger::FlowFieldDebugClearSources()
 
 void AAsceFlowFieldDebugger::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
-	// 先从PathFindingSubsystem里注销（换网回Replicator/Fallback）
-	if (UAscePathFindingSubsystem* PathFindingSubsystem = UAscePathFindingSubsystem::Get(this))
-	{
-		PathFindingSubsystem->UnregisterFlowFieldDebugger(this);
-	}
-
 	// 解绑选中监听
 	if (SelectionSourceCommander.IsValid())
 	{
@@ -222,8 +230,11 @@ void AAsceFlowFieldDebugger::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		PC->OnPossessedPawnChanged.RemoveAll(this);
 	}
 
-	WorldMapData.OnCostFieldChanged.RemoveAll(this);
-	WorldMapData.OnStructureChanged.RemoveAll(this);
+	if (WorldMapData)
+	{
+		WorldMapData->OnCostFieldChanged.RemoveAll(this);
+		WorldMapData->OnStructureChanged.RemoveAll(this);
+	}
 
 	APlayerController* PC = GetWorld()->GetFirstPlayerController();
 	if (PC && PC->InputComponent)
@@ -258,25 +269,42 @@ void AAsceFlowFieldDebugger::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
 
-	// 按住 F/E 编辑鼠标处代价（支持拖动刷墙/擦墙）
+	// ReplicatorActor 可能晚于本Actor就绪：未绑定时重试，绑定前不做任何事
+	if (!bMapBound)
+	{
+		TryBindMap();
+	}
+	if (!WorldMapData)
+	{
+		return;
+	}
+
+	// 按住 F/E 编辑鼠标处代价（支持拖动刷墙/擦墙）——仅权威端可编辑
 	APlayerController* PC = GetWorld()->GetFirstPlayerController();
-	if (PC && (PC->IsInputKeyDown(EKeys::F) || PC->IsInputKeyDown(EKeys::E)))
+	if (bMapAuthority && PC && (PC->IsInputKeyDown(EKeys::F) || PC->IsInputKeyDown(EKeys::E)))
 	{
 		FHitResult Hit;
 		if (PC->GetHitResultUnderCursor(ECC_Visibility, false, Hit))
 		{
 			const FIntVector2 GridLoc = FWorldMapData::WorldLocationToGridLocation(FVector2D(Hit.Location.X, Hit.Location.Y));
-			const uint32 GridIndex = WorldMapData.GridLocationToGridIndex(GridLoc);
+			const uint32 GridIndex = WorldMapData->GridLocationToGridIndex(GridLoc);
 			if (GridIndex != LastEditGridIndex)
 			{
 				LastEditGridIndex = GridIndex;
-				WorldMapData.SetCostField(GridIndex, PC->IsInputKeyDown(EKeys::F) ? MAX_uint8 : 1);
+				if (PC->IsInputKeyDown(EKeys::F))
+				{
+					WorldMapData->SetGridWall(GridIndex);
+				}
+				else
+				{
+					WorldMapData->SetGridPassable(GridIndex);
+				}
 			}
 		}
 	}
 
 	// 世界数据时间片更新
-	WorldMapData.UpdateWorld(DeltaTime);
+	WorldMapData->UpdateWorld(DeltaTime);
 
 	// 每 2 秒清理一次无人引用的流场缓存
 	if (GFrameCounter % 120 == 0 && PathFinder)
@@ -299,7 +327,7 @@ void AAsceFlowFieldDebugger::Tick(float DeltaTime)
 	}
 
 	// 世界数据有变更或需要重绘时刷新
-	if (bNeedsRedraw || WorldMapData.HasPendingWorldUpdates())
+	if (bNeedsRedraw || WorldMapData->HasPendingWorldUpdates())
 	{
 		RedrawAll();
 		bNeedsRedraw = false;
@@ -307,7 +335,7 @@ void AAsceFlowFieldDebugger::Tick(float DeltaTime)
 	}
 
 	// 地图纹理（岛色+墙）只在数据变化时更新——decal固定在世界坐标，玩家移动无需重画
-	if (bMapTextureDirty || WorldMapData.HasPendingWorldUpdates())
+	if (bMapTextureDirty || WorldMapData->HasPendingWorldUpdates())
 	{
 		UpdateMapTexture();
 		PendingTexturePixelUpdates.Reset();
@@ -365,7 +393,7 @@ void AAsceFlowFieldDebugger::IssueDebugPathRequest(const FVector2D& GoalWorldPos
 	if (SourceWorldPositions.Num() > 0)
 	{
 		const FIntVector2 GoalGrid = FWorldMapData::WorldLocationToGridLocation(GoalWorldPos);
-		const FSector::FSectorID GoalSectorID = WorldMapData.GridLocationToSectorId(GoalGrid);
+		const FSector::FSectorID GoalSectorID = WorldMapData->GridLocationToSectorId(GoalGrid);
 
 		for (const FPortalPathResult& Result : LastPathResults)
 		{
@@ -447,7 +475,7 @@ FVector2D AAsceFlowFieldDebugger::GetPortalRepresentativePos(const FPortal& Port
 	int32 MaxBit = 31 - FMath::CountLeadingZeros(Bitmap);
 	int32 CenterPosAlongEdge = SECTOR_SIZE - 1 - (MinBit + MaxBit) / 2;
 
-	FIntVector2 SectorLocation = WorldMapData.GetSectorLocation(Portal.OwingSectorID);
+	FIntVector2 SectorLocation = WorldMapData->GetSectorLocation(Portal.OwingSectorID);
 	switch (Portal.GetPortalType())
 	{
 	case FPortal::EPortalType::Left:
@@ -481,16 +509,25 @@ void AAsceFlowFieldDebugger::RedrawAll()
 	}
 
 	// Source / Goal 标记
-	for (const FVector2D& SourcePos : SourceWorldPositions)
+	if (bDrawSourceGoalMarkers)
 	{
-		if (IsInDrawRange(SourcePos))
+		for (const FVector2D& SourcePos : SourceWorldPositions)
 		{
-			DrawDebugSphere(World, FVector(SourcePos.X, SourcePos.Y, DrawHeight + 40.f), 80.f, 12, FColor::Green, true, -1.f, 0, 3.f);
+			if (IsInDrawRange(SourcePos))
+			{
+				DrawDebugSphere(World, FVector(SourcePos.X, SourcePos.Y, DrawHeight + 40.f), 80.f, 12, FColor::Green, true, -1.f, 0, 3.f);
+			}
+		}
+		if (bHasPathResult && IsInDrawRange(LastGoalWorldPosition))
+		{
+			DrawDebugSphere(World, FVector(LastGoalWorldPosition.X, LastGoalWorldPosition.Y, DrawHeight + 40.f), 80.f, 12, FColor::Red, true, -1.f, 0, 3.f);
 		}
 	}
-	if (bHasPathResult && IsInDrawRange(LastGoalWorldPosition))
+
+	// 墙格簇线框（碰撞解算用的墙体AABB可视化）
+	if (bDrawWallClusters)
 	{
-		DrawDebugSphere(World, FVector(LastGoalWorldPosition.X, LastGoalWorldPosition.Y, DrawHeight + 40.f), 80.f, 12, FColor::Red, true, -1.f, 0, 3.f);
+		DrawWallClusters();
 	}
 }
 
@@ -509,8 +546,8 @@ void AAsceFlowFieldDebugger::UpdateMapTexture()
 		return;
 	}
 
-	const int32 GridCountX = WorldMapData.GetGridCountX();
-	const int32 GridCountY = WorldMapData.GetGridCountY();
+	const int32 GridCountX = WorldMapData->GetGridCountX();
+	const int32 GridCountY = WorldMapData->GetGridCountY();
 	const int32 TexWidth  = GridCountX * CellPixelSize;
 	const int32 TexHeight = GridCountY * CellPixelSize;
 
@@ -548,17 +585,17 @@ void AAsceFlowFieldDebugger::UpdateMapTexture()
 	};
 
 	// 2. 写像素：岛屿色块 + 墙（墙覆盖岛色）
-	for (int32 SY = 0; SY < WorldMapData.GetSectorCountY(); ++SY)
+	for (int32 SY = 0; SY < WorldMapData->GetSectorCountY(); ++SY)
 	{
-		for (int32 SX = 0; SX < WorldMapData.GetSectorCountX(); ++SX)
+		for (int32 SX = 0; SX < WorldMapData->GetSectorCountX(); ++SX)
 		{
-			const FSector::FSectorID SectorID(SX + WorldMapData.GetSectorCountX() * SY);
-			const FSector& Sector = WorldMapData.GetSectorData(SectorID);
-			const FIntVector2 SectorLoc = WorldMapData.GetSectorLocation(SectorID);
+			const FSector::FSectorID SectorID(SX + WorldMapData->GetSectorCountX() * SY);
+			const FSector& Sector = WorldMapData->GetSectorData(SectorID);
+			const FIntVector2 SectorLoc = WorldMapData->GetSectorLocation(SectorID);
 
 			for (int32 i = 0; i < SECTOR_SIZE * SECTOR_SIZE; ++i)
 			{
-				const bool bWall = Sector.CostFields[i].Cost >= MAX_uint8;
+				const bool bWall = Sector.CostFields[i].IsWall();
 				const uint8 IslandId = Sector.IslandFields[i].IslandId;
 				if (!bWall && IslandId == 0)
 				{
@@ -621,10 +658,10 @@ void AAsceFlowFieldDebugger::UpdateMapTexture()
 	}
 
 	// 3. Portal边界格画青色（覆盖岛色）
-	for (int32 PortalIdx = 0; PortalIdx < WorldMapData.GetPortalCount(); ++PortalIdx)
+	for (int32 PortalIdx = 0; PortalIdx < WorldMapData->GetPortalCount(); ++PortalIdx)
 	{
-		const FPortal& Portal = WorldMapData.GetPortal(FPortal::FPortalIndex(PortalIdx));
-		const FIntVector2 SectorLoc = WorldMapData.GetSectorLocation(Portal.OwingSectorID);
+		const FPortal& Portal = WorldMapData->GetPortal(FPortal::FPortalIndex(PortalIdx));
+		const FIntVector2 SectorLoc = WorldMapData->GetSectorLocation(Portal.OwingSectorID);
 
 		for (int32 i = 0; i < SECTOR_SIZE; ++i)
 		{
@@ -673,7 +710,7 @@ void AAsceFlowFieldDebugger::UpdateMapTexture()
 				continue;
 			}
 
-			const FIntVector2 SectorLoc = WorldMapData.GetSectorLocation(Result->SectorID);
+			const FIntVector2 SectorLoc = WorldMapData->GetSectorLocation(Result->SectorID);
 
 			uint16 MaxCost = 0;
 			for (uint16 Cost : Result->IntegrationCosts)
@@ -774,7 +811,7 @@ void AAsceFlowFieldDebugger::FlushTexturePixelUpdates()
 		return;
 	}
 
-	const int32 TexWidth = WorldMapData.GetGridCountX() * CellPixelSize;
+	const int32 TexWidth = WorldMapData->GetGridCountX() * CellPixelSize;
 
 	FTexture2DMipMap& Mip = DebugTexture->GetPlatformData()->Mips[0];
 	uint8* Pixels = static_cast<uint8*>(Mip.BulkData.Lock(LOCK_READ_WRITE));
@@ -790,8 +827,8 @@ void AAsceFlowFieldDebugger::FlushTexturePixelUpdates()
 
 void AAsceFlowFieldDebugger::WriteGridPixelToBuffer(uint8* Pixels, int32 TexWidth, uint32 GridIndex)
 {
-	const int32 GridCountX = WorldMapData.GetGridCountX();
-	const int32 GridCountY = WorldMapData.GetGridCountY();
+	const int32 GridCountX = WorldMapData->GetGridCountX();
+	const int32 GridCountY = WorldMapData->GetGridCountY();
 
 	static const FColor IslandColors[] = {
 		FColor(160, 50, 50),   FColor(50, 160, 50),   FColor(50, 50, 160),
@@ -800,15 +837,15 @@ void AAsceFlowFieldDebugger::WriteGridPixelToBuffer(uint8* Pixels, int32 TexWidt
 		FColor(170, 170, 170),
 	};
 
-	const FIntVector2 GridLoc = WorldMapData.GridIndexToGridLocation(GridIndex);
-	const FSector::FSectorID SectorID = WorldMapData.GridLocationToSectorId(GridLoc);
+	const FIntVector2 GridLoc = WorldMapData->GridIndexToGridLocation(GridIndex);
+	const FSector::FSectorID SectorID = WorldMapData->GridLocationToSectorId(GridLoc);
 	if (!SectorID.IsValid())
 	{
 		return;
 	}
-	const FSector& Sector = WorldMapData.GetSectorData(SectorID);
-	const uint32 LocalIndex = WorldMapData.GridLocationToGridIndexInSector(GridLoc);
-	const bool bWall = Sector.CostFields[LocalIndex].Cost >= MAX_uint8;
+	const FSector& Sector = WorldMapData->GetSectorData(SectorID);
+	const uint32 LocalIndex = WorldMapData->GridLocationToGridIndexInSector(GridLoc);
+	const bool bWall = Sector.CostFields[LocalIndex].IsWall();
 	const uint8 IslandId = Sector.IslandFields[LocalIndex].IslandId;
 
 	// 网格坐标 -> 纹理像素坐标（与UpdateMapTexture一致）
@@ -866,9 +903,9 @@ void AAsceFlowFieldDebugger::DrawPortals()
 	UWorld* World = GetWorld();
 
 	// Portal格子已画在地图纹理里（青色），动态层只画代表点球和链接线
-	for (int32 PortalIdx = 0; PortalIdx < WorldMapData.GetPortalCount(); ++PortalIdx)
+	for (int32 PortalIdx = 0; PortalIdx < WorldMapData->GetPortalCount(); ++PortalIdx)
 	{
-		const FPortal& Portal = WorldMapData.GetPortal(FPortal::FPortalIndex(PortalIdx));
+		const FPortal& Portal = WorldMapData->GetPortal(FPortal::FPortalIndex(PortalIdx));
 
 		// 代表点不在玩家附近则跳过整个 Portal
 		const FVector2D Rep = GetPortalRepresentativePos(Portal);
@@ -880,7 +917,7 @@ void AAsceFlowFieldDebugger::DrawPortals()
 		// 代表点 + 与对面 Portal 的连线
 		DrawDebugSphere(World, FVector(Rep.X, Rep.Y, DrawHeight + 55.f), 30.f, 8, FColor::Cyan, true, -1.f, 0, 2.f);
 
-		const FPortal& LinkPortal = Portal.GetLinkToPortal(WorldMapData);
+		const FPortal& LinkPortal = Portal.GetLinkToPortal(*WorldMapData);
 		if (LinkPortal.IsValid())
 		{
 			const FVector2D LinkRep = GetPortalRepresentativePos(LinkPortal);
@@ -917,7 +954,7 @@ void AAsceFlowFieldDebugger::DrawPortalChain()
 		}
 
 		// Source → 第一个 Portal
-		const FPortal& FirstPortal = WorldMapData.GetPortal(Chain[0]);
+		const FPortal& FirstPortal = WorldMapData->GetPortal(Chain[0]);
 		const FVector2D FirstRep = GetPortalRepresentativePos(FirstPortal);
 		if (IsInDrawRange(FirstRep))
 		{
@@ -926,8 +963,8 @@ void AAsceFlowFieldDebugger::DrawPortalChain()
 
 		for (int32 i = 0; i + 1 < Chain.Num(); ++i)
 		{
-			const FVector2D A = GetPortalRepresentativePos(WorldMapData.GetPortal(Chain[i]));
-			const FVector2D B = GetPortalRepresentativePos(WorldMapData.GetPortal(Chain[i + 1]));
+			const FVector2D A = GetPortalRepresentativePos(WorldMapData->GetPortal(Chain[i]));
+			const FVector2D B = GetPortalRepresentativePos(WorldMapData->GetPortal(Chain[i + 1]));
 			if (!IsInDrawRange(A) && !IsInDrawRange(B))
 			{
 				continue;
@@ -939,7 +976,7 @@ void AAsceFlowFieldDebugger::DrawPortalChain()
 		}
 
 		// 最后一个 Portal → Goal
-		const FPortal& LastPortal = WorldMapData.GetPortal(Chain.Last());
+		const FPortal& LastPortal = WorldMapData->GetPortal(Chain.Last());
 		const FVector2D LastRep = GetPortalRepresentativePos(LastPortal);
 		if (IsInDrawRange(LastRep) || IsInDrawRange(LastGoalWorldPosition))
 		{
@@ -972,19 +1009,19 @@ void AAsceFlowFieldDebugger::DrawFlowFieldResults()
 		const FColor& ArrowColor = FlowFieldColors[ResultIndex % UE_ARRAY_COUNT(FlowFieldColors)];
 		++ResultIndex;
 
-		FIntVector2 SectorLoc = WorldMapData.GetSectorLocation(Result->SectorID);
+		FIntVector2 SectorLoc = WorldMapData->GetSectorLocation(Result->SectorID);
 
 		// 扇区中心上方打印该流场的目标信息（诊断同扇区多条流场时用）
 		{
 			FString TargetInfo;
 			if (Result->Target.IsType<FPortal::FPortalIndex>())
 			{
-				const FPortal& TargetPortal = WorldMapData.GetPortal(Result->Target.Get<FPortal::FPortalIndex>());
+				const FPortal& TargetPortal = WorldMapData->GetPortal(Result->Target.Get<FPortal::FPortalIndex>());
 				const FVector2D TargetRep = GetPortalRepresentativePos(TargetPortal);
 				TargetInfo = FString::Printf(TEXT("FF%d: Sector(%d,%d) -> Portal#%d (%.0f,%.0f)"),
 					ResultIndex,
-					Result->SectorID.RawID % WorldMapData.GetSectorCountX(),
-					Result->SectorID.RawID / WorldMapData.GetSectorCountX(),
+					Result->SectorID.RawID % WorldMapData->GetSectorCountX(),
+					Result->SectorID.RawID / WorldMapData->GetSectorCountX(),
 					Result->Target.Get<FPortal::FPortalIndex>().RawIndex,
 					TargetRep.X, TargetRep.Y);
 			}
@@ -993,8 +1030,8 @@ void AAsceFlowFieldDebugger::DrawFlowFieldResults()
 				const FIntVector2 GoalGrid = Result->Target.Get<FIntVector2>();
 				TargetInfo = FString::Printf(TEXT("FF%d: Sector(%d,%d) -> GoalGrid(%d,%d)"),
 					ResultIndex,
-					Result->SectorID.RawID % WorldMapData.GetSectorCountX(),
-					Result->SectorID.RawID / WorldMapData.GetSectorCountX(),
+					Result->SectorID.RawID % WorldMapData->GetSectorCountX(),
+					Result->SectorID.RawID / WorldMapData->GetSectorCountX(),
 					GoalGrid.X, GoalGrid.Y);
 			}
 			const FVector LabelPos(
@@ -1060,4 +1097,37 @@ void AAsceFlowFieldDebugger::DrawFlowFieldResults()
 		}
 	}
 }
+
+void AAsceFlowFieldDebugger::DrawWallClusters()
+{
+	// 墙格簇：碰撞解算用的墙体AABB，画黄色线框可视化便于核查簇的范围/是否漏格。
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	const FColor ClusterColor(255, 255, 0); // 黄
+
+	for (const FWallCluster& Cluster : WorldMapData->WallClusters)
+	{
+		const FVector2D Center((Cluster.Min.X + Cluster.Max.X) * 0.5f, (Cluster.Min.Y + Cluster.Max.Y) * 0.5f);
+		if (!IsInDrawRange(Center))
+		{
+			continue;
+		}
+
+		// AABB线框（地面高度DrawHeight）
+		const float Z = DrawHeight + 20.f;
+		const FVector P00(Cluster.Min.X, Cluster.Min.Y, Z);
+		const FVector P10(Cluster.Max.X, Cluster.Min.Y, Z);
+		const FVector P11(Cluster.Max.X, Cluster.Max.Y, Z);
+		const FVector P01(Cluster.Min.X, Cluster.Max.Y, Z);
+		DrawDebugLine(World, P00, P10, ClusterColor, true, -1.f, 0, 3.f);
+		DrawDebugLine(World, P10, P11, ClusterColor, true, -1.f, 0, 3.f);
+		DrawDebugLine(World, P11, P01, ClusterColor, true, -1.f, 0, 3.f);
+		DrawDebugLine(World, P01, P00, ClusterColor, true, -1.f, 0, 3.f);
+	}
+}
+
 #endif

@@ -28,6 +28,13 @@ struct FAsceMovementSimStateFragment : public FMassFragment
 	GENERATED_BODY()
 
 	bool bRunFullSimulation = true;
+
+	// ── 权威端"位移过小→视为到达"的判定状态（见AsceMovementSteeringProcessor注释）──
+	/** 上帧位置（2D），用于计算本帧实际位移；权威端照常更新，客户端不碰 */
+	FVector2D LastFrameLocation2D = FVector2D::ZeroVector;
+
+	/** 连续"位移过小"的帧数计数（达到StuckStopFrameCount后视为挤死，停止移动） */
+	int32 StuckFrames = 0;
 };
 
 /**

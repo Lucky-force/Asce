@@ -36,7 +36,7 @@ struct FAsceTeamFragment : public FMassFragment
 	GENERATED_BODY()
 
 	UPROPERTY(BlueprintReadWrite)
-	int32 TeamID = 0;
+	int32 TeamKey = 0;
 };
 
 // ──────────────────────────────────────────

@@ -2,9 +2,6 @@
 
 #include "AscePathFindingSubsystem.h"
 #include "AsceWorldMapReplicatorActor.h"
-#if WITH_EDITORONLY_DATA
-#include "AsceFlowFieldDebugger.h"
-#endif
 
 void UAscePathFindingSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -36,13 +33,9 @@ void UAscePathFindingSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 {
 	Super::OnWorldBeginPlay(InWorld);
 
-	// 只有Server（含Standalone）负责生成这个权威Actor；Client端等它随网络复制自然出现，
-	// 出现时会在AAsceWorldMapReplicatorActor::BeginPlay里调RegisterWorldMapReplicator，
-	// 不需要Client自己Spawn。
-	if (InWorld.GetNetMode() != NM_Client)
-	{
-		InWorld.SpawnActor<AAsceWorldMapReplicatorActor>();
-	}
+	// WorldMapReplicatorActor 现在改为在关卡里摆放并配置（SectorCountX/Y 等在 Actor 上设置），
+	// 它自己会在 BeginPlay 里 InitializeMapDimensions() 并调 RegisterWorldMapReplicator。
+	// 这里不再 spawn。Client 端靠关卡里的同名 Actor + 复制接收数据。
 }
 
 void UAscePathFindingSubsystem::RegisterWorldMapReplicator(AAsceWorldMapReplicatorActor* InReplicator)
@@ -64,41 +57,6 @@ void UAscePathFindingSubsystem::UnregisterWorldMapReplicator(AAsceWorldMapReplic
 			PathFinder->SetWorldMapData(&FallbackEmptyWorldMapData);
 		}
 	}
-}
-
-void UAscePathFindingSubsystem::RegisterFlowFieldDebugger(AAsceFlowFieldDebugger* InDebugger)
-{
-#if WITH_EDITORONLY_DATA
-	FlowFieldDebugger = InDebugger;
-	if (PathFinder && InDebugger)
-	{
-		// 换网到Debugger的WorldMapData：双方共享同一个PathFinder实例+同一份地图数据，
-		// Debugger上编辑墙/代价的结果直接对运行时寻路生效。
-		PathFinder->SetWorldMapData(InDebugger->GetWorldMapDataForDebugger());
-	}
-#endif
-}
-
-void UAscePathFindingSubsystem::UnregisterFlowFieldDebugger(AAsceFlowFieldDebugger* InDebugger)
-{
-#if WITH_EDITORONLY_DATA
-	if (FlowFieldDebugger == InDebugger)
-	{
-		FlowFieldDebugger = nullptr;
-		if (PathFinder)
-		{
-			// 还原：优先回Replicator的数据，没有就彻底回Fallback
-			if (WorldMapReplicator)
-			{
-				PathFinder->SetWorldMapData(&WorldMapReplicator->WorldMapData);
-			}
-			else
-			{
-				PathFinder->SetWorldMapData(&FallbackEmptyWorldMapData);
-			}
-		}
-	}
-#endif
 }
 
 FWorldMapData* UAscePathFindingSubsystem::GetWorldMapDataMutableForAuthority()

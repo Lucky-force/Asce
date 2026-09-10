@@ -1,0 +1,195 @@
+// AsceFog.usf
+// MOD-POINT 2026-09-10 14:49:13
+// 黑雾 Compute（阶段 1.1 最小版）：BitMap(R32_UINT 位图) → Fog(R8_UINT 可见度图)
+// 位序：全局平坦位索引 globalBit = cellY * GridSize.x + cellX；Bitmap 按字(R32_UINT)存储，行宽 WordsPerRow。
+// 本版仅做"位解包"（可见=255 / 不可见=0），模糊/平滑留到后续步骤。
+//
+// MOD-POINT 2026-09-10 16:20:00
+// 阶段 2b 增补：MainPS —— 全屏后处理，按 SceneDepth 重建世界 XY → 查 Fog → 压黑 SceneColor。
+
+#include "/Engine/Public/Platform.ush"
+#include "/Engine/Private/Common.ush"
+
+// 脏 tile 展开输入
+StructuredBuffer<uint> Payload;   // [TilesCount 个索引][TilesCount*TileWords 个 word]
+RWTexture2D<float> OutFog;        // R8_UNORM：1.0=可见 / 0.0=不可见（PS 侧双线性采样做平滑）
+int GridW;
+int GridH;
+int TilesCount;
+int TilesX;
+int TileCells;
+int TileWords;
+
+// 全屏 PS 输入
+Texture2D SceneColorTexture;
+SamplerState SceneColorSampler;
+Texture2D SceneDepthTexture;
+Texture2D<float> FogTexture;
+SamplerState FogSampler;   // Bilinear + Clamp：让迷雾边界平滑过渡
+
+// 边缘平滑 Pass1（去凸角）输入/输出
+Texture2D<float> FogRawTexture;
+RWTexture2D<float> CornerUAV;
+
+// 边缘平滑 Pass2（3×3 平均）输入/输出
+Texture2D<float> FogCornerTexture;
+RWTexture2D<float> FogSmoothUAV;
+
+int2 GridSize;      // (GridW, GridH)，供 PS 用
+float2 WorldOrigin; // 雾格子(0,0)在世界 XY 的角点（cm）
+float  CellSize;    // 每格边长（cm）
+float  Darkness;    // 不可见处压黑强度（1=全黑）
+
+[numthreads(128, 1, 1)]
+void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+    const uint Tid = DispatchThreadId.x;
+    const int TileOrdinal = int(Tid / uint(TileWords));
+    if (TileOrdinal >= TilesCount)
+    {
+        return;
+    }
+    const int WordInTile = int(Tid % uint(TileWords));
+
+    const int TileIndex = int(Payload[TileOrdinal]);
+    const uint Word = Payload[TilesCount + TileOrdinal * TileWords + WordInTile];
+
+    const int TileX = TileIndex % TilesX;
+    const int TileY = TileIndex / TilesX;
+    const int BaseX = TileX * TileCells;
+    const int BaseY = TileY * TileCells;
+
+    const int WordsPerRow = TileWords / TileCells; // = 2
+    const int Row = WordInTile / WordsPerRow;
+    const int WordInRow = WordInTile % WordsPerRow;
+
+    const int CellY = BaseY + Row;
+    if (CellY >= GridH)
+    {
+        return;
+    }
+    const int ColBase = BaseX + WordInRow * 32;
+    [loop]
+    for (int b = 0; b < 32; ++b)
+    {
+        const int CellX = ColBase + b;
+        if (CellX >= GridW)
+        {
+            break; // 边缘 padding 忽略
+        }
+        OutFog[int2(CellX, CellY)] = ((Word >> b) & 1u) ? 1.0f : 0.0f;
+    }
+}
+
+// 黑雾压黑：SceneColor * 可见度。不可见处乘 (1-Darkness)。
+// UVAndScreenPos：ScreenPassVS 输出，xy 为视口 UV，zw 为屏幕坐标。
+void MainPS(
+    noperspective float4 UVAndScreenPos : TEXCOORD0,
+    out float4 OutColor : SV_Target0)
+{
+    float2 UV = UVAndScreenPos.xy;
+    float3 Scene = SceneColorTexture.SampleLevel(SceneColorSampler, UV, 0).rgb;
+
+    // 反投影深度得世界 XY（UE 反向 Z：天空≈0）。
+    // UE5.7 的 View uniform 不能写 `View.xxx`（底层是 View_ 前缀扁平 cbuffer），
+    // 通过 PrimaryView（宏 → GetPrimaryView() 返回的 ViewState）访问。
+    int2 PixelCoord = int2(UV * PrimaryView.ViewSizeAndInvSize.xy);
+    float Depth = SceneDepthTexture.Load(int3(PixelCoord, 0)).r;
+    if (Depth > 0.0f)
+    {
+        // SV_Position(像素中心+0.5) + DeviceZ → TranslatedWorld（等价 ReconstructTranslatedWorldPositionFromDeviceZ）
+        float4 Homogeneous = mul(float4(PixelCoord + 0.5, Depth, 1), PrimaryView.SVPositionToTranslatedWorld);
+        float3 TranslatedWorld = Homogeneous.xyz / Homogeneous.w;
+
+        // TranslatedWorld → 绝对世界（cm）：减去 PreViewTranslation。
+        // PreViewTranslation 是 LWC（High+Low），合成后降精度到 float（雾格查询精度足够）。
+        const float3 PreViewTranslation = DFDemote(MakeDFVector3(PrimaryView.PreViewTranslationHigh, PrimaryView.PreViewTranslationLow));
+        float3 World = TranslatedWorld - PreViewTranslation;
+
+        // 连续格坐标 → 归一化 UV（落在像素中心，跨界时硬件双线性插值出 1 格宽的平滑过渡）。
+        float2 FogCoord = (World.xy - WorldOrigin) / CellSize;
+        if (all(FogCoord >= 0.0f) && all(FogCoord < float2(GridSize)))
+        {
+            float2 FogUV = FogCoord / float2(GridSize);
+            float Visible = FogTexture.SampleLevel(FogSampler, FogUV, 0).r;
+            Visible = smoothstep(0.0f, 1.0f, Visible);   // 线性渐变再做一次S曲线，过渡更柔和
+            Scene *= lerp(1.0f - Darkness, 1.0f, Visible);
+        }
+    }
+
+    OutColor = float4(Scene, 1.0f);
+}
+
+// ─────────────────────────────────────────────
+// 黑雾边缘平滑 Pass1：去凸角
+// 中心可见，且某"角方向"的两个正交邻格与对角格都不可见 → 中心是凸出来的角 → 去掉。
+// （如右上角：上、右、右上 都不可见）→ 削掉格状边界的凸角/台阶端点，边界圆润。
+// ─────────────────────────────────────────────
+[numthreads(8, 8, 1)]
+void MainCornerCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+    int2 Cell = int2(DispatchThreadId.xy);
+    if (Cell.x >= GridSize.x || Cell.y >= GridSize.y)
+    {
+        return;
+    }
+
+    const int2 MinC = int2(0, 0);
+    const int2 MaxC = GridSize - 1;
+
+    const float C  = FogRawTexture.Load(int3(Cell, 0)).r;
+    const float U  = FogRawTexture.Load(int3(clamp(Cell + int2( 0, -1), MinC, MaxC), 0)).r;
+    const float D  = FogRawTexture.Load(int3(clamp(Cell + int2( 0,  1), MinC, MaxC), 0)).r;
+    const float L  = FogRawTexture.Load(int3(clamp(Cell + int2(-1,  0), MinC, MaxC), 0)).r;
+    const float R  = FogRawTexture.Load(int3(clamp(Cell + int2( 1,  0), MinC, MaxC), 0)).r;
+    const float UL = FogRawTexture.Load(int3(clamp(Cell + int2(-1, -1), MinC, MaxC), 0)).r;
+    const float UR = FogRawTexture.Load(int3(clamp(Cell + int2( 1, -1), MinC, MaxC), 0)).r;
+    const float DL = FogRawTexture.Load(int3(clamp(Cell + int2(-1,  1), MinC, MaxC), 0)).r;
+    const float DR = FogRawTexture.Load(int3(clamp(Cell + int2( 1,  1), MinC, MaxC), 0)).r;
+
+    float OutV = C;
+    if (C >= 0.5f)
+    {
+        const float T = 0.5f;
+        const bool bTL = (U < T && L < T && UL < T);
+        const bool bTR = (U < T && R < T && UR < T);
+        const bool bBL = (D < T && L < T && DL < T);
+        const bool bBR = (D < T && R < T && DR < T);
+        if (bTL || bTR || bBL || bBR)
+        {
+            OutV = 0.0f; // 凸角：去掉
+        }
+    }
+    CornerUAV[Cell] = OutV;
+}
+
+// ─────────────────────────────────────────────
+// 黑雾边缘平滑 Pass2：3×3 平均（软膨胀 + 模糊）
+// 读去凸角结果做 3×3 平均 → 0~1 连续可见度（边缘一圈 1/9..8/9 渐变）；
+// PS 端双线性采样 + smoothstep → 最终过渡约 2 格宽。
+// ─────────────────────────────────────────────
+[numthreads(8, 8, 1)]
+void MainSmoothCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+    int2 Cell = int2(DispatchThreadId.xy);
+    if (Cell.x >= GridSize.x || Cell.y >= GridSize.y)
+    {
+        return;
+    }
+
+    const int2 MinC = int2(0, 0);
+    const int2 MaxC = GridSize - 1;
+
+    float Sum = 0.0f;
+    [unroll]
+    for (int dy = -1; dy <= 1; ++dy)
+    {
+        [unroll]
+        for (int dx = -1; dx <= 1; ++dx)
+        {
+            const int2 C = clamp(Cell + int2(dx, dy), MinC, MaxC);
+            Sum += FogCornerTexture.Load(int3(C, 0)).r;
+        }
+    }
+    FogSmoothUAV[Cell] = Sum / 9.0f;
+}

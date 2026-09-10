@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Containers/BitArray.h"
 #include "Net/Serialization/FastArraySerializer.h"
 #include "UObject/Object.h"
 #include "AsceFlowFieldCores.generated.h"
@@ -31,7 +32,23 @@ DECLARE_MULTICAST_DELEGATE(FOnWorldMapStructureChanged);
 
 struct FCostField
 {
+	// 数据布局（按你们的"最高位=墙/方向、低7位=代价或方向"方案改造）：
+	//   bit7=0 → 可通行格, 低7位 = 代价 (1~127)
+	//   bit7=1 → 墙格（低7位在旧版墙推流场方案里存过方向码，现在墙推改用格簇AABB，
+	//             低7位此义已废弃，保留IsWall/GetPushDirection兼容读取旧数据）
+	// 注意：旧版本墙用 Cost=255 (0b11111111, bit7=1, 低7位=127无效方向)——
+	// IsWall()/GetPushDirection() 和旧数据兼容（255也判墙, 只是方向码无效, 读取方跳过即可）
 	uint8 Cost = 0;
+
+	ASCE_INLINE bool IsWall() const
+	{
+		return (Cost & 0b10000000) != 0;
+	}
+
+	ASCE_INLINE uint8 GetPushDirection() const
+	{
+		return Cost & 0b01111111;
+	}
 };
 	
 	
@@ -229,6 +246,13 @@ struct FSector
 		{
 			return RawID >= Other.RawID;
 		}
+
+		// hash只参与"集合/字典查找"，语义与operator==一致（只比较RawID，Timestamp不参与hash）——
+		// 否则同一个Sector在不同时间线会导致TSet去重不了（PendingWallPushSectors等按空间扇区判断的场景就漏了）
+		friend ASCE_INLINE uint32 GetTypeHash(const FSectorID& SectorID)
+		{
+			return static_cast<uint32>(SectorID.RawID);
+		}
 		
 		uint16 RawID;
 		uint16 Reserved;
@@ -259,7 +283,10 @@ struct FSector
 		{
 			return true;
 		}
-		return (LastCost < MAX_uint8 && NewCost == MAX_uint8) || (LastCost == MAX_uint8 && NewCost < MAX_uint8);
+		// 墙状态变化 = 该格 IsWall 标志翻转（不管具体代价/方向值怎么变）
+		const bool LastWall = (LastCost & 0b10000000) != 0;
+		const bool NewWall  = (NewCost  & 0b10000000) != 0;
+		return LastWall != NewWall;
 	}
 	
 	ASCE_INLINE bool UpdateCostField(int Index, uint8 NewCost)
@@ -486,11 +513,36 @@ struct FCostFieldReplicated : public FFastArraySerializerItem
 	UPROPERTY()
 	uint8 Cost = 0;
 
+	// 墙判断与FCostField::IsWall同一语义（bit7=1 = 墙，低7位=方向码或代价）
+	ASCE_INLINE bool IsWall() const
+	{
+		return (Cost & 0b10000000) != 0;
+	}
+
+	ASCE_INLINE uint8 GetPushDirection() const
+	{
+		return Cost & 0b01111111;
+	}
+
 	void PreReplicatedRemove(const struct FWorldMapData& InArraySerializer);
 	void PostReplicatedAdd(const struct FWorldMapData& InArraySerializer);
 	void PostReplicatedChange(const struct FWorldMapData& InArraySerializer);
 };
 
+// 墙格簇：由相邻的墙格合并成的一个尽可能大的轴对齐矩形（世界坐标AABB）。
+// 墙的碰撞解算对簇做一次圆-AABB接触即可（法线=圆心到簇最近点，始终朝簇外，
+// 不会像"逐格解算"那样在相邻格交界处把法线算歪、出现朝墙内推的错误）。
+// 两端（Server/Client）基于复制的CostFields本地确定性重建，不是复制数据，不参与网络传输。
+struct FWallCluster
+{
+	FVector2D Min = FVector2D::ZeroVector;
+	FVector2D Max = FVector2D::ZeroVector;
+
+	bool Contains(const FVector2D& Point) const
+	{
+		return Point.X >= Min.X && Point.X <= Max.X && Point.Y >= Min.Y && Point.Y <= Max.Y;
+	}
+};
 
 USTRUCT()
 struct FWorldMapData : public FFastArraySerializer
@@ -653,9 +705,35 @@ public:
 
 	void UpdateWorld(float DeltaTime);	
 
+	// 重建墙格簇（FWallCluster AABB）：把连通墙格合并成尽可能大的轴对齐矩形簇。
+	// 替代旧"墙推流场方向"方案——墙的碰撞解算（圆-簇接触）只需要簇AABB，
+	// 不再需要每格存方向码。调度复用PendingWallPushSectors（墙变化时入队→UpdateWorld统一处理），
+	// 两端（Server/Client）都跑：簇数据不复制，由两端基于复制的CostFields本地确定性重建。
+	void RebuildWallClusters();
+
 	int MaxCostFieldProcessNumPerTick = 1024;
 	int MaxSectorProcessNumPerTick = 128;
 	int MaxIslandFieldProcessNumPerTick = 64; // IslandField重建要在Sector内部做一次波前扩散，比单纯弹出/校验一个Sector贵得多，单独给一个更保守的预算
+
+	// ── 墙格簇重建的调度状态 ──
+	// 变墙(状态翻转)时OnCostFieldUpdate把该格所属扇区加入，RebuildWallClusters统一处理：
+	// 集合类型保证去重（同一帧多个格子在同一个扇区只处理一次）
+	TSet<FSector::FSectorID> PendingWallPushSectors;
+
+	// 处理批次内"某墙格是否已并入某个簇"的全局标记（1 bit/格）。
+	// 用UE的TBitArray按bit存储（1 bit/格而不是1字节/格），按全局GridIndex索引，
+	// 簇合并时已归属的格子置位，后续遍历到即跳过，不会重复归簇。
+	// 批次开始一次性清空（Init(false, GridNum)），批内持续有效。
+	TBitArray<> WallGridBitmap; // 大小 = GridCountX*GridCountY，0=未入簇，1=已并入某簇
+
+	// 墙格簇列表（世界坐标AABB，两端本地重建，非复制数据，只读访问并行安全）
+	TArray<FWallCluster> WallClusters;
+
+	// 格→簇索引查找表（大小=GridCountX*GridCountY的格子总数）：
+	// 每个元素 = 该格所属簇在WallClusters里的索引（-1=不属于任何墙簇）。
+	// RebuildWallClusters时顺手填充（簇覆盖的所有格子写入索引），
+	// Solver按"单位覆盖的格子范围"查表O(1)访问，避免遍历全部簇（簇多时）。只读访问并行安全。
+	TArray<int32> GridIndexToCluster;
 protected:
 
 	void ProcessCostFields(float DeltaTime);
@@ -866,6 +944,15 @@ public:
 			MarkItemDirty(CostFields[GridIndex]);
 			PendingUpdateCostFields.Add({GridIndex, NewCost});
 		}
+	}
+
+	// 置某格为普通可通行（代价1）：等价 SetCostField(Index, 1)
+	ASCE_INLINE void SetGridPassable(uint32 GridIndex) { SetCostField(GridIndex, 1); }
+
+	// 置某格为墙，方向（推力流场方向码）由调用方给出——默认 0b01111111（无效方向占位，RebuildWallPushFlow 补全）
+	ASCE_INLINE void SetGridWall(uint32 GridIndex, uint8 PushDirection = 0b01111111)
+	{
+		SetCostField(GridIndex, 0b10000000 | (PushDirection & 0b01111111));
 	}
 
 	// 世界数据是否有未处理完的变更（Debugger 用它判断是否需要重绘）

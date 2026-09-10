@@ -32,13 +32,17 @@ public:
 
 	UPROPERTY(EditAnywhere, Category = "Movement")
 	float Height = 150.f;
+	
+	UPROPERTY(EditAnywhere, Category = "Vision")
+	int32 SightRadius = 20;
 
 	// ── 通用属性 ──
 	UPROPERTY(EditAnywhere, Category = "Attributes")
 	float MaxHealth = 100.f;
 
+	// 打包的阵营键 (index<<16 | id)，写入 FAsceTeamFragment.TeamKey；默认 0 = 单队伍冒烟
 	UPROPERTY(EditAnywhere, Category = "Attributes")
-	int32 TeamID = 0;
+	int32 TeamConfigKey = 0;
 
 	// ── 能力开关：按需勾选，决定这个单位挂哪些命令类Fragment ──
 	UPROPERTY(EditAnywhere, Category = "Capabilities")
