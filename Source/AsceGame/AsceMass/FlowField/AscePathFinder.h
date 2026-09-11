@@ -56,6 +56,16 @@ struct FPortalSearchNodeData
  * 因为查询键是(当前SectorID+当前IslandField)而不是链上的顺序位置，天然没有歧义，也天然可重入
  * (entity被击退/传送到任意已覆盖位置都能立刻查到正确方向)。
  * Plan本身由UPathFinder内部持有和管理生命周期，外部只拿一个Handle，见下方FMergedPathPlanHandle */
+/** 某扇区"到 goal 的 LOS 覆盖层"（每格 1 bit）。用于：entity 在该格能直视 goal 时直接朝 goal 转向，
+ *  忽略 (扇区,portal) 流场。Blocked 为阴影线标记（计算期用；运行时只用 HasLOS）。 */
+struct FSectorGoalLOS
+{
+	TBitArray<> HasLOS;         // SECTOR_SIZE*SECTOR_SIZE，true=该格可直视 goal
+	TBitArray<> Blocked;        // true=被阴影线挡住（波前到此为止）
+	TBitArray<> FrontierWalls;  // true=视线边缘的墙（变了就可能影响视线，用于失效过滤）
+	FSector::FSectorID SectorIDAtComputeTime; // 计算时的扇区ID(含时间戳)，用于失效判断
+};
+
 struct FMergedPathPlan
 {
 	FSourcePosition GoalSourcePosition;
@@ -65,6 +75,9 @@ struct FMergedPathPlan
 	TMap<FPortal::FPortalIndex, FPortal::FPortalIndex> NextPortalTowardsGoal;
 	
 	TMap<FSourcePosition, FPortal::FPortalIndex> SectorIslandToExitPortal;
+
+	// 到 goal 的 LOS 覆盖层（仅 goal 邻近 K 环内、且路线经过的扇区）。entity 落在 HasLOS 格上时直接朝 goal。
+	TMap<FSector::FSectorID, FSectorGoalLOS> GoalLOS;
 };
 
 /** FMergedPathPlan的外部句柄，代表一次"目标+多源"的寻路方案。
@@ -186,6 +199,9 @@ public:
 	 * 落在死区格子里；或者这个位置所在的(Sector,Island)完全没有被Plan覆盖到
 	 * (entity跑出了这批请求规划的范围，需要重新发起路径请求) */
 	bool TryGetFlowDirection(FMergedPathPlanHandle Handle, const FVector2D& EntityWorldLocation, FVector2D& OutDirection);
+
+	/** 每帧调用：最多重算 Budget 个"视线失效"的 plan（队列去重、跳过已回收 plan）。 */
+	void ProcessGoalLOSRefreshQueue(int32 Budget);
 	
 protected:
 
@@ -261,6 +277,24 @@ protected:
 	 * Target是格子坐标：种子就是这一个格子 */
 	void ComputeFlowFieldInto(FSector::FSectorID SectorID, const FFlowFieldTarget& Target, FFlowFieldResult& OutResult) const;
 
+	/** goal 邻域上限：只对"路线经过 且 扇区曼哈顿距离 goal ≤ 该值"的扇区铺 LOS（有界，一帧可完成）。 */
+	static constexpr int32 GoalLOSMaxSectorRing = 3;
+
+	/** 有界全局 LOS：从 GoalGridLocation 在 LosSectors 范围内做波前+角点阴影线（全局坐标，线自然跨扇区续），
+	 *  把每格的 HasLOS/Blocked 按扇区拆进 OutGoalLOS。 */
+	void ComputeGoalLOSOverlay(const FIntVector2& GoalGridLocation, const TSet<FSector::FSectorID>& LosSectors,
+		TMap<FSector::FSectorID, FSectorGoalLOS>& OutGoalLOS) const;
+
+	/** 由 plan 的路线扇区（∩ goal K 环）重算整份 goal LOS 覆盖层。A* 后与懒失效刷新共用。 */
+	void BuildGoalLOSForPlan(FMergedPathPlan& Plan) const;
+
+	/** 旧覆盖层判断：当前扇区的改动是否影响视线（原可见格变墙，或原视线边缘墙消失）。 */
+	bool GoalLOSAffectedByChange(const FMergedPathPlan& Plan, FSector::FSectorID SectorID) const;
+
+	/** goal LOS 重算队列（升序 plan RawID，二分插入去重）。 */
+	void EnqueueGoalLOSRefresh(uint32 PlanRawID);
+	bool IsGoalLOSRefreshQueued(uint32 PlanRawID) const;
+
 	using FIntegrationFieldArray = TArray<FIntegrationField, TInlineAllocator<SECTOR_SIZE * SECTOR_SIZE>>;
 
 	/** LOS Pass：从SeedLocalGridLocation（Sector本地坐标，[0,SECTOR_SIZE)）出发做BFS波前扩散，
@@ -305,6 +339,9 @@ public:
 protected:
 	
 	TMap<FFlowFieldKey, FFlowFieldCacheEntry> FlowFieldCache;
+
+	/** goal LOS 重算队列（升序 plan RawID）。 */
+	TArray<uint32> GoalLOSRefreshQueue;
 
 	/**
 	 * Merged Path Plan（运行时按Handle查询的寻路方案，见FMergedPathPlan/FMergedPathPlanHandle）

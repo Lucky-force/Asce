@@ -192,8 +192,10 @@ public:
 	static int32 GetWindowSize(int32 R) { return 2 * R + 1; }
 
 	/**
-	 * 计算源格 S 的可见掩码：圆内 BFS，墙格(Hv>He)自身标记可见但不透传。
-	 * OutBits 大小 = ceil(Window² / 32)。调用方负责清零/复用。
+	 * 计算源格 S 的可见掩码（窗口相对 S，半径 R 的圆内）。算法 = 波前 + 向墙角顶点投阴影线：
+	 * 4 邻波前在圆内/图内扩散；可透传格(Hv<=He)入队继续扩散；墙格(Hv>He)自身可见但不透传，
+	 * 并对其凸角顶点投射 Amanatides-Woo 阴影线（经过的格标阴影，波前不再传播）——
+	 * 与 UPathFinder::RunLOSPass/MarkShadowLine 同思路。OutBits 大小 = ceil(Window² / 32)。
 	 */
 	static void ComputeVisionForCell(const FAsceVisionHeightMap& HMap, const FIntVector2& S, uint16 He, uint16 R, TArray<uint32>& OutBits);
 

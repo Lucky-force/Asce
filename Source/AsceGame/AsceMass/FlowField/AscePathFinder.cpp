@@ -120,7 +120,105 @@ FMergedPathPlanHandle UPathFinder::RunMergeablePathRequest(const FVector2D& Goal
 		}
 	}
 
+	// ── 计算 goal 的 LOS 覆盖层：只对"路线经过 且 goal 邻域 K 环内"的扇区铺（有界，一帧完成） ──
+	BuildGoalLOSForPlan(Entry.Plan);
+
 	return Handle;
+}
+
+void UPathFinder::BuildGoalLOSForPlan(FMergedPathPlan& Plan) const
+{
+	Plan.GoalLOS.Reset();
+	if (WorldMapData == nullptr || !Plan.GoalSourcePosition.SectorID.IsValid())
+	{
+		return;
+	}
+
+	const int32 SectorCountX = WorldMapData->GetSectorCountX();
+	const int32 GoalSecX = Plan.GoalSourcePosition.SectorID.RawID % SectorCountX;
+	const int32 GoalSecY = Plan.GoalSourcePosition.SectorID.RawID / SectorCountX;
+
+	TSet<FSector::FSectorID> LosSectors;
+	for (const TPair<FSourcePosition, FPortal::FPortalIndex>& KV : Plan.SectorIslandToExitPortal)
+	{
+		const FSector::FSectorID& Sid = KV.Key.SectorID;
+		if (!Sid.IsValid())
+		{
+			continue;
+		}
+		const int32 Sx = Sid.RawID % SectorCountX;
+		const int32 Sy = Sid.RawID / SectorCountX;
+		if (FMath::Abs(Sx - GoalSecX) + FMath::Abs(Sy - GoalSecY) <= GoalLOSMaxSectorRing)
+		{
+			LosSectors.Add(Sid);
+		}
+	}
+	LosSectors.Add(Plan.GoalSourcePosition.SectorID); // goal 扇区自身必然在内
+
+	if (LosSectors.Num() == 0)
+	{
+		return;
+	}
+
+	const FIntVector2 GoalGridLocation = WorldMapData->WorldLocationToGridLocation(Plan.GoalWorldLocation);
+	ComputeGoalLOSOverlay(GoalGridLocation, LosSectors, Plan.GoalLOS);
+}
+
+void UPathFinder::EnqueueGoalLOSRefresh(uint32 PlanRawID)
+{
+	const int32 Pos = Algo::LowerBound(GoalLOSRefreshQueue, PlanRawID);
+	if (Pos < GoalLOSRefreshQueue.Num() && GoalLOSRefreshQueue[Pos] == PlanRawID)
+	{
+		return; // 已在队列，去重
+	}
+	GoalLOSRefreshQueue.Insert(PlanRawID, Pos);
+}
+
+bool UPathFinder::IsGoalLOSRefreshQueued(uint32 PlanRawID) const
+{
+	const int32 Pos = Algo::LowerBound(GoalLOSRefreshQueue, PlanRawID);
+	return Pos < GoalLOSRefreshQueue.Num() && GoalLOSRefreshQueue[Pos] == PlanRawID;
+}
+
+bool UPathFinder::GoalLOSAffectedByChange(const FMergedPathPlan& Plan, FSector::FSectorID SectorID) const
+{
+	const FSectorGoalLOS* Data = Plan.GoalLOS.Find(SectorID);
+	if (!Data || WorldMapData == nullptr)
+	{
+		return false;
+	}
+	const FSector& Sector = WorldMapData->GetSectorData(SectorID);
+	const int32 Count = FMath::Min(Data->HasLOS.Num(), Sector.CostFields.Num());
+	for (int32 i = 0; i < Count; ++i)
+	{
+		const bool bNowBlock = Sector.CostFields[i].Cost > 1;
+		if (static_cast<bool>(Data->HasLOS[i]) && bNowBlock)
+		{
+			return true; // 原本可见的格子变成墙 → 视线变了
+		}
+		if (static_cast<bool>(Data->FrontierWalls[i]) && !bNowBlock)
+		{
+			return true; // 原本挡在视线边缘的墙没了 → 可能扩大视线
+		}
+	}
+	return false;
+}
+
+void UPathFinder::ProcessGoalLOSRefreshQueue(int32 Budget)
+{
+	int32 Processed = 0;
+	while (Processed < Budget && GoalLOSRefreshQueue.Num() > 0)
+	{
+		const uint32 PlanRawID = GoalLOSRefreshQueue[0];
+		GoalLOSRefreshQueue.RemoveAt(0, 1, EAllowShrinking::No);
+
+		if (FMergedPathPlanEntry* Entry = PathPlans.Find(PlanRawID))
+		{
+			// 先确认 plan 还有效，无效就跳过
+			BuildGoalLOSForPlan(Entry->Plan);
+		}
+		++Processed;
+	}
 }
 
 void UPathFinder::AcquirePathPlan(FMergedPathPlanHandle Handle)
@@ -544,6 +642,8 @@ bool UPathFinder::TryGetFlowDirection(FMergedPathPlanHandle Handle, const FVecto
 		return false; // 地图范围外，或者落在墙/无效格子上
 	}
 
+	const FIntVector2 EntityGridLocation = WorldMapData->WorldLocationToGridLocation(EntityWorldLocation);
+
 	FFlowFieldTarget Target;
 	if (CurrentSourcePos == Plan.GoalSourcePosition)
 	{
@@ -552,6 +652,45 @@ bool UPathFinder::TryGetFlowDirection(FMergedPathPlanHandle Handle, const FVecto
 	}
 	else
 	{
+		// 先查 goal 的 LOS 覆盖层：该格能直视 goal 就直接朝 goal 转向（忽略流场）。
+		// 当前扇区发生改动：用旧覆盖层判断是否影响视线——影响则入队（后续帧摊算），本轮回退 portal 场；
+		// 与视线无关的变化则刷新时间戳、继续用旧覆盖层。
+		if (FSectorGoalLOS* SectorLOS = Entry->Plan.GoalLOS.Find(CurrentSourcePos.SectorID))
+		{
+			bool bUseOverlay = true;
+			const FSector& LiveSector = WorldMapData->GetSectorData(CurrentSourcePos.SectorID);
+			if (!LiveSector.CheckTimeStamp(SectorLOS->SectorIDAtComputeTime))
+			{
+				if (IsGoalLOSRefreshQueued(Handle.RawID))
+				{
+					bUseOverlay = false; // 已入队等待重算
+				}
+				else if (GoalLOSAffectedByChange(Entry->Plan, CurrentSourcePos.SectorID))
+				{
+					EnqueueGoalLOSRefresh(Handle.RawID);
+					bUseOverlay = false;
+				}
+				else
+				{
+					SectorLOS->SectorIDAtComputeTime = LiveSector.SectorID; // 无关变化：刷新时间戳
+				}
+			}
+
+			if (bUseOverlay)
+			{
+				const uint32 LOSIndex = WorldMapData->GridLocationToGridIndexInSector(EntityGridLocation);
+				if (LOSIndex < static_cast<uint32>(SectorLOS->HasLOS.Num()) && static_cast<bool>(SectorLOS->HasLOS[LOSIndex]))
+				{
+					const FVector2D ToGoal = Plan.GoalWorldLocation - EntityWorldLocation;
+					if (!ToGoal.IsNearlyZero())
+					{
+						OutDirection = ToGoal.GetSafeNormal();
+						return true;
+					}
+				}
+			}
+		}
+
 		const FPortal::FPortalIndex* ExitPortal = Plan.SectorIslandToExitPortal.Find(CurrentSourcePos);
 		if (!ExitPortal)
 		{
@@ -572,7 +711,7 @@ bool UPathFinder::TryGetFlowDirection(FMergedPathPlanHandle Handle, const FVecto
 	// 用同样的Key覆盖旧值即可——如果Result因为CostField变化被重算过，这里会自动换成最新的那份
 	Entry->RetainedFlowFields.FindOrAdd(FFlowFieldKey{CurrentSourcePos.SectorID.RawID, Target}) = Result;
 
-	const FIntVector2 GridLocation = WorldMapData->WorldLocationToGridLocation(EntityWorldLocation);
+	const FIntVector2 GridLocation = EntityGridLocation;
 	const uint32 LocalIndex = WorldMapData->GridLocationToGridIndexInSector(GridLocation);
 	if (LocalIndex >= static_cast<uint32>(Result->Directions.Num()))
 	{
@@ -825,6 +964,181 @@ void UPathFinder::MarkShadowLine(const FIntVector2& SeedLocalGridLocation, const
 			CellCoord.Y += StepY;
 			TMaxX += TDeltaX;
 			TMaxY += TDeltaY;
+		}
+	}
+}
+
+void UPathFinder::ComputeGoalLOSOverlay(const FIntVector2& GoalGridLocation, const TSet<FSector::FSectorID>& LosSectors,
+	TMap<FSector::FSectorID, FSectorGoalLOS>& OutGoalLOS) const
+{
+	OutGoalLOS.Reset();
+	if (WorldMapData == nullptr || LosSectors.Num() == 0)
+	{
+		return;
+	}
+
+	// 预建每个允许扇区的位图 + 记录当前时间戳（失效判断用）
+	for (const FSector::FSectorID& SectorID : LosSectors)
+	{
+		FSectorGoalLOS& Data = OutGoalLOS.FindOrAdd(SectorID);
+		Data.HasLOS.Init(false, SECTOR_SIZE * SECTOR_SIZE);
+		Data.Blocked.Init(false, SECTOR_SIZE * SECTOR_SIZE);
+		Data.FrontierWalls.Init(false, SECTOR_SIZE * SECTOR_SIZE);
+		Data.SectorIDAtComputeTime = WorldMapData->GetSectorData(SectorID).SectorID;
+	}
+
+	// —— 全局格访问器（波前/画线全在全局坐标下做，跨扇区自然连续） ——
+	auto SectorOf = [&](const FIntVector2& Cell) -> FSector::FSectorID
+	{
+		return WorldMapData->GridLocationToSectorId(Cell);
+	};
+	auto IsAllowed = [&](const FIntVector2& Cell) -> bool
+	{
+		const FSector::FSectorID Sid = SectorOf(Cell);
+		return Sid.IsValid() && LosSectors.Contains(Sid);
+	};
+	auto LocalIndex = [&](const FIntVector2& Cell) -> int32
+	{
+		return static_cast<int32>(WorldMapData->GridLocationToGridIndexInSector(Cell));
+	};
+	auto CellCost = [&](const FIntVector2& Cell) -> uint8
+	{
+		return WorldMapData->GetSectorData(SectorOf(Cell)).CostFields[LocalIndex(Cell)].Cost;
+	};
+	// 墙(cost>1) 或 越界/非允许扇区 都算"挡"
+	auto IsBlockingCell = [&](const FIntVector2& Cell) -> bool
+	{
+		return !IsAllowed(Cell) || CellCost(Cell) > 1;
+	};
+	auto GetHasLOS = [&](const FIntVector2& Cell) -> bool
+	{
+		const FSectorGoalLOS* Data = OutGoalLOS.Find(SectorOf(Cell));
+		return Data && Data->HasLOS[LocalIndex(Cell)];
+	};
+	auto SetHasLOS = [&](const FIntVector2& Cell)
+	{
+		OutGoalLOS.FindChecked(SectorOf(Cell)).HasLOS[LocalIndex(Cell)] = true;
+	};
+	auto GetBlocked = [&](const FIntVector2& Cell) -> bool
+	{
+		const FSectorGoalLOS* Data = OutGoalLOS.Find(SectorOf(Cell));
+		return Data && Data->Blocked[LocalIndex(Cell)];
+	};
+	auto SetBlocked = [&](const FIntVector2& Cell)
+	{
+		OutGoalLOS.FindChecked(SectorOf(Cell)).Blocked[LocalIndex(Cell)] = true;
+	};
+
+	const FVector2D GoalCenter(GoalGridLocation.X + 0.5f, GoalGridLocation.Y + 0.5f);
+
+	// 阴影线：从 goal 格心向墙角顶点延伸（全局 Amanatides-Woo），把经过的允许格标 Blocked。
+	// 直线一条到底，跨扇区时自然续上——等价文章的 Blocked 标志跨边界续线。
+	auto CastShadow = [&](const FVector2D& CornerVertex)
+	{
+		FVector2D Dir = CornerVertex - GoalCenter;
+		if (Dir.SizeSquared() < KINDA_SMALL_NUMBER)
+		{
+			return;
+		}
+		Dir.Normalize();
+		const FVector2D RayOrigin = CornerVertex + Dir * 0.001f;
+
+		const int32 StepX = (Dir.X > 0.f) ? 1 : ((Dir.X < 0.f) ? -1 : 0);
+		const int32 StepY = (Dir.Y > 0.f) ? 1 : ((Dir.Y < 0.f) ? -1 : 0);
+
+		FIntVector2 Cell(FMath::FloorToInt(RayOrigin.X), FMath::FloorToInt(RayOrigin.Y));
+
+		constexpr float Infinite = TNumericLimits<float>::Max();
+		float TMaxX = Infinite, TDeltaX = Infinite;
+		if (StepX != 0)
+		{
+			TDeltaX = FMath::Abs(1.f / Dir.X);
+			const float NextX = static_cast<float>(StepX > 0 ? Cell.X + 1 : Cell.X);
+			TMaxX = FMath::Abs((NextX - RayOrigin.X) / Dir.X);
+		}
+		float TMaxY = Infinite, TDeltaY = Infinite;
+		if (StepY != 0)
+		{
+			TDeltaY = FMath::Abs(1.f / Dir.Y);
+			const float NextY = static_cast<float>(StepY > 0 ? Cell.Y + 1 : Cell.Y);
+			TMaxY = FMath::Abs((NextY - RayOrigin.Y) / Dir.Y);
+		}
+
+		const int32 MaxSteps = GoalLOSMaxSectorRing * SECTOR_SIZE * 4 + 8;
+		for (int32 Step = 0; Step < MaxSteps; ++Step)
+		{
+			if (!IsAllowed(Cell))
+			{
+				break; // 出允许区即停（有界）
+			}
+			SetBlocked(Cell);
+
+			if (TMaxX < TMaxY) { Cell.X += StepX; TMaxX += TDeltaX; }
+			else if (TMaxY < TMaxX) { Cell.Y += StepY; TMaxY += TDeltaY; }
+			else { Cell.X += StepX; Cell.Y += StepY; TMaxX += TDeltaX; TMaxY += TDeltaY; }
+		}
+	};
+
+	static const FLocalDir Directions[4] = { {0, 1}, {1, 0}, {0, -1}, {-1, 0} };
+
+	TArray<FIntVector2> Queue;
+	Queue.Reserve(GoalLOSMaxSectorRing * GoalLOSMaxSectorRing * SECTOR_SIZE * SECTOR_SIZE);
+	SetHasLOS(GoalGridLocation);
+	Queue.Add(GoalGridLocation);
+
+	int32 Head = 0;
+	while (Head < Queue.Num())
+	{
+		const FIntVector2 Cur = Queue[Head++];
+
+		for (const FLocalDir& Dir : Directions)
+		{
+			const FIntVector2 N(Cur.X + Dir.DX, Cur.Y + Dir.DY);
+			if (!IsAllowed(N) || GetBlocked(N) || GetHasLOS(N))
+			{
+				continue;
+			}
+
+			if (CellCost(N) <= 1)
+			{
+				SetHasLOS(N);
+				Queue.Add(N);
+				continue;
+			}
+
+			// 视线边缘的墙：记录（墙变化时用于判断是否影响视线）
+			OutGoalLOS.FindChecked(SectorOf(N)).FrontierWalls[LocalIndex(N)] = true;
+
+			// 墙：不标 LOS；找凸角投阴影线（移植自 RunLOSPass，全局坐标）
+			FIntVector2 P1, P2;
+			if (Dir.DX == 0)
+			{
+				P1 = FIntVector2(N.X + 1, N.Y);
+				P2 = FIntVector2(N.X - 1, N.Y);
+			}
+			else
+			{
+				P1 = FIntVector2(N.X, N.Y + 1);
+				P2 = FIntVector2(N.X, N.Y - 1);
+			}
+			const bool bP1Blocked = IsBlockingCell(P1);
+			const bool bP2Blocked = IsBlockingCell(P2);
+			if (bP1Blocked && bP2Blocked)
+			{
+				continue; // 墙内部，不是角
+			}
+
+			FVector2D V1, V2;
+			GetNearEdgeVertices(N, Dir, V1, V2);
+
+			if (!bP1Blocked && !IsBlockingCell(FIntVector2(P1.X + Dir.DX, P1.Y + Dir.DY)))
+			{
+				CastShadow(V1);
+			}
+			if (!bP2Blocked && !IsBlockingCell(FIntVector2(P2.X + Dir.DX, P2.Y + Dir.DY)))
+			{
+				CastShadow(V2);
+			}
 		}
 	}
 }
@@ -1195,5 +1509,4 @@ void UPathFinder::RequestFlowFieldsForChain(uint16 SourceSectorRawID, uint16 Goa
 #endif
 	OutResults.Add(GetOrComputeFlowField(GoalSectorRawID, GoalTarget));
 }
-
 

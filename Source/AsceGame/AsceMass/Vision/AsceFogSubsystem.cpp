@@ -194,6 +194,29 @@ namespace
 			return (Words[Idx >> 5] & (1u << (Idx & 31))) != 0;
 		}
 	};
+
+	/** 4 邻方向（与流场 LOS 一致：上/右/下/左）。 */
+	struct FVision4Dir { int32 DX; int32 DY; };
+	static const FVision4Dir FVision4Dirs[4] = { {0, 1}, {1, 0}, {0, -1}, {-1, 0} };
+
+	/** 障碍格 Obstacle 朝向来源方向 Dir 的近边上两个顶点（移植自 UPathFinder::GetNearEdgeVertices）。 */
+	void GetVisionNearEdgeVertices(const FIntVector2& Obstacle, const FVision4Dir& Dir, FVector2D& OutVertexForPerp1, FVector2D& OutVertexForPerp2)
+	{
+		if (Dir.DX == 0)
+		{
+			// Dir 是上/下：近边是水平边，Perp1=+X 侧，Perp2=-X 侧
+			const float Y = (Dir.DY > 0) ? static_cast<float>(Obstacle.Y) : static_cast<float>(Obstacle.Y + 1);
+			OutVertexForPerp1 = FVector2D(Obstacle.X + 1, Y);
+			OutVertexForPerp2 = FVector2D(Obstacle.X, Y);
+		}
+		else
+		{
+			// Dir 是左/右：近边是竖直边，Perp1=+Y 侧，Perp2=-Y 侧
+			const float X = (Dir.DX > 0) ? static_cast<float>(Obstacle.X) : static_cast<float>(Obstacle.X + 1);
+			OutVertexForPerp1 = FVector2D(X, Obstacle.Y + 1);
+			OutVertexForPerp2 = FVector2D(X, Obstacle.Y);
+		}
+	}
 }
 
 void UAsceFogSubsystem::ComputeVisionForCell(const FAsceVisionHeightMap& HMap, const FIntVector2& S, uint16 He, uint16 R, TArray<uint32>& OutBits)
@@ -206,20 +229,113 @@ void UAsceFogSubsystem::ComputeVisionForCell(const FAsceVisionHeightMap& HMap, c
 
 	const int32 Window = 2 * RClamped + 1;
 	const int32 TotalBits = Window * Window;
-	OutBits.SetNumZeroed((TotalBits + 31) / 32);
+	const int32 WordCount = (TotalBits + 31) / 32;
+	OutBits.SetNumZeroed(WordCount);
 
 	if (!HMap.IsValid())
 	{
 		return; // 空高度场 → 全不可见
 	}
 
-	FWindowBits Bits(OutBits);
+	FWindowBits Vis(OutBits);          // 可见
+	TArray<uint32> ShadowWords;
+	ShadowWords.SetNumZeroed(WordCount);
+	FWindowBits Shadow(ShadowWords);   // 被阴影线挡住（波前到此为止）
 
 	const int32 RadiusSq = RClamped * RClamped;
-	const int32 CenterIndex = RClamped * Window + RClamped; // 窗口内 (R, R)
+	const int32 CenterIndex = RClamped * Window + RClamped;
 
-	// visited 语义：置位 = 该格已判定且可见（墙格也可见，见 §4）。非墙格才入队继续扩散。
-	Bits.Set(CenterIndex);
+	auto InCircle = [&](int32 LX, int32 LY) -> bool
+	{
+		const int32 Ox = LX - RClamped;
+		const int32 Oy = LY - RClamped;
+		return Ox * Ox + Oy * Oy <= RadiusSq;
+	};
+	auto ToGlobal = [&](int32 LX, int32 LY) -> FIntVector2
+	{
+		return FIntVector2(S.X + LX - RClamped, S.Y + LY - RClamped);
+	};
+	auto IsWall = [&](const FIntVector2& G) -> bool
+	{
+		return HMap.GetEffectiveHeight(HMap.CellToIndex(G)) > He; // Hv > He
+	};
+	auto IsBlocked = [&](const FIntVector2& G) -> bool
+	{
+		return !HMap.IsInside(G) || IsWall(G); // 图外或墙都算"挡"
+	};
+
+	const FVector2D SeedCenter(S.X + 0.5f, S.Y + 0.5f);
+
+	// 从 seed 向墙角顶点投射阴影线（Amanatides-Woo 体素遍历）：把圆内经过的格子标 Shadow，
+	// 波前遇到 Shadow 就不再传播 —— 与 UPathFinder::MarkShadowLine 同思路。
+	auto CastShadow = [&](const FVector2D& CornerVertex)
+	{
+		FVector2D Dir = CornerVertex - SeedCenter;
+		if (Dir.SizeSquared() < KINDA_SMALL_NUMBER)
+		{
+			return;
+		}
+		Dir.Normalize();
+		const FVector2D RayOrigin = CornerVertex + Dir * 0.001f;
+
+		const int32 StepX = (Dir.X > 0.f) ? 1 : ((Dir.X < 0.f) ? -1 : 0);
+		const int32 StepY = (Dir.Y > 0.f) ? 1 : ((Dir.Y < 0.f) ? -1 : 0);
+
+		FIntVector2 Cell(FMath::FloorToInt(RayOrigin.X), FMath::FloorToInt(RayOrigin.Y));
+
+		constexpr float Infinite = TNumericLimits<float>::Max();
+		float TMaxX = Infinite, TDeltaX = Infinite;
+		if (StepX != 0)
+		{
+			TDeltaX = FMath::Abs(1.f / Dir.X);
+			const float NextX = static_cast<float>(StepX > 0 ? Cell.X + 1 : Cell.X);
+			TMaxX = FMath::Abs((NextX - RayOrigin.X) / Dir.X);
+		}
+		float TMaxY = Infinite, TDeltaY = Infinite;
+		if (StepY != 0)
+		{
+			TDeltaY = FMath::Abs(1.f / Dir.Y);
+			const float NextY = static_cast<float>(StepY > 0 ? Cell.Y + 1 : Cell.Y);
+			TMaxY = FMath::Abs((NextY - RayOrigin.Y) / Dir.Y);
+		}
+
+		const int32 MaxSteps = 2 * RClamped + 4;
+		for (int32 Step = 0; Step < MaxSteps; ++Step)
+		{
+			const int32 LX = Cell.X - S.X + RClamped;
+			const int32 LY = Cell.Y - S.Y + RClamped;
+			if (LX < 0 || LX >= Window || LY < 0 || LY >= Window)
+			{
+				break; // 出窗口
+			}
+			if (InCircle(LX, LY))
+			{
+				Shadow.Set(LY * Window + LX);
+			}
+
+			if (TMaxX < TMaxY)
+			{
+				Cell.X += StepX;
+				TMaxX += TDeltaX;
+			}
+			else if (TMaxY < TMaxX)
+			{
+				Cell.Y += StepY;
+				TMaxY += TDeltaY;
+			}
+			else
+			{
+				// 正好穿过格点（对角）：两方向都走，避免从对角缝隙漏过而不标记
+				Cell.X += StepX;
+				Cell.Y += StepY;
+				TMaxX += TDeltaX;
+				TMaxY += TDeltaY;
+			}
+		}
+	};
+
+	// 中心（源格）可见
+	Vis.Set(CenterIndex);
 
 	TArray<int32> Queue;
 	Queue.Reserve(TotalBits);
@@ -232,45 +348,84 @@ void UAsceFogSubsystem::ComputeVisionForCell(const FAsceVisionHeightMap& HMap, c
 		const int32 CurX = Cur % Window;
 		const int32 CurY = Cur / Window;
 
-		auto TryNeighbor = [&](int32 NX, int32 NY)
+		for (const FVision4Dir& Dir : FVision4Dirs)
 		{
+			const int32 NX = CurX + Dir.DX;
+			const int32 NY = CurY + Dir.DY;
 			if (NX < 0 || NX >= Window || NY < 0 || NY >= Window)
 			{
-				return;
+				continue;
 			}
-			const int32 OffX = NX - RClamped;
-			const int32 OffY = NY - RClamped;
-			if (OffX * OffX + OffY * OffY > RadiusSq)
+			if (!InCircle(NX, NY))
 			{
-				return; // 圆外：不可达（有意近似，见 §4"范围界定"）
+				continue; // 圆外
 			}
 			const int32 NIndex = NY * Window + NX;
-			if (Bits.Test(NIndex))
+			if (Shadow.Test(NIndex))
 			{
-				return; // 已判定
+				continue; // 处于阴影
 			}
 
-			// 图外不置位、不扩散
-			const FIntVector2 Global(S.X + OffX, S.Y + OffY);
-			if (!HMap.IsInside(Global))
+			const FIntVector2 G = ToGlobal(NX, NY);
+			if (!HMap.IsInside(G))
 			{
-				return;
+				continue; // 图外：不可见、不扩散
 			}
 
-			// 标记可见（墙格自身可见），再判断是否可透传
-			Bits.Set(NIndex);
-			const uint32 EffectiveH = HMap.GetEffectiveHeight(HMap.CellToIndex(Global));
-			const bool bWall = EffectiveH > static_cast<uint32>(He);
-			if (!bWall)
+			if (!IsWall(G))
 			{
+				if (Vis.Test(NIndex))
+				{
+					continue; // 已处理的空地
+				}
+				Vis.Set(NIndex);
 				Queue.Add(NIndex);
+				continue;
 			}
-		};
 
-		TryNeighbor(CurX - 1, CurY);
-		TryNeighbor(CurX + 1, CurY);
-		TryNeighbor(CurX, CurY - 1);
-		TryNeighbor(CurX, CurY + 1);
+			// 墙：可见但不透传。墙可被多个相邻空地从不同方向到达，每次都尝试投阴影（不漏角）。
+			Vis.Set(NIndex);
+
+			// 找凸角并投阴影线（移植自 RunLOSPass）
+			FIntVector2 P1, P2;
+			if (Dir.DX == 0)
+			{
+				P1 = FIntVector2(G.X + 1, G.Y); // +X 侧
+				P2 = FIntVector2(G.X - 1, G.Y); // -X 侧
+			}
+			else
+			{
+				P1 = FIntVector2(G.X, G.Y + 1); // +Y 侧
+				P2 = FIntVector2(G.X, G.Y - 1); // -Y 侧
+			}
+
+			const bool bP1Blocked = IsBlocked(P1);
+			const bool bP2Blocked = IsBlocked(P2);
+			if (bP1Blocked && bP2Blocked)
+			{
+				continue; // 两侧都挡：墙内部，不是角
+			}
+
+			FVector2D V1, V2;
+			GetVisionNearEdgeVertices(G, Dir, V1, V2);
+
+			if (!bP1Blocked)
+			{
+				const FIntVector2 Diag1(P1.X + Dir.DX, P1.Y + Dir.DY);
+				if (!IsBlocked(Diag1)) // 对角也空才是真正的凸角
+				{
+					CastShadow(V1);
+				}
+			}
+			if (!bP2Blocked)
+			{
+				const FIntVector2 Diag2(P2.X + Dir.DX, P2.Y + Dir.DY);
+				if (!IsBlocked(Diag2))
+				{
+					CastShadow(V2);
+				}
+			}
+		}
 	}
 }
 
