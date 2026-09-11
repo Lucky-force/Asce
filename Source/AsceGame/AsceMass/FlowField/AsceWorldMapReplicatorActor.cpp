@@ -1,6 +1,8 @@
 ﻿// AsceWorldMapReplicatorActor.cpp
 #include "AsceWorldMapReplicatorActor.h"
 #include "AscePathFindingSubsystem.h"
+#include "AsceMass/Bake/AsceMapDims.h"
+#include "AsceMass/Bake/AsceBakedMapData.h"
 #include "Net/UnrealNetwork.h"
 #include "AsceMass/Vision/AsceFogSubsystem.h"
 #include "AsceMass/SpatialGrid/AsceSpatialGridSubsystem.h"
@@ -20,41 +22,12 @@ void AAsceWorldMapReplicatorActor::GetLifetimeReplicatedProps(TArray<FLifetimePr
 
 int32 AAsceWorldMapReplicatorActor::GetVisionScale() const
 {
-	// 按当前 GRID_SIZE 现算可用 Scale 表：所有能整除 GRID_SIZE、>1 且为偶数的因子，升序。
-	// 保证 VisionCell = GRID_SIZE / Scale 为整数。设置/初始化时才调用，开销无所谓。
-	const int32 GridSize = FMath::Max(1, FMath::RoundToInt32(AsceVision::FlowFieldGridSizeCm));
-
-	TArray<int32> Scales;
-	Scales.Reserve(16);
-	for (int32 S = 2; S <= GridSize; S += 2)
-	{
-		if ((GridSize % S) == 0)
-		{
-			Scales.Add(S);
-		}
-	}
-	if (Scales.Num() == 0)
-	{
-		return 2; // 理论上 GRID_SIZE>1 且为偶数时至少有一个因子
-	}
-
-	const int32 Idx = FMath::Clamp(VisionDetailLevel, 1, Scales.Num()) - 1;
-	return Scales[Idx];
+	return AsceMapDims::GetVisionScale(VisionDetailLevel);
 }
 
 void AAsceWorldMapReplicatorActor::AlignSectorCounts(int32& OutSectorX, int32& OutSectorY) const
 {
-	// 视野网格宽 = SectorCount * SECTOR_SIZE * Scale。
-	// 要求它是 TileCells 的整数倍：既保证行字对齐(GridW%32==0)，又保证脏 tile 完整(无边界行/列)，
-	// 这样 ExtractTileWords 可以直接按行 memcpy。向上取整扇区数到满足该约束的最小步长。
-	const int32 Scale = GetVisionScale();
-	const int32 Factor = FMath::Max(1, SECTOR_SIZE * Scale); // 每扇区对应的视野格数
-	const int32 AlignUnit = UAsceFogSubsystem::TileCells;    // 64
-	const int32 Gcd = FMath::Max(1, FMath::GreatestCommonDivisor(Factor, AlignUnit));
-	const int32 Step = FMath::Max(1, AlignUnit / Gcd);
-
-	OutSectorX = FMath::Max(1, FMath::DivideAndRoundUp(SectorCountX, Step) * Step);
-	OutSectorY = FMath::Max(1, FMath::DivideAndRoundUp(SectorCountY, Step) * Step);
+	AsceMapDims::AlignSectorCounts(OutSectorX, OutSectorY, GetVisionScale(), UAsceFogSubsystem::TileCells);
 }
 
 void AAsceWorldMapReplicatorActor::InitializeMapDimensions()
@@ -65,23 +38,58 @@ void AAsceWorldMapReplicatorActor::InitializeMapDimensions()
 	SectorCountX = SectorX;
 	SectorCountY = SectorY;
 
-	// 两端都初始化地图数据：尺寸/扇区结构由本 Actor 的配置在两端一致地本地初始化，
-	// CostFields 的"内容"（代价/墙）才是权威端独有、通过 FastArray 复制覆盖的部分。
-	// （客户端也需要 GridCountX/Y 等结构来解析复制的 CostFields 索引，否则寻路/墙簇是空图。）
-	// TODO: 关卡静态障碍物/地形分析结果灌入WorldMapData的真正入口（权威端）。
-	WorldMapData.InitWorldMapData(
-		static_cast<uint8>(SectorX), static_cast<uint8>(SectorY));
-
-	// 两端都做：由扇区数派生维度写入 Fog / SpatialGrid
 	const int32 Scale = GetVisionScale();
 	const int32 FlowGridX = SectorX * SECTOR_SIZE;
 	const int32 FlowGridY = SectorY * SECTOR_SIZE;
+	const int32 VisionGridX = FlowGridX * Scale;
+	const int32 VisionGridY = FlowGridY * Scale;
 	const float VisionCellCm = AsceVision::FlowFieldGridSizeCm / static_cast<float>(Scale);
 	AsceVision::ValidateCellSizeConfig(VisionCellCm);
 
+	// 校验烘焙数据尺寸与当前配置一致（不一致就不应用，避免踩内存）
+	const bool bBaked = BakedMapData != nullptr;
+	const bool bBakedDimsOk = bBaked
+		&& BakedMapData->SectorCountX == SectorX && BakedMapData->SectorCountY == SectorY
+		&& BakedMapData->FlowGridW == FlowGridX && BakedMapData->FlowGridH == FlowGridY
+		&& BakedMapData->VisionGridW == VisionGridX && BakedMapData->VisionGridH == VisionGridY;
+	if (bBaked && !bBakedDimsOk)
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("[AsceWorldMap] BakedMapData 尺寸与配置不匹配，忽略烘焙数据（baked %dx%d / flow %dx%d / vis %dx%d）"),
+			BakedMapData->SectorCountX, BakedMapData->SectorCountY,
+			BakedMapData->FlowGridW, BakedMapData->FlowGridH,
+			BakedMapData->VisionGridW, BakedMapData->VisionGridH);
+	}
+
+	// 两端都初始化地图数据：尺寸/扇区结构由本 Actor 的配置在两端一致地本地初始化，
+	// CostFields 的"内容"（代价/墙）才是权威端独有、通过 FastArray 复制覆盖的部分。
+	// （客户端也需要 GridCountX/Y 等结构来解析复制的 CostFields 索引，否则寻路/墙簇是空图。）
+	WorldMapData.InitWorldMapData(
+		static_cast<uint8>(SectorX), static_cast<uint8>(SectorY));
+
+	// 权威端：应用烘焙阻挡（CostFields 内容为权威端独有）
+	if (HasAuthority() && bBakedDimsOk)
+	{
+		const int32 FlowCount = FlowGridX * FlowGridY;
+		for (int32 i = 0; i < FlowCount; ++i)
+		{
+			const uint8 Cost = (i < BakedMapData->Blocked.Num() && BakedMapData->Blocked[i])
+				? static_cast<uint8>(0b10000000) // 墙位
+				: static_cast<uint8>(1);         // 可通行
+			WorldMapData.SetCostField(static_cast<uint32>(i), Cost);
+		}
+	}
+
+	// 两端都做：写入视野高度场（本地数据，不复制）
 	if (UAsceFogSubsystem* Fog = UAsceFogSubsystem::Get(this))
 	{
-		Fog->InitializeVisionMap(FlowGridX * Scale, FlowGridY * Scale, VisionCellCm);
+		Fog->InitializeVisionMap(VisionGridX, VisionGridY, VisionCellCm);
+
+		if (bBakedDimsOk && Fog->GetHeightMap().IsValid())
+		{
+			TArray<uint16> Heights = BakedMapData->StaticHeights; // 拷贝，避免 move 掉资产数据
+			Fog->GetHeightMap().SetStaticHeights(MoveTemp(Heights));
+		}
 	}
 
 	if (UAsceSpatialGridSubsystem* SpatialGrid = UAsceSpatialGridSubsystem::Get(this))
@@ -92,9 +100,9 @@ void AAsceWorldMapReplicatorActor::InitializeMapDimensions()
 		SpatialGrid->ConstructGrid(FVector2D::ZeroVector, WorldEnd, SpatialMinEntityRadius);
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("[AsceWorldMap] 初始化地图：%d x %d 扇区，流场格 %d x %d，视野格 %d x %d（Level=%d, Scale=%d, %.1fcm/格）"),
-		SectorX, SectorY, FlowGridX, FlowGridY, FlowGridX * Scale, FlowGridY * Scale,
-		VisionDetailLevel, Scale, VisionCellCm);
+	UE_LOG(LogTemp, Log, TEXT("[AsceWorldMap] 初始化地图：%d x %d 扇区，流场格 %d x %d，视野格 %d x %d（Level=%d, Scale=%d, %.1fcm/格, Baked=%s）"),
+		SectorX, SectorY, FlowGridX, FlowGridY, VisionGridX, VisionGridY,
+		VisionDetailLevel, Scale, VisionCellCm, bBakedDimsOk ? TEXT("yes") : TEXT("no"));
 }
 
 void AAsceWorldMapReplicatorActor::BeginPlay()

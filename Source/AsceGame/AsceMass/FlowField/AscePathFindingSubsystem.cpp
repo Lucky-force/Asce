@@ -29,6 +29,23 @@ UAscePathFindingSubsystem* UAscePathFindingSubsystem::Get(const UObject* WorldCo
 	return nullptr;
 }
 
+void UAscePathFindingSubsystem::Tick(float DeltaTime)
+{
+	Super::Tick(DeltaTime);
+
+	// 每帧给 goal LOS 失效队列一个预算（与实体寻路调用解耦，即使本帧没有实体也推进重算）。
+	constexpr int32 GoalLOSRefreshBudgetPerFrame = 10;
+	if (PathFinder)
+	{
+		PathFinder->ProcessGoalLOSRefreshQueue(GoalLOSRefreshBudgetPerFrame);
+	}
+}
+
+TStatId UAscePathFindingSubsystem::GetStatId() const
+{
+	RETURN_QUICK_DECLARE_CYCLE_STAT(UAscePathFindingSubsystem, STATGROUP_Tickables);
+}
+
 void UAscePathFindingSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 {
 	Super::OnWorldBeginPlay(InWorld);

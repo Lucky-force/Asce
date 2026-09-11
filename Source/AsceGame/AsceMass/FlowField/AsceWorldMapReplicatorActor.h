@@ -5,6 +5,8 @@
 #include "AsceMass/FlowField/AsceFlowFieldCores.h"
 #include "AsceWorldMapReplicatorActor.generated.h"
 
+class UAsceBakedMapData;
+
 /**
  * 流场寻路代价数据（FWorldMapData）的网络复制权威持有者。
  *
@@ -52,6 +54,10 @@ public:
 
 	/** 初始化：对齐扇区数，派生并写入 Fog / SpatialGrid（两端都调）；权威端额外 init WorldMapData。 */
 	void InitializeMapDimensions();
+
+	/** 编辑器烘焙的初始地图数据（阻挡 + 地形高度）；为空则占位（全通行、高度 0）。 */
+	UPROPERTY(EditAnywhere, Category = "Asce|Map")
+	TObjectPtr<UAsceBakedMapData> BakedMapData;
 
 	// Server权威数据源；Client端这个结构体的内容完全由FastArray复制驱动，
 	// 不应该在Client上调用WorldMapData.SetCostField(...)。

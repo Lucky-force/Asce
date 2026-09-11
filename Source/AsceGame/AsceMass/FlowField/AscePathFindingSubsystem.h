@@ -28,7 +28,7 @@ class AAsceWorldMapReplicatorActor;
  * PathFinder指向FallbackEmptyWorldMapData兜底，避免读到未初始化内存。
  */
 UCLASS()
-class UAscePathFindingSubsystem : public UWorldSubsystem
+class UAscePathFindingSubsystem : public UTickableWorldSubsystem
 {
 	GENERATED_BODY()
 
@@ -36,6 +36,10 @@ public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
 	virtual void OnWorldBeginPlay(UWorld& InWorld) override;
+
+	// UTickableWorldSubsystem：每帧驱动 goal LOS 失效队列重算
+	virtual void Tick(float DeltaTime) override;
+	virtual TStatId GetStatId() const override;
 
 	UPathFinder* GetPathFinder() const { return PathFinder; }
 	FWorldMapData* GetWorldMapDataMutableForAuthority();
