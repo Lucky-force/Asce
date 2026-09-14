@@ -5,6 +5,7 @@
 #include "MassEntityManager.h"
 #include "AsceMass/FlowField/AscePathFinder.h"
 #include "AsceMass/Fragments/AsceOrderFragments.h"
+#include "AsceMass/Fragments/AsceMovementFragments.h"
 
 void FAsceMoveOrderExecutor::ApplyMergedMoveOrder(
 	FMassEntityManager& EntityManager,
@@ -22,6 +23,9 @@ void FAsceMoveOrderExecutor::ApplyMergedMoveOrder(
 
 	const FMergedPathPlanHandle PlanHandle = PathFinder.RunMergeablePathRequest(GoalWorldLocation, EntityWorldLocations2D);
 
+	// 登记组成员：disruption（传送/死亡等）事件后，到达处理器按这份名单直接遍历重置整组
+	PathFinder.RegisterPlanMembers(PlanHandle, ValidHandles);
+
 	for (const FMassEntityHandle& Handle : ValidHandles)
 	{
 		FAsceMoveOrderFragment* MoveOrder = EntityManager.GetFragmentDataPtr<FAsceMoveOrderFragment>(Handle);
@@ -31,7 +35,9 @@ void FAsceMoveOrderExecutor::ApplyMergedMoveOrder(
 			continue;
 		}
 
-		if (MoveOrder->PathPlanHandle.IsValid())
+		// 注意：已到达的订单在到达时已经 Release 过（Handle 只保留 RawID），
+		// 所以只有 bHasOrder==true（订单还在执行中）才需要/才能 Release，否则会重复释放。
+		if (MoveOrder->bHasOrder && MoveOrder->PathPlanHandle.IsValid())
 		{
 			PathFinder.ReleasePathPlan(MoveOrder->PathPlanHandle);
 		}
@@ -44,5 +50,11 @@ void FAsceMoveOrderExecutor::ApplyMergedMoveOrder(
 		MoveOrder->AcceptanceRadiusSquared = AcceptanceRadiusSquared;
 		MoveOrder->bHasOrder = true;
 		MoveOrder->OrderSequence = OrderSequence;
+
+		// 新订单 = 进入"移动订单执行中"状态（见 FAsceMovementSimStateFragment::bArrived）
+		if (FAsceMovementSimStateFragment* SimState = EntityManager.GetFragmentDataPtr<FAsceMovementSimStateFragment>(Handle))
+		{
+			SimState->bArrived = false;
+		}
 	}
 }

@@ -11,6 +11,8 @@ class UAsceMovementSteeringProcessor;
 class UAsceMovementOrientationProcessor;
 class UAsceMovementCorrectionProcessor;
 class UAsceMassCollisionSolverProcessor;
+class UAsceTerrainHeightProcessor;
+class UAsceArrivalProcessor;
 class UMassApplyMovementProcessor;
 
 /**
@@ -21,13 +23,15 @@ class UMassApplyMovementProcessor;
  * FMassProcessingContext，手动UE::Mass::Executor::Run逐个执行处理器。
  *
  * 执行顺序(手动编排，组依赖在单处理器Run时被忽略)：
- *   Steering → ApplyMovement → CollisionSolver → Orientation → Correction
+ *   Steering → ApplyMovement → CollisionSolver → Arrival → TerrainHeight → Orientation → Correction
  * 对应：
  *   1. UAsceMovementSteeringProcessor：决策(写DesiredVelocity)，AllNetModes
  *   2. UMassApplyMovementProcessor：引擎积分(DesiredVelocity→Velocity→位置)，AllNetModes
  *   3. UAsceMassCollisionSolverProcessor：位置级碰撞求解(圆-圆半量+圆-墙簇全量+速度投影，并行两轮)，AllNetModes
- *   4. UAsceMovementOrientationProcessor：朝向=速度方向，AllNetModes
- *   5. UAsceMovementCorrectionProcessor：客户端位置误差修正，仅Client
+ *   4. UAsceArrivalProcessor：到达判定(纯几何：到点/接触已到达同组单位)+顶飞回退+disruption组重置，AllNetModes
+ *   5. UAsceTerrainHeightProcessor：按静态高度场双线性插值贴地(写位置Z)，AllNetModes
+ *   6. UAsceMovementOrientationProcessor：朝向=速度方向，AllNetModes
+ *   7. UAsceMovementCorrectionProcessor：客户端位置误差修正，仅Client
  *
  * 注意：
  * - 处理器对象用NewObject挂在Subsystem名下(UObject生命周期归World)，不需要手动销毁。
@@ -68,6 +72,12 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMassProcessor> CollisionSolverProcessor;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMassProcessor> ArrivalProcessor;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMassProcessor> TerrainHeightProcessor;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMassProcessor> OrientationProcessor;

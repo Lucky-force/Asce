@@ -63,9 +63,10 @@ void AAsceFlowFieldDebugger::TryBindMap()
 	WorldMapData->OnCostFieldChanged.AddUObject(this, &AAsceFlowFieldDebugger::OnCostFieldChanged);
 	WorldMapData->OnStructureChanged.AddUObject(this, &AAsceFlowFieldDebugger::OnStructureChanged);
 
-	// 模拟地图加载器（仅权威端）：全量可通行 + 测试墙。
-	// TODO: 由关卡静态障碍物/地形分析结果的真正灌入入口替换。
-	if (Replicator->HasAuthority())
+	// 占位地图初始化（仅权威端，且 Replicator 未应用烘焙数据时）：全量可通行 + 测试墙。
+	// 若 Replicator 已应用真实烘焙地图（BakedMapData），这里不能再占地初始化——
+	// 否则会把烘焙出来的墙全部擦成可通行（两个初始化源的冲突，Actor BeginPlay 顺序还不保证）。
+	if (Replicator->HasAuthority() && !Replicator->HasBakedDataApplied())
 	{
 		const int32 TotalGrids = WorldMapData->GetGridCountX() * WorldMapData->GetGridCountY();
 		for (int32 GridIndex = 0; GridIndex < TotalGrids; ++GridIndex)

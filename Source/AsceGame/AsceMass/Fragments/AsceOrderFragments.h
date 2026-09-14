@@ -36,12 +36,12 @@ struct FAsceMoveOrderFragment : public FMassFragment
 	UPROPERTY(BlueprintReadOnly)
 	int32 OrderSequence = 0;
 
-	// AsceMovementSteeringProcessor持有的寻路方案句柄，由它自己lazy申请/释放
-	// （见AscePathFinder.h的FMergedPathPlanHandle注释：谁开始用就Acquire一次，不再用就Release一次）。
-	// 不是USTRUCT，没有UPROPERTY反射——纯粹是运行时状态（一个uint32），不需要被GC追踪/编辑器可见/
-	// 网络同步（Client和Server各自的UPathFinder是独立实例，Handle在两边分别管理，天然不能跨端共用）。
-	// 后续接入"Order确认/拒绝RPC通道"时，Acquire的时机可能会从Processor里挪到RPC处理那一层，
-	// 到时候再迁移这个字段，目前先放在这里让移动Pipeline能独立跑起来验证。
+	// 寻路方案句柄。生命周期（见 UAsceArrivalProcessor）：
+	// - 下单时由 FAsceMoveOrderExecutor 写入并在 PathFinder 上 Acquire；
+	// - 到达（自己到点 / 接触到同组已到达单位）时 Release，但字段本身**保留 RawID 不清零**
+	//   （disruption 组重置、被顶飞回退寻路都要靠它找 plan）；
+	// - 订单被拒绝/取消时才清零（那种情况不再是该方案组员）。
+	// 不是USTRUCT，没有UPROPERTY反射——纯粹是运行时状态（一个uint32），不需要被GC追踪。
 	FMergedPathPlanHandle PathPlanHandle;
 };
 

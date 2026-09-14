@@ -39,15 +39,18 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Asce|Baked")
 	int32 VisionGridH = 0;
 
-	UPROPERTY(EditAnywhere, Category = "Asce|Baked")
-	FVector2D WorldOrigin = FVector2D::ZeroVector;
-
 	// —— 数据 ——
+	// 注意：大数组刻意不用 EditAnywhere/VisibleAnywhere——几百万级的 TArray 会让 Details 面板
+	// 为每个元素生成属性节点（打开资产时编辑器卡死）。这里只保留 UPROPERTY 参与序列化，
+	// 数据内容由 AAsceMapBaker 的 Bake() 写入，运行时从 DA 读取。
+
 	/** 视野格地形绝对高度（cm，0..65535），长度 = VisionGridW * VisionGridH。 */
-	UPROPERTY(EditAnywhere, Category = "Asce|Baked")
+	UPROPERTY()
 	TArray<uint16> StaticHeights;
 
-	/** 流场格阻挡（1=阻挡），长度 = FlowGridW * FlowGridH。 */
-	UPROPERTY(EditAnywhere, Category = "Asce|Baked")
+	/** 流场格阻挡布尔（0=可通行 / 1=阻挡），长度 = FlowGridW * FlowGridH。
+	 *  只存布尔语义、与 CostField 内部编码解耦——运行时由 AAsceWorldMapReplicatorActor
+	 *  转成 CostField 编码写入：1=可通行、0b10000000=墙。想省内存可后续 bit 化（1bit/格）。 */
+	UPROPERTY()
 	TArray<uint8> Blocked;
 };

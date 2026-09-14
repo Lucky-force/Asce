@@ -20,31 +20,27 @@ FAsceFogViewExtension::FAsceFogViewExtension(const FAutoRegister& AutoRegister, 
 {
 }
 
-void FAsceFogViewExtension::SetSource(FTextureRHIRef InFogRaw, FTextureRHIRef InFogSmooth, FIntPoint InGridSize, float InCellSizeCm,
+void FAsceFogViewExtension::SetSource_RenderThread(FTextureRHIRef InFogRaw, FTextureRHIRef InFogSmooth, FIntPoint InGridSize, float InCellSizeCm,
 	FVector2D InWorldOrigin, float InDarkness)
 {
 	bEnabled.store(InFogRaw.IsValid() && InFogSmooth.IsValid() && InGridSize.X > 0 && InGridSize.Y > 0, std::memory_order_relaxed);
 
-	// 尺寸/纹理变更：丢弃尚未消费的旧批次（对应新图会由 MarkAllTilesDirty 全量重发）
-	{
-		FScopeLock Lock(&DeltaLock);
-		PendingTileIndices.Reset();
-		PendingTileWords.Reset();
-	}
+	// 仅渲染线程访问的参数：直接赋值（本函数只允许在渲染线程调用）
+	FogRawTex = MoveTemp(InFogRaw);
+	FogSmoothTex = MoveTemp(InFogSmooth);
+	GridSize = InGridSize;
+	CellSizeCm = InCellSizeCm;
+	WorldOrigin = InWorldOrigin;
+	Darkness = InDarkness;
+	CachedFogRawRT = nullptr;    // 纹理变了：池化包装重建
+	CachedFogSmoothRT = nullptr;
+}
 
-	// 参数只允许渲染线程读写：GT 通过渲染命令提交（消除 GT/RT 数据竞争）。
-	ENQUEUE_RENDER_COMMAND(AsceFogSetSource)(
-		[this, InFogRaw = MoveTemp(InFogRaw), InFogSmooth = MoveTemp(InFogSmooth), InGridSize, InCellSizeCm, InWorldOrigin, InDarkness](FRHICommandListImmediate&)
-		{
-			FogRawTex = InFogRaw;
-			FogSmoothTex = InFogSmooth;
-			GridSize = InGridSize;
-			CellSizeCm = InCellSizeCm;
-			WorldOrigin = InWorldOrigin;
-			Darkness = InDarkness;
-			CachedFogRawRT = nullptr;    // 纹理变了：池化包装重建
-			CachedFogSmoothRT = nullptr;
-		});
+void FAsceFogViewExtension::ClearPendingDelta()
+{
+	FScopeLock Lock(&DeltaLock);
+	PendingTileIndices.Reset();
+	PendingTileWords.Reset();
 }
 
 bool FAsceFogViewExtension::IsActiveThisFrame_Internal(const FSceneViewExtensionContext& Context) const

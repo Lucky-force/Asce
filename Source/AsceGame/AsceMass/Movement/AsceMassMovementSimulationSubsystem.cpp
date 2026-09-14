@@ -11,6 +11,8 @@
 #include "AsceMass/Movement/AsceMovementOrientationProcessor.h"
 #include "AsceMass/Movement/AsceMovementCorrectionProcessor.h"
 #include "AsceMass/Movement/AsceMassCollisionSolverProcessor.h"
+#include "AsceMass/Movement/AsceArrivalProcessor.h"
+#include "AsceMass/Movement/AsceTerrainHeightProcessor.h"
 #include "Movement/MassMovementProcessors.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AsceMassMovementSimulationSubsystem)
@@ -56,6 +58,8 @@ void UAsceMassMovementSimulationSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	SteeringProcessor = NewObject<UAsceMovementSteeringProcessor>(Outer);
 	ApplyMovementProcessor = NewObject<UMassApplyMovementProcessor>(Outer);
 	CollisionSolverProcessor = NewObject<UAsceMassCollisionSolverProcessor>(Outer);
+	ArrivalProcessor = NewObject<UAsceArrivalProcessor>(Outer);
+	TerrainHeightProcessor = NewObject<UAsceTerrainHeightProcessor>(Outer);
 	OrientationProcessor = NewObject<UAsceMovementOrientationProcessor>(Outer);
 	CorrectionProcessor = NewObject<UAsceMovementCorrectionProcessor>(Outer);
 
@@ -63,6 +67,8 @@ void UAsceMassMovementSimulationSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	SteeringProcessor->CallInitialize(Outer, EntityManager.AsShared());
 	ApplyMovementProcessor->CallInitialize(Outer, EntityManager.AsShared());
 	CollisionSolverProcessor->CallInitialize(Outer, EntityManager.AsShared());
+	ArrivalProcessor->CallInitialize(Outer, EntityManager.AsShared());
+	TerrainHeightProcessor->CallInitialize(Outer, EntityManager.AsShared());
 	OrientationProcessor->CallInitialize(Outer, EntityManager.AsShared());
 	CorrectionProcessor->CallInitialize(Outer, EntityManager.AsShared());
 }
@@ -71,7 +77,7 @@ void UAsceMassMovementSimulationSubsystem::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
 
-	if (!SteeringProcessor || !ApplyMovementProcessor || !CollisionSolverProcessor || !OrientationProcessor || !CorrectionProcessor)
+	if (!SteeringProcessor || !ApplyMovementProcessor || !CollisionSolverProcessor || !ArrivalProcessor || !TerrainHeightProcessor || !OrientationProcessor || !CorrectionProcessor)
 	{
 		return;
 	}
@@ -89,12 +95,15 @@ void UAsceMassMovementSimulationSubsystem::Tick(float DeltaTime)
 	}
 
 	// Pipeline顺序手动编排（组依赖在Executor::Run单处理器时被忽略）：
-	// Steering(决策) → ApplyMovement(积分) → Orientation(朝向) → Correction(位置修正)
+	// Steering(决策) → ApplyMovement(积分) → CollisionSolver(碰撞) → Arrival(到达判定)
+	// → TerrainHeight(贴地) → Orientation(朝向) → Correction(位置修正)
 	FMassProcessingContext ProcessingContext(EntitySubsystem->GetMutableEntityManager(), DeltaTime);
 	EProcessorExecutionFlags CurrentNetModeFlags = ConvertNetModeToExecutionFlags(World->GetNetMode());
 	ExecuteProcessorIfAllowed(*SteeringProcessor, CurrentNetModeFlags, ProcessingContext);
 	ExecuteProcessorIfAllowed(*ApplyMovementProcessor, CurrentNetModeFlags, ProcessingContext);
 	ExecuteProcessorIfAllowed(*CollisionSolverProcessor, CurrentNetModeFlags, ProcessingContext);
+	ExecuteProcessorIfAllowed(*ArrivalProcessor, CurrentNetModeFlags, ProcessingContext);
+	ExecuteProcessorIfAllowed(*TerrainHeightProcessor, CurrentNetModeFlags, ProcessingContext);
 	ExecuteProcessorIfAllowed(*OrientationProcessor, CurrentNetModeFlags, ProcessingContext);
 	ExecuteProcessorIfAllowed(*CorrectionProcessor, CurrentNetModeFlags, ProcessingContext);
 }

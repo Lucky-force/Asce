@@ -12,6 +12,7 @@
 #include "AsceMass/FlowField/AscePathFindingSubsystem.h"
 #include "AsceMass/FlowField/AscePathFinder.h"
 #include "AsceMass/Fragments/AsceOrderFragments.h"
+#include "AsceMass/Fragments/AsceMovementFragments.h"
 #include "AsceMass/Movement/AsceMoveOrderExecutor.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AsceOrderChannelComponent)
@@ -308,12 +309,20 @@ void UAsceOrderChannelComponent::ClientRejectWholeOrder_Implementation(int32 Ord
 		{
 			continue;
 		}
-		if (MoveOrder->PathPlanHandle.IsValid())
+		// 只有"订单还在执行中"才需要/才能 Release（已到达的订单在到达时已经 Release 过，
+		// Handle 只保留 RawID 供组重置用；再 Release 一次会破坏其它组员的引用计数）。
+		if (MoveOrder->bHasOrder && MoveOrder->PathPlanHandle.IsValid())
 		{
 			PathFinder->ReleasePathPlan(MoveOrder->PathPlanHandle);
-			MoveOrder->PathPlanHandle = FMergedPathPlanHandle();
 		}
+		// 订单作废：清零 Handle（不再是该方案组员），回到"无寻路"状态
+		MoveOrder->PathPlanHandle = FMergedPathPlanHandle();
 		MoveOrder->bHasOrder = false;
+		// 订单被拒绝/取消 = 回到"无寻路"状态（bArrived 默认语义，见 FAsceMovementSimStateFragment）
+		if (FAsceMovementSimStateFragment* SimState = EntityManager.GetFragmentDataPtr<FAsceMovementSimStateFragment>(Handle))
+		{
+			SimState->bArrived = true;
+		}
 	}
 }
 
@@ -353,12 +362,19 @@ void UAsceOrderChannelComponent::ClientRejectEntityOrder_Implementation(int32 Or
 		FAsceMoveOrderFragment* MoveOrder = EntityManager.GetFragmentDataPtr<FAsceMoveOrderFragment>(Handle);
 		if (MoveOrder && MoveOrder->OrderSequence == OrderSequence)
 		{
-			if (MoveOrder->PathPlanHandle.IsValid())
+			// 只有"订单还在执行中"才需要/才能 Release（已到达的订单在到达时已经 Release 过，
+			// Handle 只保留 RawID 供组重置用；再 Release 一次会破坏其它组员的引用计数）。
+			if (MoveOrder->bHasOrder && MoveOrder->PathPlanHandle.IsValid())
 			{
 				PathFinder->ReleasePathPlan(MoveOrder->PathPlanHandle);
-				MoveOrder->PathPlanHandle = FMergedPathPlanHandle();
 			}
+			MoveOrder->PathPlanHandle = FMergedPathPlanHandle();
 			MoveOrder->bHasOrder = false;
+			// 订单被拒绝/取消 = 回到"无寻路"状态（bArrived 默认语义）
+			if (FAsceMovementSimStateFragment* SimState = EntityManager.GetFragmentDataPtr<FAsceMovementSimStateFragment>(Handle))
+			{
+				SimState->bArrived = true;
+			}
 		}
 
 		HandlesPtr->RemoveAtSwap(Index);

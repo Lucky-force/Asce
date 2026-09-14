@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "UObject/Object.h"
+#include "MassEntityHandle.h"
 #include "AsceFlowFieldCores.h"
 #include "AscePathFinder.generated.h"
 
@@ -161,6 +162,17 @@ struct FFlowFieldCacheEntry
 struct FMergedPathPlanEntry
 {
 	FMergedPathPlan Plan;
+
+	/** 本方案的组成员（下单时登记；只增不减——已到达单位虽然释放了Handle，但仍是组员，
+	 *  是 disruption（传送/死亡等）重置的主要对象）。条目有效性由使用方逐项校验：
+	 *  entity有效（EntityHandle 含序列号，防 index 复用）+ 其 PathPlanHandle.RawID 与本 plan 一致。 */
+	TArray<FMassEntityHandle> Members;
+
+	/** 到达判定半径的平方：只在"首次标记到达"时更新为 max(旧值, 自己到目标距离 + 自己直径 + 余量)。
+	 *  未到达单位进入该半径后才做"与已到达单位的接触检测"；已到达单位每帧把自己的距离与它比较，
+	 *  超过即判定被顶飞/离位，回退寻路。0 = 还没有人到达（路径2不可用）。 */
+	float ArrivalRadiusSq = 0.f;
+
 	TMap<FFlowFieldKey, TSharedPtr<FFlowFieldResult>> RetainedFlowFields;
 	int32 RefCount = 0;
 };
@@ -192,6 +204,24 @@ public:
 	 * (连带释放它对相关FlowFieldResult的强引用；FlowFieldResult本身是否真正被清理，
 	 * 交给FlowFieldCache已有的弱引用机制在下次CleanupFlowFieldCache时判断) */
 	void ReleasePathPlan(FMergedPathPlanHandle Handle);
+
+	/** 登记方案的组成员（下单时由 FAsceMoveOrderExecutor 调用；只增不减，见 FMergedPathPlanEntry::Members） */
+	void RegisterPlanMembers(FMergedPathPlanHandle Handle, const TArray<FMassEntityHandle>& InMembers);
+
+	/** 取方案的组成员名单；plan不存在返回nullptr（条目有效性由调用方校验） */
+	const TArray<FMassEntityHandle>* GetPlanMembers(FMergedPathPlanHandle Handle) const;
+
+	/** 方案是否还存在（只查不创建，不改变引用计数）。disruption 重置/顶飞回退的"查不到就放弃"用它 */
+	bool IsPathPlanAlive(FMergedPathPlanHandle Handle) const;
+
+	/** 取到达判定半径平方；plan不存在返回0 */
+	float GetPlanArrivalRadiusSq(FMergedPathPlanHandle Handle) const;
+
+	/** 到达判定半径平方只增更新（首次标记到达时调用） */
+	void GrowPlanArrivalRadiusSq(FMergedPathPlanHandle Handle, float InRadiusSq);
+
+	/** 清空到达判定半径平方（disruption 组重置时调用，重新从"第一个到点的人"开始长） */
+	void ResetPlanArrivalRadiusSq(FMergedPathPlanHandle Handle);
 
 	/** 运行时消费端接口：每帧每个entity只需要传入自己当前的世界坐标 + 持有的FMergedPathPlanHandle，
 	 * 就能查到它现在应该朝哪个方向走，不需要维护任何"当前走到第几段"的状态。

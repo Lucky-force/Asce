@@ -12,6 +12,7 @@
 #include "MassEntityManagerStorage.h"
 #include "MassExecutor.h"
 #include "MassProcessingContext.h"
+#include "AsceMass/Common/AsceGridLOSUtils.h"
 #include "AsceFogProcessor.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AsceFogSubsystem)
@@ -195,28 +196,8 @@ namespace
 		}
 	};
 
-	/** 4 邻方向（与流场 LOS 一致：上/右/下/左）。 */
-	struct FVision4Dir { int32 DX; int32 DY; };
-	static const FVision4Dir FVision4Dirs[4] = { {0, 1}, {1, 0}, {0, -1}, {-1, 0} };
-
-	/** 障碍格 Obstacle 朝向来源方向 Dir 的近边上两个顶点（移植自 UPathFinder::GetNearEdgeVertices）。 */
-	void GetVisionNearEdgeVertices(const FIntVector2& Obstacle, const FVision4Dir& Dir, FVector2D& OutVertexForPerp1, FVector2D& OutVertexForPerp2)
-	{
-		if (Dir.DX == 0)
-		{
-			// Dir 是上/下：近边是水平边，Perp1=+X 侧，Perp2=-X 侧
-			const float Y = (Dir.DY > 0) ? static_cast<float>(Obstacle.Y) : static_cast<float>(Obstacle.Y + 1);
-			OutVertexForPerp1 = FVector2D(Obstacle.X + 1, Y);
-			OutVertexForPerp2 = FVector2D(Obstacle.X, Y);
-		}
-		else
-		{
-			// Dir 是左/右：近边是竖直边，Perp1=+Y 侧，Perp2=-Y 侧
-			const float X = (Dir.DX > 0) ? static_cast<float>(Obstacle.X) : static_cast<float>(Obstacle.X + 1);
-			OutVertexForPerp1 = FVector2D(X, Obstacle.Y + 1);
-			OutVertexForPerp2 = FVector2D(X, Obstacle.Y);
-		}
-	}
+	// 4 邻方向表与"近边顶点"计算已抽到公共工具（AsceMass/Common/AsceGridLOSUtils.h），
+	// 与流场 RunLOSPass/goal-LOS 共用一份实现（AsceGrid::Dirs4 / AsceGrid::GetNearEdgeVertices）。
 }
 
 void UAsceFogSubsystem::ComputeVisionForCell(const FAsceVisionHeightMap& HMap, const FIntVector2& S, uint16 He, uint16 R, TArray<uint32>& OutBits)
@@ -348,7 +329,7 @@ void UAsceFogSubsystem::ComputeVisionForCell(const FAsceVisionHeightMap& HMap, c
 		const int32 CurX = Cur % Window;
 		const int32 CurY = Cur / Window;
 
-		for (const FVision4Dir& Dir : FVision4Dirs)
+		for (const AsceGrid::FDir4& Dir : AsceGrid::Dirs4)
 		{
 			const int32 NX = CurX + Dir.DX;
 			const int32 NY = CurY + Dir.DY;
@@ -407,7 +388,7 @@ void UAsceFogSubsystem::ComputeVisionForCell(const FAsceVisionHeightMap& HMap, c
 			}
 
 			FVector2D V1, V2;
-			GetVisionNearEdgeVertices(G, Dir, V1, V2);
+			AsceGrid::GetNearEdgeVertices(G, Dir, V1, V2);
 
 			if (!bP1Blocked)
 			{

@@ -68,6 +68,7 @@ void AAsceWorldMapReplicatorActor::InitializeMapDimensions()
 		static_cast<uint8>(SectorX), static_cast<uint8>(SectorY));
 
 	// 权威端：应用烘焙阻挡（CostFields 内容为权威端独有）
+	bBakedDataApplied = false;
 	if (HasAuthority() && bBakedDimsOk)
 	{
 		const int32 FlowCount = FlowGridX * FlowGridY;
@@ -78,6 +79,7 @@ void AAsceWorldMapReplicatorActor::InitializeMapDimensions()
 				: static_cast<uint8>(1);         // 可通行
 			WorldMapData.SetCostField(static_cast<uint32>(i), Cost);
 		}
+		bBakedDataApplied = true;
 	}
 
 	// 两端都做：写入视野高度场（本地数据，不复制）

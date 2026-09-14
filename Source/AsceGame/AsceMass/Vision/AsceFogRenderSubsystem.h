@@ -11,11 +11,11 @@ class FAsceFogViewExtension;
 /**
  * MOD-POINT 2026-09-10 15:01:23
  * 黑雾渲染数据源（阶段 3b）：
- *  - 持有 GPU 持久 Fog 纹理对（R8，UAV 写/SRV 读，跨帧保留）：
- *      FogRawTex   = 脏 tile 展开的原始位图（1.0/0.0）
- *      FogSmoothTex= 去凸角 + 3×3 平均后的平滑结果（PS 采样它做边缘柔和）
  *  - 每帧从 UAsceFogSubsystem drain 脏 tile，组 delta payload 交给 ViewExtension；
- *  - ViewExtension 在 RDG 里展开脏 tile 写入 FogRaw，再做平滑 pass 写 FogSmooth，最后 Fullscreen 采样压黑。
+ *  - 纹理创建（R8 持久纹理对：FogRaw 原始位图 + FogSmooth 平滑结果）通过
+ *    "AsceFogCreateTextures" 渲染命令在渲染线程完成（FRHICommandListImmediate 仅渲染线程可用，
+ *    GT Tick 里不能直接 CreateTexture）；ViewExtension 在 RDG 里展开脏 tile 写 FogRaw，
+ *    再做平滑 pass 写 FogSmooth，最后 Fullscreen 采样压黑。
  */
 UCLASS(config = Game)
 class UAsceFogRenderSubsystem : public UTickableWorldSubsystem
@@ -45,13 +45,9 @@ public:
 	FIntPoint GetGridSize() const { return FIntPoint(GridW, GridH); }
 	float GetCellSizeCm() const { return CellSizeCm; }
 	FVector2D GetWorldOrigin() const { return WorldOrigin; }
-	FTextureRHIRef GetFogTexture() const { return FogSmoothTex; }
 
 private:
-	/** 创建持久 Fog 纹理（尺寸就绪后一次）。 */
-	void EnsureResources();
-
-	/** 查询 Fog 尺寸并处理变化（尺寸变化 → 销毁纹理 + 全量标脏）。返回 Fog 是否就绪。 */
+	/** 查询 Fog 尺寸并处理变化（尺寸变化 → 全量标脏 + 请求重建纹理）。返回 Fog 是否就绪。 */
 	bool UpdateFogDimensions();
 
 	/** drain 本队脏 tile → 组 payload → 交给 ViewExtension。 */
@@ -63,11 +59,12 @@ private:
 	FVector2D WorldOrigin = FVector2D::ZeroVector;
 	/** 本地显示队伍的队伍键（打包）。standalone 先默认 0 号队伍；联机时由本地玩家队伍接入（SetLocalTeamKey）。 */
 	int32 LocalTeamKey = 0;
-	bool bFogSourceDirty = false;
-
-	FTextureRHIRef FogRawTex;     // 脏 tile 展开的原始位图（1.0/0.0）
-	FTextureRHIRef FogSmoothTex;  // 去凸角 + 3×3 平均后的平滑结果（PS 采样）
-	bool bFogResourcesReady = false;
+	/**
+	 * 纹理是否已按当前尺寸请求创建（GT 标志）。尺寸变化时置 false，
+	 * Tick 里发 "AsceFogCreateTextures" 渲染命令（GT 不能直接 CreateTexture，
+	 * FRHICommandListImmediate 仅渲染线程可用）后置 true。
+	 */
+	bool bTexturesReady = false;
 
 	TSharedPtr<FAsceFogViewExtension> ViewExtension;
 };

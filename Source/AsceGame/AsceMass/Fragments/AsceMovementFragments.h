@@ -29,12 +29,12 @@ struct FAsceMovementSimStateFragment : public FMassFragment
 
 	bool bRunFullSimulation = true;
 
-	// ── 权威端"位移过小→视为到达"的判定状态（见AsceMovementSteeringProcessor注释）──
-	/** 上帧位置（2D），用于计算本帧实际位移；权威端照常更新，客户端不碰 */
-	FVector2D LastFrameLocation2D = FVector2D::ZeroVector;
-
-	/** 连续"位移过小"的帧数计数（达到StuckStopFrameCount后视为挤死，停止移动） */
-	int32 StuckFrames = 0;
+	// ── 到达状态（见 UAsceArrivalProcessor）──
+	/** true = 当前不在"移动订单执行中"（无订单 / 已到达）；false = 正在执行移动订单。
+	 *  默认 true（没有寻路=已到位）；ApplyMergedMoveOrder 写入订单时置 false；
+	 *  到达（路径1：自己走到目标点 / 路径2：与同组已到达单位接触）时置 true；
+	 *  被顶飞（距离超过 plan 的到达判定半径）回退寻路时置 false；订单被拒绝/取消时置 true。 */
+	bool bArrived = true;
 };
 
 /**

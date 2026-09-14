@@ -26,10 +26,15 @@ class FAsceFogViewExtension : public FSceneViewExtensionBase
 public:
 	explicit FAsceFogViewExtension(const FAutoRegister& AutoRegister, UWorld* InWorld);
 
-	/** 设置持久 Fog 纹理与显示参数（GridSize/CellSize/WorldOrigin/Darkness）。GT 调用。
-	 *  InFogRaw=脏tile展开的原始位图；InFogSmooth=去凸角+3×3平均后的平滑结果（PS 采样它）。 */
-	void SetSource(FTextureRHIRef InFogRaw, FTextureRHIRef InFogSmooth, FIntPoint InGridSize, float InCellSizeCm,
+	/** 仅渲染线程调用：设置持久 Fog 纹理与显示参数。
+	 *  由 UAsceFogRenderSubsystem 的 "AsceFogCreateTextures" 渲染命令在创建纹理后直接调用
+	 *  （FRHICommandListImmediate 只能在渲染线程用，纹理创建不能放 GT Tick）。
+	 *  注意：不清 pending delta——"丢弃旧批次"由 GT 侧在请求重建前调 ClearPendingDelta() 负责。 */
+	void SetSource_RenderThread(FTextureRHIRef InFogRaw, FTextureRHIRef InFogSmooth, FIntPoint InGridSize, float InCellSizeCm,
 		FVector2D InWorldOrigin, float InDarkness);
+
+	/** GT 调用：丢弃尚未消费的 pending delta（纹理/尺寸变更时旧批次作废；随后全量标脏重发）。 */
+	void ClearPendingDelta();
 
 	/** 入队一批脏 tile（GT 调用；render 线程在构建 graph 时取走消费）。
 	 *  按 tile 去重合并：已存在的 tile 用新 words 覆盖（保证总是最新、且上限 = tile 总数）。 */

@@ -32,9 +32,6 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Asce|Bake", meta = (ClampMin = "1", ClampMax = "16"))
 	int32 VisionDetailLevel = 1;
 
-	UPROPERTY(EditAnywhere, Category = "Asce|Bake")
-	FVector2D WorldOrigin = FVector2D::ZeroVector;
-
 	/** 射线未命中时的默认高度（cm）。 */
 	UPROPERTY(EditAnywhere, Category = "Asce|Bake")
 	uint16 DefaultHeightCm = 0;

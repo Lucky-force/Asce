@@ -2,6 +2,7 @@
 
 
 #include "AscePathFinder.h"
+#include "AsceMass/Common/AsceGridLOSUtils.h"
 
 FMergedPathPlanHandle UPathFinder::RunMergeablePathRequest(const FVector2D& GoalWorldLocation,
 	const TArray<FVector2D>& EntityWorldLocations, TArray<FPortalPathResult>* OutResults)
@@ -191,7 +192,7 @@ bool UPathFinder::GoalLOSAffectedByChange(const FMergedPathPlan& Plan, FSector::
 	const int32 Count = FMath::Min(Data->HasLOS.Num(), Sector.CostFields.Num());
 	for (int32 i = 0; i < Count; ++i)
 	{
-		const bool bNowBlock = Sector.CostFields[i].Cost > 1;
+		const bool bNowBlock = Sector.CostFields[i].IsWall();
 		if (static_cast<bool>(Data->HasLOS[i]) && bNowBlock)
 		{
 			return true; // 原本可见的格子变成墙 → 视线变了
@@ -242,6 +243,47 @@ void UPathFinder::ReleasePathPlan(FMergedPathPlanHandle Handle)
 		//连带清空RetainedFlowFields持有的强引用；如果那之后真的没有别的地方还在用这些FlowFieldResult了，
 		//FlowFieldCache里对应的弱引用条目会在下一次CleanupFlowFieldCache时被自然回收
 		PathPlans.Remove(Handle.RawID);
+	}
+}
+
+void UPathFinder::RegisterPlanMembers(FMergedPathPlanHandle Handle, const TArray<FMassEntityHandle>& InMembers)
+{
+	if (FMergedPathPlanEntry* Entry = PathPlans.Find(Handle.RawID))
+	{
+		Entry->Members.Append(InMembers);
+	}
+}
+
+const TArray<FMassEntityHandle>* UPathFinder::GetPlanMembers(FMergedPathPlanHandle Handle) const
+{
+	const FMergedPathPlanEntry* Entry = PathPlans.Find(Handle.RawID);
+	return Entry ? &Entry->Members : nullptr;
+}
+
+bool UPathFinder::IsPathPlanAlive(FMergedPathPlanHandle Handle) const
+{
+	return PathPlans.Contains(Handle.RawID);
+}
+
+float UPathFinder::GetPlanArrivalRadiusSq(FMergedPathPlanHandle Handle) const
+{
+	const FMergedPathPlanEntry* Entry = PathPlans.Find(Handle.RawID);
+	return Entry ? Entry->ArrivalRadiusSq : 0.f;
+}
+
+void UPathFinder::GrowPlanArrivalRadiusSq(FMergedPathPlanHandle Handle, float InRadiusSq)
+{
+	if (FMergedPathPlanEntry* Entry = PathPlans.Find(Handle.RawID))
+	{
+		Entry->ArrivalRadiusSq = FMath::Max(Entry->ArrivalRadiusSq, InRadiusSq);
+	}
+}
+
+void UPathFinder::ResetPlanArrivalRadiusSq(FMergedPathPlanHandle Handle)
+{
+	if (FMergedPathPlanEntry* Entry = PathPlans.Find(Handle.RawID))
+	{
+		Entry->ArrivalRadiusSq = 0.f;
 	}
 }
 
@@ -757,27 +799,9 @@ TSharedPtr<FFlowFieldResult> UPathFinder::GetOrComputeFlowField(uint16 SectorRaw
 
 namespace
 {
-	struct FLocalDir { int32 DX; int32 DY; };
-
-	/** 计算障碍格Obstacle朝向来源方向(Dir)的那条近边上的两个顶点：
-	 * VertexForPerp1对应"Perp1那一侧开放"该用的顶点，VertexForPerp2对应"Perp2那一侧开放"该用的顶点 */
-	void GetNearEdgeVertices(const FIntVector2& Obstacle, const FLocalDir& Dir, FVector2D& OutVertexForPerp1, FVector2D& OutVertexForPerp2)
-	{
-		if (Dir.DX == 0)
-		{
-			// Dir是Up/Down：近边是水平边，Perp1=右邻居，Perp2=左邻居
-			const float Y = (Dir.DY > 0) ? static_cast<float>(Obstacle.Y) : static_cast<float>(Obstacle.Y + 1);
-			OutVertexForPerp1 = FVector2D(Obstacle.X + 1, Y);
-			OutVertexForPerp2 = FVector2D(Obstacle.X, Y);
-		}
-		else
-		{
-			// Dir是Left/Right：近边是竖直边，Perp1=上邻居，Perp2=下邻居
-			const float X = (Dir.DX > 0) ? static_cast<float>(Obstacle.X) : static_cast<float>(Obstacle.X + 1);
-			OutVertexForPerp1 = FVector2D(X, Obstacle.Y + 1);
-			OutVertexForPerp2 = FVector2D(X, Obstacle.Y);
-		}
-	}
+	// 近边顶点计算已抽到公共工具（AsceMass/Common/AsceGridLOSUtils.h），保留别名让本文件既有调用点不变。
+	using FLocalDir = AsceGrid::FDir4;
+	using AsceGrid::GetNearEdgeVertices;
 }
 
 void UPathFinder::RunLOSPass(const FSector& Sector, const FIntVector2& SeedLocalGridLocation, FIntegrationFieldArray& OutIntegrationFields) const
@@ -1001,14 +1025,14 @@ void UPathFinder::ComputeGoalLOSOverlay(const FIntVector2& GoalGridLocation, con
 	{
 		return static_cast<int32>(WorldMapData->GridLocationToGridIndexInSector(Cell));
 	};
-	auto CellCost = [&](const FIntVector2& Cell) -> uint8
+	auto IsWallCell = [&](const FIntVector2& Cell) -> bool
 	{
-		return WorldMapData->GetSectorData(SectorOf(Cell)).CostFields[LocalIndex(Cell)].Cost;
+		return WorldMapData->GetSectorData(SectorOf(Cell)).CostFields[LocalIndex(Cell)].IsWall();
 	};
-	// 墙(cost>1) 或 越界/非允许扇区 都算"挡"
+	// 墙(IsWall) 或 越界/非允许扇区 都算"挡"
 	auto IsBlockingCell = [&](const FIntVector2& Cell) -> bool
 	{
-		return !IsAllowed(Cell) || CellCost(Cell) > 1;
+		return !IsAllowed(Cell) || IsWallCell(Cell);
 	};
 	auto GetHasLOS = [&](const FIntVector2& Cell) -> bool
 	{
@@ -1099,7 +1123,7 @@ void UPathFinder::ComputeGoalLOSOverlay(const FIntVector2& GoalGridLocation, con
 				continue;
 			}
 
-			if (CellCost(N) <= 1)
+			if (!IsWallCell(N))
 			{
 				SetHasLOS(N);
 				Queue.Add(N);

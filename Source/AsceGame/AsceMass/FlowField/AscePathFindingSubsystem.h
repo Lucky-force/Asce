@@ -47,9 +47,21 @@ public:
 	void RegisterWorldMapReplicator(AAsceWorldMapReplicatorActor* InReplicator);
 	void UnregisterWorldMapReplicator(AAsceWorldMapReplicatorActor* InReplicator);
 
+	/** Disruption（传送/死亡等）触发的"整组到达状态重置"请求：把该订单组的 plan Handle 推进来，
+	 *  下一帧由 UAsceArrivalProcessor 在帧开头 drain 后、直接遍历该 plan 的成员名单重置
+	 *  （不扫世界）。用 plan RawID（单调递增、不复用）做 key，Set 天然去重；
+	 *  plan 已结束（查不到 Handle）时按约定直接丢弃、放弃重置。 */
+	void EnqueuePlanGroupReset(FMergedPathPlanHandle PlanHandle);
+
+	/** 取出并清空所有待重置的 plan RawID */
+	void DrainPendingPlanGroupResets(TSet<uint32>& OutPlanRawIDs);
+
 	static UAscePathFindingSubsystem* Get(const UObject* WorldContextObject);
 
 protected:
+	/** 待重置的订单组（plan RawID），见 EnqueuePlanGroupReset */
+	TSet<uint32> PendingPlanGroupResets;
+
 	UPROPERTY(Transient)
 	FWorldMapData FallbackEmptyWorldMapData;
 

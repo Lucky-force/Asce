@@ -59,6 +59,10 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Asce|Map")
 	TObjectPtr<UAsceBakedMapData> BakedMapData;
 
+	/** 权威端是否已成功应用烘焙数据（InitializeMapDimensions 里设置）。
+	 *  Debugger 用它决定是否还要做"占位全通行 + 测试墙"（应用了真实地图就不再占位）。 */
+	bool HasBakedDataApplied() const { return bBakedDataApplied; }
+
 	// Server权威数据源；Client端这个结构体的内容完全由FastArray复制驱动，
 	// 不应该在Client上调用WorldMapData.SetCostField(...)。
 	UPROPERTY(Replicated)
@@ -70,4 +74,7 @@ private:
 
 	/** 向上取整扇区数，使视野网格宽高为 TileCells 的倍数（行字对齐 + tile 完整）。 */
 	void AlignSectorCounts(int32& OutSectorX, int32& OutSectorY) const;
+
+	/** 权威端已成功应用烘焙数据（见 getter）。 */
+	bool bBakedDataApplied = false;
 };

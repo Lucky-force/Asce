@@ -20,9 +20,7 @@ void UAsceFogRenderSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 void UAsceFogRenderSubsystem::Deinitialize()
 {
 	ViewExtension.Reset();
-	FogRawTex = nullptr;
-	FogSmoothTex = nullptr;
-	bFogResourcesReady = false;
+	bTexturesReady = false;
 	Super::Deinitialize();
 }
 
@@ -89,10 +87,7 @@ bool UAsceFogRenderSubsystem::UpdateFogDimensions()
 		GridW = NewW;
 		GridH = NewH;
 		CellSizeCm = NewCell;
-		FogRawTex = nullptr;
-		FogSmoothTex = nullptr;
-		bFogResourcesReady = false;
-		bFogSourceDirty = true;
+		bTexturesReady = false; // 尺寸变了：下一 tick 重发创建命令（新纹理覆盖，旧引用自然释放）
 		// 尺寸变化 = 全图重建：把所有 tile 标脏（首个 tick 也能覆盖全图）
 		Fog->MarkAllTilesDirty(LocalTeamKey);
 	}
@@ -133,64 +128,70 @@ void UAsceFogRenderSubsystem::FlushDirtyTiles()
 		UAsceFogSubsystem::TileWords, Fog->GetTilesX(), UAsceFogSubsystem::TileCells);
 }
 
-void UAsceFogRenderSubsystem::EnsureResources()
-{
-	if (bFogResourcesReady || GridW <= 0 || GridH <= 0)
-	{
-		return;
-	}
-
-	// 持久 Fog 纹理对：R8（PF_R8 = R8_UNORM；UNORM 支持 UAV 写入 + 双线性采样），
-	// GridW×GridH，UAV 写 / SRV 读，跨帧保留内容。
-	// FogRaw=脏tile展开原始位图；FogSmooth=去凸角+3×3平均后的平滑结果（PS 采样）。
-	FRHICommandListImmediate& RHICmdList = FRHICommandListImmediate::Get();
-	FRHITextureCreateDesc Desc = FRHITextureCreateDesc::Create2D(
-		TEXT("AsceFogRawTex"), static_cast<uint32>(GridW), static_cast<uint32>(GridH), PF_R8);
-	Desc.SetFlags(ETextureCreateFlags::ShaderResource | ETextureCreateFlags::UAV);
-	FogRawTex = RHICmdList.CreateTexture(Desc);
-
-	Desc = FRHITextureCreateDesc::Create2D(
-		TEXT("AsceFogSmoothTex"), static_cast<uint32>(GridW), static_cast<uint32>(GridH), PF_R8);
-	Desc.SetFlags(ETextureCreateFlags::ShaderResource | ETextureCreateFlags::UAV);
-	FogSmoothTex = RHICmdList.CreateTexture(Desc);
-
-	bFogResourcesReady = FogRawTex.IsValid() && FogSmoothTex.IsValid();
-	if (!bFogResourcesReady)
-	{
-		UE_LOG(LogTemp, Error, TEXT("[AsceFog] Fog 资源创建失败"));
-	}
-}
-
 void UAsceFogRenderSubsystem::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
 
 	const bool bFogReady = UpdateFogDimensions();
-
-	if (!bFogResourcesReady)
+	if (!bFogReady)
 	{
-		EnsureResources();
+		return;
 	}
 
-	// 资源就绪后创建后处理 ViewExtension（绑定本世界，只有本 GameWorld 的 view family 生效）
-	if (bFogReady && bFogResourcesReady && !ViewExtension.IsValid())
+	// 创建后处理 ViewExtension（绑定本世界；不等纹理，纹理就绪后同一帧的命令会设置它）
+	if (!ViewExtension.IsValid())
 	{
 		ViewExtension = FSceneViewExtensions::NewExtension<FAsceFogViewExtension>(GetWorld());
-		if (ViewExtension.IsValid())
-		{
-			ViewExtension->SetSource(FogRawTex, FogSmoothTex, FIntPoint(GridW, GridH), CellSizeCm, WorldOrigin, FogDarkness);
-			bFogSourceDirty = false;
-		}
 	}
-	else if (bFogReady && bFogResourcesReady && ViewExtension.IsValid() && bFogSourceDirty)
+	if (!ViewExtension.IsValid())
 	{
-		ViewExtension->SetSource(FogRawTex, FogSmoothTex, FIntPoint(GridW, GridH), CellSizeCm, WorldOrigin, FogDarkness);
-		bFogSourceDirty = false;
+		return;
 	}
 
-	// drain 脏 tile（仅在 ViewExtension 就绪后，避免丢标记）
-	if (bFogReady && ViewExtension.IsValid())
+	// 纹理创建/重建：FRHICommandListImmediate 仅渲染线程可用，GT Tick 不能直接 CreateTexture，
+	// 发渲染命令在 RT 创建 + SetSource_RenderThread。
+	// 时序：GT 先清 pending（尺寸变化时旧 tile 索引作废）→ 发创建命令（RT FIFO）→ 本帧 FlushDirtyTiles
+	// 入队的 delta 在渲染 pass 时仍在 pending 中（创建命令不清 pending）→ 不会丢首帧/重建帧数据。
+	if (!bTexturesReady)
 	{
-		FlushDirtyTiles();
+		ViewExtension->ClearPendingDelta();
+		bTexturesReady = true;
+
+		const int32 W = GridW;
+		const int32 H = GridH;
+		const float Cell = CellSizeCm;
+		const FVector2D Origin = WorldOrigin;
+		const float Dark = FogDarkness;
+		TSharedPtr<FAsceFogViewExtension> Ext = ViewExtension; // 拷贝保活（渲染命令异步执行）
+		ENQUEUE_RENDER_COMMAND(AsceFogCreateTextures)(
+			[Ext, W, H, Cell, Origin, Dark](FRHICommandListImmediate& RHICmdList)
+			{
+				// 持久 Fog 纹理对：R8（PF_R8 = R8_UNORM；UNORM 支持 UAV 写入 + 双线性采样），
+				// UAV 写 / SRV 读，跨帧保留内容。
+				// FogRaw=脏tile展开原始位图；FogSmooth=去凸角+3×3平均后的平滑结果（PS 采样）。
+				const uint32 TexW = static_cast<uint32>(FMath::Max(1, W));
+				const uint32 TexH = static_cast<uint32>(FMath::Max(1, H));
+
+				FRHITextureCreateDesc RawDesc = FRHITextureCreateDesc::Create2D(TEXT("AsceFogRawTex"), TexW, TexH, PF_R8);
+				RawDesc.SetFlags(ETextureCreateFlags::ShaderResource | ETextureCreateFlags::UAV);
+				FTextureRHIRef Raw = RHICmdList.CreateTexture(RawDesc);
+
+				FRHITextureCreateDesc SmoothDesc = FRHITextureCreateDesc::Create2D(TEXT("AsceFogSmoothTex"), TexW, TexH, PF_R8);
+				SmoothDesc.SetFlags(ETextureCreateFlags::ShaderResource | ETextureCreateFlags::UAV);
+				FTextureRHIRef Smooth = RHICmdList.CreateTexture(SmoothDesc);
+
+				if (!Raw.IsValid() || !Smooth.IsValid())
+				{
+					UE_LOG(LogTemp, Error, TEXT("[AsceFog] Fog 资源创建失败"));
+				}
+
+				if (Ext.IsValid())
+				{
+					Ext->SetSource_RenderThread(MoveTemp(Raw), MoveTemp(Smooth), FIntPoint(W, H), Cell, Origin, Dark);
+				}
+			});
 	}
+
+	// drain 脏 tile（ViewExtension 已就绪；创建命令在 RT FIFO 前段执行，会先设置纹理/参数）
+	FlushDirtyTiles();
 }

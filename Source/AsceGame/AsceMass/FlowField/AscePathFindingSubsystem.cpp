@@ -85,3 +85,17 @@ FWorldMapData* UAscePathFindingSubsystem::GetWorldMapDataMutableForAuthority()
 	checkf(WorldMapReplicator->HasAuthority(), TEXT("只有Server能改代价数据，Client应该等FastArray复制下来"));
 	return &WorldMapReplicator->WorldMapData;
 }
+
+void UAscePathFindingSubsystem::EnqueuePlanGroupReset(FMergedPathPlanHandle PlanHandle)
+{
+	if (PlanHandle.IsValid())
+	{
+		PendingPlanGroupResets.Add(PlanHandle.RawID);
+	}
+}
+
+void UAscePathFindingSubsystem::DrainPendingPlanGroupResets(TSet<uint32>& OutPlanRawIDs)
+{
+	OutPlanRawIDs = MoveTemp(PendingPlanGroupResets);
+	PendingPlanGroupResets.Reset();
+}
