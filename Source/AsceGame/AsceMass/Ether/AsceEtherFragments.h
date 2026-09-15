@@ -37,8 +37,8 @@ struct FEtherDeviceStateFragment : public FMassFragment
 	/** 是否已经写过（有值）。 */
 	bool bHasStored = false;
 
-	/** 寄存器位（编号；0 = 空槽）。并行加载时整体覆盖，所以只在 bHasStored 后才有效。 */
-	int16 StoredBits[16];
+	/** 寄存器位（编号；0 = 空槽）。**上限 8 位**（= 单格的维度数；多位由玩家拼多个寄存器）。 */
+	int16 StoredBits[8];
 
 	/** 计数进度（Counter 等后续用）。 */
 	uint16 Progress = 0;

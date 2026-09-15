@@ -384,7 +384,8 @@ void UAsceEtherNetworkSubsystem::RebuildGraph()
 			for (int32 qi = 0; qi < BCount; ++qi)
 			{
 				const FPort& Q = Ports[BStart + qi];
-				if (Q.bIsInput && Q.Dir == OppDir && Q.Dim == SPort.Dim)
+				// 必须落在射线命中的那一格（多格建筑在 (方向,维度) 上可能有多个端口）
+				if (Q.bIsInput && Q.Dir == OppDir && Q.Dim == SPort.Dim && Q.CellX == cx && Q.CellY == cy)
 				{
 					ToPort = BStart + qi;
 					break;
@@ -862,8 +863,8 @@ void UAsceEtherNetworkSubsystem::RunEtherTick()
 		else if (DeviceOp == EAsceEtherDeviceOp::Register && State)
 		{
 			// 寄存器：角色表 `InputPorts = [bit0 .. bitN-1, enable]`、`OutputPorts = [bit0 .. bitN-1]`
-			// 使能 = 最后一个入端口收到"正 ether"（非 0 号、非互补态）
-			const int32 BitCount = FMath::Min<int32>(16, N.DeviceInputPorts.Num() - 1);
+			// 位宽上限 8（= 单格的维度数）；多位由玩家拼多个寄存器
+			const int32 BitCount = FMath::Clamp<int32>(N.DeviceInputPorts.Num() - 1, 0, 8);
 			const int32 EnablePort = (N.DeviceInputPorts.Num() > 0) ? N.DeviceInputPorts.Last() : INDEX_NONE;
 
 			bool bWrite = false;
