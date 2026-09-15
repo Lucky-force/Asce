@@ -31,11 +31,13 @@ enum class EAsceEtherSplitMode : uint8
 UENUM(BlueprintType)
 enum class EAsceEtherDeviceOp : uint8
 {
-	Facility = 0 UMETA(DisplayName = "Facility"),  // 配方设施：扣 RecipeInputs → 产 RecipeOutput
-	Sink     = 1 UMETA(DisplayName = "Sink"),      // 汇：吃掉输入
-	Latch    = 2 UMETA(DisplayName = "Latch"),     // 锁存（待实现）
-	Counter  = 3 UMETA(DisplayName = "Counter"),   // 计数（待实现）
-	Clock    = 4 UMETA(DisplayName = "Clock")      // 自振荡（待实现）
+	Facility    = 0 UMETA(DisplayName = "Facility"),      // 配方设施：扣 RecipeInputs → 产 RecipeOutput
+	Sink        = 1 UMETA(DisplayName = "Sink"),          // 汇：吃掉输入
+	Latch       = 2 UMETA(DisplayName = "Latch"),         // 记忆单元：写入覆盖编号；读取用 0 号能量重铸
+	Counter     = 3 UMETA(DisplayName = "Counter"),       // 计数（待实现）
+	Clock       = 4 UMETA(DisplayName = "Clock"),         // 自振荡（待实现）
+	Annihilator = 5 UMETA(DisplayName = "Annihilator"),   // 湮灭发电机：+X 与 −X ⇒ |X| 份 0 号
+	Register    = 6 UMETA(DisplayName = "Register")       // 寄存器：并行加载（最后一个入端口 = enable）
 };
 
 namespace AsceEther
@@ -58,8 +60,39 @@ namespace AsceEther
 
 	/** 建筑在 ether 网络中的角色：器件（时序）由 bIsDevice + DeviceOp 描述；传输器 = 纯组合。 */
 
-	/** 通用 ether 类型（电力/能源）。 */
-	constexpr uint16 GenericSignalType = 1;
+	/** 能量（0 号 ether）的 SignalType。 */
+	constexpr int16 EnergySignalType = 0;
+
+	/** 通用材料编号（举例/默认值用）。 */
+	constexpr int16 GenericSignalType = 1;
+
+	// ── 互补态（有符号 SignalType；最高位 = 互补标志） ──
+	// 族（family）= 去掉符号位；同族异号 = 互为正/反态（合流时湮灭）。
+	// 注意：**Empty（空）由 Ether == 0 表示，不是 SignalType == 0**（0 号是真实存在的"能量"）。
+
+	/** 取互补态（+X ↔ −X）。 */
+	FORCEINLINE int16 Complement(int16 T)
+	{
+		return static_cast<int16>(static_cast<uint16>(T) ^ 0x8000);
+	}
+
+	/** 族 id（去掉符号位）。 */
+	FORCEINLINE uint16 Family(int16 T)
+	{
+		return static_cast<uint16>(T) & 0x7FFF;
+	}
+
+	/** 是否是互补态（负号）。 */
+	FORCEINLINE bool IsComplement(int16 T)
+	{
+		return (static_cast<uint16>(T) & 0x8000) != 0;
+	}
+
+	/** 同族？ */
+	FORCEINLINE bool IsSameFamily(int16 A, int16 B)
+	{
+		return Family(A) == Family(B);
+	}
 
 	// 注意：port 的"唯一标识"是**全局 PortId**（= 建筑 PortStart + 建筑内 index），不是 (Dir,Dim)——
 	// 多格建筑的同一方向上可能挂多个 port（不同格子），(Dir,Dim) 会歧义。

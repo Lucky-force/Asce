@@ -31,12 +31,18 @@ struct FEtherDeviceStateFragment : public FMassFragment
 {
 	GENERATED_BODY()
 
-	/** 生产/计数进度（后续 op 用）。 */
+	/** 记忆单元的编号（有符号 SignalType）。注意是**信息**，不是物质。 */
+	int16 StoredType = 0;
+
+	/** 是否已经写过（有值）。 */
+	bool bHasStored = false;
+
+	/** 寄存器位（编号；0 = 空槽）。并行加载时整体覆盖，所以只在 bHasStored 后才有效。 */
+	int16 StoredBits[16];
+
+	/** 计数进度（Counter 等后续用）。 */
 	uint16 Progress = 0;
 
-	/** 锁存值 / 计数值（后续 op 用）。 */
-	uint16 Value = 0;
-
-	/** 状态机相位（后续 op 用）。 */
+	/** 状态机相位（Clock 等后续用）。 */
 	uint8 Phase = 0;
 };

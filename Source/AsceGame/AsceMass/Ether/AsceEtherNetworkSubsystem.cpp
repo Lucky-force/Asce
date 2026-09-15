@@ -6,6 +6,7 @@
 #include "MassEntityManager.h"
 #include "MassEntitySubsystem.h"
 #include "AsceMass/Fragments/AsceFootprintFragment.h"
+#include "AsceMass/Ether/AsceEtherFragments.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AsceEtherNetworkSubsystem)
 
@@ -204,6 +205,8 @@ void UAsceEtherNetworkSubsystem::RebuildGraph()
 		N.PortCount = 0;
 		N.bDevice = false;
 		N.DeviceOp = 0;
+		N.DeviceParamSignal = 1;
+		N.DeviceParamA = 1;
 		N.DeviceInputPorts.Reset();
 		N.DeviceOutputPorts.Reset();
 		N.RecipeInputs.Reset();
@@ -231,6 +234,8 @@ void UAsceEtherNetworkSubsystem::RebuildGraph()
 		// 器件 = 时序（由 DeviceOp 决定行为）；传输器 = 纯组合
 		N.bDevice = Data->bIsDevice;
 		N.DeviceOp = static_cast<uint8>(Data->DeviceOp);
+		N.DeviceParamSignal = Data->DeviceParamSignal;
+		N.DeviceParamA = Data->DeviceParamA;
 		N.RecipeInputs = Data->Inputs;
 		N.RecipeOutput = Data->Output;
 
@@ -315,19 +320,25 @@ void UAsceEtherNetworkSubsystem::RebuildGraph()
 			}
 			if (!Nodes[NodeId].bDevice)
 			{
-				Ports[ToPort].bIsInput = true; // 传输器：被指向的端口 = 入
+				// 传输器：内部布线的**源**端口 = 外部的入端口（它接收外部、向内转发；目标端口才是对外输出）
+				Ports[FromPort].bIsInput = true;
 			}
 		}
 	}
 
-	// 分流顺序：先按 (Dir, Dim) 排（TODO 步骤③：改成"相对源端口左手边起顺时针"的扫描序 + SplitMode）
-	for (FPort& P : Ports)
+	// 分流/背压顺序（§2.9）：相对源端口，从它**左手边**起顺时针；同方向内 Dim 低→高
+	for (int32 PortId = 0; PortId < Ports.Num(); ++PortId)
 	{
-		P.LinkTargets.Sort([this](int32 A, int32 B)
+		FPort& P = Ports[PortId];
+		const int32 SrcDir = static_cast<int32>(P.Dir);
+		P.LinkTargets.Sort([this, SrcDir](int32 A, int32 B)
 		{
 			const FPort& PA = Ports[A];
 			const FPort& PB = Ports[B];
-			return (PA.Dir != PB.Dir) ? (PA.Dir < PB.Dir) : (PA.Dim < PB.Dim);
+			// rank = (Dir - SrcDir + 1) & 3；rank 0 = 源端口左手边那个方向
+			const int32 RA = (static_cast<int32>(PA.Dir) - SrcDir + 1) & 3;
+			const int32 RB = (static_cast<int32>(PB.Dir) - SrcDir + 1) & 3;
+			return (RA != RB) ? (RA < RB) : (PA.Dim < PB.Dim);
 		});
 	}
 
@@ -386,6 +397,27 @@ void UAsceEtherNetworkSubsystem::RebuildGraph()
 		{
 			SPort.OutEdge = Edges.Add(FAsceEtherEdge{ PortId, ToPort });
 		}
+	}
+
+	// ③.5 入边源端口表（内部布线的源 + 外部入边的源）+ 本拍符号记录数组（And/Or 求值用）
+	for (const FAsceEtherLink& L : Links)
+	{
+		if (Ports.IsValidIndex(L.ToPort))
+		{
+			Ports[L.ToPort].InSources.AddUnique(L.FromPort);
+		}
+	}
+	for (const FAsceEtherEdge& E : Edges)
+	{
+		if (Ports.IsValidIndex(E.ToPort))
+		{
+			Ports[E.ToPort].InSources.AddUnique(E.FromPort);
+		}
+	}
+	for (FPort& P : Ports)
+	{
+		P.InSigns.Init(0, P.InSources.Num());
+		P.InSignTick.Init(0, P.InSources.Num());
 	}
 
 	// ── ④ 组合段（端口级）：组合端口 = 非器件端口；段内 Kahn 拓扑序填 ProcessOrder ──
@@ -552,6 +584,14 @@ void UAsceEtherNetworkSubsystem::RunEtherTick()
 		return;
 	}
 
+	UWorld* World = GetWorld();
+	UMassEntitySubsystem* MassSub = World ? World->GetSubsystem<UMassEntitySubsystem>() : nullptr;
+	const FMassEntityManager* EM = MassSub ? &MassSub->GetEntityManager() : nullptr;
+	if (!EM)
+	{
+		return;
+	}
+
 	// ── ① 器件采样（时序：拍边界；行为由 DeviceOp 决定） ──
 	for (int32 NodeId = 0; NodeId < NodeNum; ++NodeId)
 	{
@@ -566,8 +606,10 @@ void UAsceEtherNetworkSubsystem::RunEtherTick()
 			continue;
 		}
 		const EAsceEtherDeviceOp DeviceOp = static_cast<EAsceEtherDeviceOp>(N.DeviceOp);
+		FEtherDeviceStateFragment* State = EM->GetFragmentDataPtr<FEtherDeviceStateFragment>(N.Entity);
 
 		bool bChanged = false;
+		int32 OutPortUsed = INDEX_NONE;   // 本拍写出/需要继续推出的输出端口
 
 		if (DeviceOp == EAsceEtherDeviceOp::Facility)
 		{
@@ -585,6 +627,7 @@ void UAsceEtherNetworkSubsystem::RunEtherTick()
 					}
 				}
 			}
+			OutPortUsed = OutPort;
 			if (OutPort != INDEX_NONE && N.RecipeOutput.AmountPerTick > 0)
 			{
 				FPort& OP = Ports[OutPort];
@@ -600,7 +643,7 @@ void UAsceEtherNetworkSubsystem::RunEtherTick()
 					for (const int32 Pid : N.DeviceInputPorts)
 					{
 						const FPort& IP = Ports[Pid];
-						if (IP.SignalType == Item.SignalType)
+						if (IP.Ether > 0 && IP.SignalType == Item.SignalType)
 						{
 							Avail += IP.Ether;
 						}
@@ -626,7 +669,7 @@ void UAsceEtherNetworkSubsystem::RunEtherTick()
 								break;
 							}
 							FPort& IP = Ports[Pid];
-							if (IP.SignalType != Item.SignalType)
+							if (IP.Ether == 0 || IP.SignalType != Item.SignalType)
 							{
 								continue;
 							}
@@ -662,9 +705,244 @@ void UAsceEtherNetworkSubsystem::RunEtherTick()
 				}
 			}
 		}
-		// TODO 步骤④：Latch / Counter / Clock（读写 FEtherDeviceStateFragment）
+		else if (DeviceOp == EAsceEtherDeviceOp::Latch && State)
+		{
+			// 记忆单元：① 写入 = 入端口上出现"非 0 号"的料 ⇒ 消耗掉它、覆盖编号（信息，不守恒）
+			for (const int32 Pid : N.DeviceInputPorts)
+			{
+				FPort& IP = Ports[Pid];
+				if (IP.Ether > 0 && AsceEther::Family(IP.SignalType) != 0)
+				{
+					State->StoredType = IP.SignalType;
+					State->bHasStored = true;
+					IP.Ether = 0;          // 写入把送来的料消耗掉
+					IP.SignalType = 0;
+					bChanged = true;
+				}
+			}
+
+			// ② 读取 = 用 0 号 ether（能量）重铸编号 ⇒ 产出；`1 份 = abs(编号)` 份能量；能量不足 ⇒ 不产出（不消耗）
+			int32 OutPort = (N.DeviceOutputPorts.Num() > 0) ? N.DeviceOutputPorts[0] : INDEX_NONE;
+			if (OutPort == INDEX_NONE)
+			{
+				for (int32 pi = 0; pi < PCount; ++pi)
+				{
+					const int32 Pid = N.PortStart + pi;
+					if (!Ports[Pid].bIsInput)
+					{
+						OutPort = Pid;
+						break;
+					}
+				}
+			}
+			OutPortUsed = OutPort;
+			if (State->bHasStored && OutPort != INDEX_NONE)
+			{
+				// 能量不足：本拍不产出（提示"需要更快的能量线"留给 UI 层）
+				if (MintFromEnergy(N, OutPort, State->StoredType))
+				{
+					bChanged = true;
+				}
+			}
+		}
+		else if (DeviceOp == EAsceEtherDeviceOp::Clock && State)
+		{
+			// 时钟：自翻转编号（半周期 = DeviceParamA tick），每拍用能量重铸当前编号（= 自驱动的记忆单元）
+			if (!State->bHasStored)
+			{
+				State->StoredType = (N.DeviceParamSignal != 0) ? N.DeviceParamSignal : AsceEther::GenericSignalType;
+				State->bHasStored = true;
+				State->Progress = 0;
+			}
+			const uint16 HalfPeriod = FMath::Max<uint16>(1, N.DeviceParamA);
+			if (++State->Progress >= HalfPeriod)
+			{
+				State->StoredType = AsceEther::Complement(State->StoredType);
+				State->Progress = 0;
+				bChanged = true;
+			}
+
+			int32 OutPort = (N.DeviceOutputPorts.Num() > 0) ? N.DeviceOutputPorts[0] : INDEX_NONE;
+			OutPortUsed = OutPort;
+			if (OutPort != INDEX_NONE && MintFromEnergy(N, OutPort, State->StoredType))
+			{
+				bChanged = true;
+			}
+		}
+		else if (DeviceOp == EAsceEtherDeviceOp::Counter && State)
+		{
+			// 计数器：入端口每来 1 份"非 0 号"的料算 1 个脉冲（0 号 = 能量，不计数）
+			for (const int32 Pid : N.DeviceInputPorts)
+			{
+				FPort& IP = Ports[Pid];
+				if (IP.Ether > 0 && AsceEther::Family(IP.SignalType) != 0)
+				{
+					State->Progress = static_cast<uint16>(FMath::Min<uint32>(0xFFFF, State->Progress + IP.Ether));
+					IP.Ether = 0;
+					IP.SignalType = 0;
+					bChanged = true;
+				}
+			}
+
+			// 每累计 `DeviceParamA` 份脉冲 ⇒ 产 1 份编号（用能量重铸）
+			const uint16 Threshold = FMath::Max<uint16>(1, N.DeviceParamA);
+			int32 OutPort = (N.DeviceOutputPorts.Num() > 0) ? N.DeviceOutputPorts[0] : INDEX_NONE;
+			OutPortUsed = OutPort;
+			if (State->Progress >= Threshold && OutPort != INDEX_NONE)
+			{
+				const int16 OutType = (N.DeviceParamSignal != 0) ? N.DeviceParamSignal : AsceEther::GenericSignalType;
+				if (MintFromEnergy(N, OutPort, OutType))
+				{
+					State->Progress = static_cast<uint16>(State->Progress - Threshold);
+					bChanged = true;
+				}
+			}
+		}
+		else if (DeviceOp == EAsceEtherDeviceOp::Annihilator)
+		{
+			// 湮灭发电机：一组同族异号（+X 与 −X）⇒ |X| 份 0 号 ether（能量）
+			int32 OutPort = (N.DeviceOutputPorts.Num() > 0) ? N.DeviceOutputPorts[0] : INDEX_NONE;
+			if (OutPort != INDEX_NONE)
+			{
+				int32 PlusPort = INDEX_NONE;
+				int32 MinusPort = INDEX_NONE;
+				for (const int32 Pid : N.DeviceInputPorts)
+				{
+					const FPort& IP = Ports[Pid];
+					if (IP.Ether == 0 || AsceEther::Family(IP.SignalType) == 0)
+					{
+						continue;
+					}
+					if (AsceEther::IsComplement(IP.SignalType))
+					{
+						if (MinusPort == INDEX_NONE)
+						{
+							MinusPort = Pid;
+						}
+					}
+					else if (PlusPort == INDEX_NONE)
+					{
+						PlusPort = Pid;
+					}
+				}
+				if (PlusPort != INDEX_NONE && MinusPort != INDEX_NONE
+					&& AsceEther::IsSameFamily(Ports[PlusPort].SignalType, Ports[MinusPort].SignalType))
+				{
+					const uint16 FamilyId = AsceEther::Family(Ports[PlusPort].SignalType); // = |X|（核数）
+					FPort& OP = Ports[OutPort];
+					const uint16 OutRem = (OP.Throughput > OP.Ether)
+						? static_cast<uint16>(OP.Throughput - OP.Ether) : 0;
+					const bool bOutTypeOk = (OP.Ether == 0) || (OP.SignalType == 0);
+					uint32 Pairs = FMath::Min<uint16>(Ports[PlusPort].Ether, Ports[MinusPort].Ether);
+					Pairs = FMath::Min<uint32>(Pairs, OutRem / FamilyId);
+					if (bOutTypeOk && Pairs > 0)
+					{
+						FPort& SP = Ports[PlusPort];
+						FPort& SM = Ports[MinusPort];
+						SP.Ether = static_cast<uint16>(SP.Ether - Pairs);
+						SM.Ether = static_cast<uint16>(SM.Ether - Pairs);
+						if (SP.Ether == 0)
+						{
+							SP.SignalType = 0;
+						}
+						if (SM.Ether == 0)
+						{
+							SM.SignalType = 0;
+						}
+						if (OP.Ether == 0)
+						{
+							OP.SignalType = 0;
+						}
+						OP.Ether = static_cast<uint16>(OP.Ether + Pairs * FamilyId);
+						bChanged = true;
+					}
+				}
+			}
+		}
+		else if (DeviceOp == EAsceEtherDeviceOp::Register && State)
+		{
+			// 寄存器：角色表 `InputPorts = [bit0 .. bitN-1, enable]`、`OutputPorts = [bit0 .. bitN-1]`
+			// 使能 = 最后一个入端口收到"正 ether"（非 0 号、非互补态）
+			const int32 BitCount = FMath::Min<int32>(16, N.DeviceInputPorts.Num() - 1);
+			const int32 EnablePort = (N.DeviceInputPorts.Num() > 0) ? N.DeviceInputPorts.Last() : INDEX_NONE;
+
+			bool bWrite = false;
+			if (EnablePort != INDEX_NONE)
+			{
+				const FPort& EP = Ports[EnablePort];
+				bWrite = (EP.Ether > 0) && (AsceEther::Family(EP.SignalType) != 0) && !AsceEther::IsComplement(EP.SignalType);
+			}
+
+			if (bWrite)
+			{
+				// 并行加载：有料 ⇒ 覆盖该位（消耗那份料）；没料 ⇒ 清空该位
+				for (int32 i = 0; i < BitCount; ++i)
+				{
+					FPort& DP = Ports[N.DeviceInputPorts[i]];
+					if (DP.Ether > 0 && AsceEther::Family(DP.SignalType) != 0)
+					{
+						State->StoredBits[i] = DP.SignalType;
+						bChanged = true;
+					}
+					else
+					{
+						State->StoredBits[i] = 0;
+					}
+					if (DP.Ether > 0)
+					{
+						DP.Ether = 0;
+						DP.SignalType = 0;
+					}
+				}
+				State->bHasStored = true;
+				FPort& EP = Ports[EnablePort];
+				EP.Ether = 0;
+				EP.SignalType = 0;
+				bChanged = true;
+			}
+
+			// 读取：每拍把有值的位用能量重铸到对应输出端口
+			if (State->bHasStored)
+			{
+				const int32 OutNum = FMath::Min(BitCount, N.DeviceOutputPorts.Num());
+				for (int32 i = 0; i < OutNum; ++i)
+				{
+					if (State->StoredBits[i] != 0 && MintFromEnergy(N, N.DeviceOutputPorts[i], State->StoredBits[i]))
+					{
+						bChanged = true;
+					}
+				}
+			}
+		}
+		// TODO：更多器件 op（如移位寄存器、比较器等）
 
 		if (bChanged)
+		{
+			for (const int32 Seg : DeviceAdjSegs[NodeId])
+			{
+				ActivateSeg(Seg);
+			}
+		}
+
+		// 把输出端口的料推出去（可能还有上拍残留；推不掉就留着，下拍继续）
+		bool bOutLeft = false;
+		for (const int32 Pid : N.DeviceOutputPorts)
+		{
+			PushPortOutput(Pid);
+			if (Ports[Pid].Ether > 0)
+			{
+				bOutLeft = true;
+			}
+		}
+		if (OutPortUsed != INDEX_NONE && !N.DeviceOutputPorts.Contains(OutPortUsed))
+		{
+			PushPortOutput(OutPortUsed);
+			if (Ports[OutPortUsed].Ether > 0)
+			{
+				bOutLeft = true;
+			}
+		}
+		if (bOutLeft)
 		{
 			for (const int32 Seg : DeviceAdjSegs[NodeId])
 			{
@@ -699,68 +977,243 @@ void UAsceEtherNetworkSubsystem::RunEtherTick()
 
 void UAsceEtherNetworkSubsystem::ProcessPort(int32 PortId, bool& bOutHasEther)
 {
-	FPort& P = Ports[PortId];
+	EvaluateOp(PortId);
+	PushPortOutput(PortId);
 
-	// ① 内部布线：本端口 -> 目标端口（分流：按 LinkTargets 顺序，灌满一个再下一个）
-	if (P.Ether > 0)
-	{
-		for (const int32 ToPort : P.LinkTargets)
-		{
-			if (P.Ether == 0)
-			{
-				break;
-			}
-			FPort& Q = Ports[ToPort];
-			const uint16 Rem = (Q.Throughput > Q.Ether)
-				? static_cast<uint16>(Q.Throughput - Q.Ether) : 0;
-			if (Rem == 0)
-			{
-				continue;
-			}
-			if (Q.Ether > 0 && Q.SignalType != P.SignalType)
-			{
-				continue; // TODO 步骤③：改成"同族异号湮灭 / 异族堵死"
-			}
-			uint16 Move = static_cast<uint16>(FMath::Min<uint32>(P.Ether, Rem));
-			Move = static_cast<uint16>(FMath::Min<uint32>(Move, FMath::Min<uint32>(P.Throughput, Q.Throughput)));
-			if (Move == 0)
-			{
-				continue;
-			}
-			if (Q.Ether == 0)
-			{
-				Q.SignalType = P.SignalType;
-			}
-			P.Ether = static_cast<uint16>(P.Ether - Move);
-			Q.Ether = static_cast<uint16>(Q.Ether + Move);
-		}
-	}
-
-	// ② 外部推送：出端口 -> 对端入端口（1:1）
-	if (P.Ether > 0 && P.OutEdge != INDEX_NONE)
-	{
-		FPort& Q = Ports[Edges[P.OutEdge].ToPort];
-		const uint16 Rem = (Q.Throughput > Q.Ether)
-			? static_cast<uint16>(Q.Throughput - Q.Ether) : 0;
-		if (Rem > 0 && !(Q.Ether > 0 && Q.SignalType != P.SignalType))
-		{
-			uint16 Move = static_cast<uint16>(FMath::Min<uint32>(P.Ether, Rem));
-			Move = static_cast<uint16>(FMath::Min<uint32>(Move, FMath::Min<uint32>(P.Throughput, Q.Throughput)));
-			if (Move > 0)
-			{
-				if (Q.Ether == 0)
-				{
-					Q.SignalType = P.SignalType;
-				}
-				P.Ether = static_cast<uint16>(P.Ether - Move);
-				Q.Ether = static_cast<uint16>(Q.Ether + Move);
-			}
-		}
-	}
-
-	// ③ 判空：本端口还有料 → 本段保持活跃
-	if (P.Ether > 0)
+	// 判空：本端口还有料 → 本段保持活跃
+	if (Ports[PortId].Ether > 0)
 	{
 		bOutHasEther = true;
 	}
+}
+
+void UAsceEtherNetworkSubsystem::EvaluateOp(int32 PortId)
+{
+	FPort& P = Ports[PortId];
+	if (P.Op != EAsceEtherPortOp::And && P.Op != EAsceEtherPortOp::Or)
+	{
+		return; // Wire / Not 不做多输入求值
+	}
+
+	// 只看"本拍真的送来了料"的入边（Empty = 未定值，不计入）
+	bool bHas = false;
+	bool bAnyPlus = false;
+	bool bAnyMinus = false;
+	int16 BasePos = 0;
+	for (int32 i = 0; i < P.InSources.Num(); ++i)
+	{
+		if (!P.InSignTick.IsValidIndex(i) || P.InSignTick[i] != CurrentStamp)
+		{
+			continue;
+		}
+		const int16 T = P.InSigns[i];
+		if (!bHas)
+		{
+			bHas = true;
+			BasePos = AsceEther::IsComplement(T) ? AsceEther::Complement(T) : T;
+		}
+		else if (!AsceEther::IsSameFamily(BasePos, T))
+		{
+			return; // 异族（合流本应挡住）→ 本拍不动作 = 堵死
+		}
+		if (AsceEther::Family(T) != 0)
+		{
+			(AsceEther::IsComplement(T) ? bAnyMinus : bAnyPlus) = true;
+		}
+	}
+	if (!bHas || P.Ether == 0)
+	{
+		return; // 无输入 ⇒ 不输出（Empty ≠ 逻辑 0）
+	}
+
+	int16 ResType;
+	if (AsceEther::Family(BasePos) == 0)
+	{
+		ResType = 0; // 0 号（能量）逻辑透明：原样透传（Not 后仍是 0）
+	}
+	else
+	{
+		const bool bPlus = (P.Op == EAsceEtherPortOp::And) ? !bAnyMinus : bAnyPlus;
+		ResType = bPlus ? BasePos : AsceEther::Complement(BasePos);
+	}
+	P.SignalType = ResType; // 份数不变，只统一符号（§2.7）
+}
+
+void UAsceEtherNetworkSubsystem::PushPortOutput(int32 PortId)
+{
+	FPort& P = Ports[PortId];
+	if (P.Ether == 0)
+	{
+		return;
+	}
+
+	// Not = 推出时取互补态；And/Or 的符号已在 EvaluateOp 里定好
+	const int16 OutType = (P.Op == EAsceEtherPortOp::Not) ? AsceEther::Complement(P.SignalType) : P.SignalType;
+
+	// ① 内部分流（LinkTargets 已按 §2.9 扫描序排好）
+	if (P.LinkTargets.Num() > 0)
+	{
+		if (P.SplitMode == EAsceEtherSplitMode::Balanced)
+		{
+			// 平均器：在"剩余可接收目标"间均分（ceil ⇒ 余数靠前多分；收不下的份额自动顺延给后面）
+			TArray<int32> Recv;
+			Recv.Reserve(P.LinkTargets.Num());
+			for (const int32 ToPort : P.LinkTargets)
+			{
+				const FPort& Q = Ports[ToPort];
+				const bool bFamilyOk = (Q.Ether == 0) || AsceEther::IsSameFamily(Q.SignalType, OutType);
+				const uint16 Rem = (Q.Throughput > Q.Ether) ? static_cast<uint16>(Q.Throughput - Q.Ether) : 0;
+				if (bFamilyOk && Rem > 0)
+				{
+					Recv.Add(ToPort);
+				}
+			}
+			for (int32 i = 0; i < Recv.Num() && P.Ether > 0; ++i)
+			{
+				const int32 Left = Recv.Num() - i;
+				const uint16 Share = static_cast<uint16>((P.Ether + Left - 1) / Left); // ceil(剩余/剩余目标数)
+				MoveUnits(PortId, Recv[i], FMath::Min<uint16>(Share, P.Ether), OutType);
+			}
+		}
+		else // Ordered：灌满一个再下一个
+		{
+			for (const int32 ToPort : P.LinkTargets)
+			{
+				if (P.Ether == 0)
+				{
+					break;
+				}
+				MoveUnits(PortId, ToPort, P.Ether, OutType);
+			}
+		}
+	}
+
+	// ② 外部推送（1:1）
+	if (P.Ether > 0 && P.OutEdge != INDEX_NONE)
+	{
+		MoveUnits(PortId, Edges[P.OutEdge].ToPort, P.Ether, OutType);
+	}
+}
+
+uint16 UAsceEtherNetworkSubsystem::MoveUnits(int32 FromPort, int32 ToPort, uint16 Amount, int16 Type)
+{
+	if (Amount == 0 || !Ports.IsValidIndex(FromPort) || !Ports.IsValidIndex(ToPort))
+	{
+		return 0;
+	}
+	FPort& S = Ports[FromPort];
+	FPort& T = Ports[ToPort];
+	const uint16 Before = S.Ether;
+	uint16 Left = Amount;
+
+	// 目标已有料：先判族（异族 → 堵死：不消费也不输出）
+	if (T.Ether > 0)
+	{
+		if (!AsceEther::IsSameFamily(T.SignalType, Type))
+		{
+			return 0;
+		}
+		// `And/Or` 目标不湮灭：它要"看到"各入边送来的符号；份数照收（§2.7 份数不吞不吐）
+		const bool bLogicTarget = (T.Op == EAsceEtherPortOp::And) || (T.Op == EAsceEtherPortOp::Or);
+		if (!bLogicTarget && AsceEther::IsComplement(T.SignalType) != AsceEther::IsComplement(Type))
+		{
+			// 同族异号 → 1:1 湮灭（两边同时消耗，不产出）
+			const uint16 Kill = FMath::Min<uint16>(Left, T.Ether);
+			S.Ether = static_cast<uint16>(S.Ether - Kill);
+			T.Ether = static_cast<uint16>(T.Ether - Kill);
+			Left = static_cast<uint16>(Left - Kill);
+		}
+	}
+
+	// 目标空 / 同族同号 → 累加（受吞吐上限）
+	if (Left > 0)
+	{
+		const uint16 Rem = (T.Throughput > T.Ether) ? static_cast<uint16>(T.Throughput - T.Ether) : 0;
+		const uint16 Cap = FMath::Min<uint16>(Rem, FMath::Min<uint16>(S.Throughput, T.Throughput));
+		const uint16 Move = FMath::Min<uint16>(Left, Cap);
+		if (Move > 0)
+		{
+			if (T.Ether == 0)
+			{
+				T.SignalType = Type;
+			}
+			S.Ether = static_cast<uint16>(S.Ether - Move);
+			T.Ether = static_cast<uint16>(T.Ether + Move);
+		}
+	}
+
+	const uint16 Processed = static_cast<uint16>(Before - S.Ether); // 本端口"处理掉"的数量（含被湮灭的）
+
+	// `And/Or` 目标：记录本拍这条入边送来的符号（EvaluateOp 用）
+	if (Processed > 0 && ((T.Op == EAsceEtherPortOp::And) || (T.Op == EAsceEtherPortOp::Or)))
+	{
+		const int32 Idx = T.InSources.IndexOfByKey(FromPort);
+		if (T.InSigns.IsValidIndex(Idx) && T.InSignTick.IsValidIndex(Idx))
+		{
+			T.InSigns[Idx] = Type;
+			T.InSignTick[Idx] = CurrentStamp;
+		}
+	}
+	return Processed;
+}
+
+bool UAsceEtherNetworkSubsystem::MintFromEnergy(const FNode& Node, int32 OutPort, int16 Type)
+{
+	if (!Ports.IsValidIndex(OutPort))
+	{
+		return false;
+	}
+	// 0 号（能量）不能靠能量重铸（否则能量就能凭空翻倍）
+	const uint16 Cost = AsceEther::Family(Type);
+	if (Cost == 0)
+	{
+		return false;
+	}
+
+	uint32 EnergyAvail = 0;
+	for (const int32 Pid : Node.DeviceInputPorts)
+	{
+		const FPort& IP = Ports[Pid];
+		if (IP.Ether > 0 && AsceEther::Family(IP.SignalType) == 0)
+		{
+			EnergyAvail += IP.Ether;
+		}
+	}
+
+	FPort& OP = Ports[OutPort];
+	const uint16 OutRem = (OP.Throughput > OP.Ether)
+		? static_cast<uint16>(OP.Throughput - OP.Ether) : 0;
+	const bool bOutTypeOk = (OP.Ether == 0) || (OP.SignalType == Type);
+	const uint32 Produce = FMath::Min<uint32>(EnergyAvail / Cost, OutRem);
+	if (!bOutTypeOk || Produce == 0)
+	{
+		return false; // 能量不足（不产出、也不消耗）或端口被占/满了
+	}
+
+	uint32 NeedEnergy = Produce * Cost;
+	for (const int32 Pid : Node.DeviceInputPorts)
+	{
+		if (NeedEnergy == 0)
+		{
+			break;
+		}
+		FPort& IP = Ports[Pid];
+		if (IP.Ether > 0 && AsceEther::Family(IP.SignalType) == 0)
+		{
+			const uint16 Take = static_cast<uint16>(FMath::Min<uint32>(IP.Ether, NeedEnergy));
+			IP.Ether = static_cast<uint16>(IP.Ether - Take);
+			NeedEnergy -= Take;
+			if (IP.Ether == 0)
+			{
+				IP.SignalType = 0;
+			}
+		}
+	}
+
+	if (OP.Ether == 0)
+	{
+		OP.SignalType = Type;
+	}
+	OP.Ether = static_cast<uint16>(OP.Ether + Produce);
+	return true;
 }

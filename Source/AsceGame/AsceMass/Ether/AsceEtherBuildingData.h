@@ -73,8 +73,9 @@ struct FAsceEtherRecipeItem
 {
 	GENERATED_BODY()
 
+	/** 有符号：最高位 = 互补标志（族 = 去掉符号位）。 */
 	UPROPERTY(EditAnywhere, Category = "Ether")
-	uint16 SignalType = 0;
+	int16 SignalType = 0;
 
 	UPROPERTY(EditAnywhere, Category = "Ether")
 	uint16 AmountPerTick = 0;
@@ -126,6 +127,14 @@ public:
 	/** 器件端口角色表：输出端口下标。 */
 	UPROPERTY(EditAnywhere, Category = "Ether")
 	TArray<int32> OutputPorts;
+
+	/** 器件参数：编号（`Clock` = 输出的编号；`Counter` = 产出的编号）。 */
+	UPROPERTY(EditAnywhere, Category = "Ether")
+	int16 DeviceParamSignal = 1;
+
+	/** 器件参数 A（`Clock` = 半周期 tick 数；`Counter` = 每累计这么多份脉冲产 1 份）。 */
+	UPROPERTY(EditAnywhere, Category = "Ether")
+	uint16 DeviceParamA = 1;
 
 	/** 配方输入（通用 + 特殊）。生产者用。 */
 	UPROPERTY(EditAnywhere, Category = "Ether")

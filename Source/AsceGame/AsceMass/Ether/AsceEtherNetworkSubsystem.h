@@ -111,6 +111,8 @@ private:
 		int32 PortCount = 0;
 		TArray<int32> DeviceInputPorts;  // 角色表（全局 PortId；器件）
 		TArray<int32> DeviceOutputPorts; // 角色表（全局 PortId；器件）
+		int16  DeviceParamSignal = 1;    // 器件参数：编号
+		uint16 DeviceParamA = 1;         // 器件参数 A（Clock 半周期 / Counter 阈值）
 		TArray<FAsceEtherRecipeItem> RecipeInputs;
 		FAsceEtherRecipeItem RecipeOutput;
 	};
@@ -129,13 +131,19 @@ private:
 		EAsceEtherSplitMode SplitMode = EAsceEtherSplitMode::Ordered;
 
 		// —— 运行态 ——
-		uint16 Ether = 0;
-		uint16 SignalType = 0;          // 0 = 空
+		uint16 Ether = 0;               // 0 = Empty（空；不是逻辑 0）
+		int16  SignalType = 0;          // 有符号；族 = Family()，符号 = 互补态；仅在 Ether > 0 时有意义
 
-		// 内部布线结果：本端口 -> 目标端口（已按分流顺序排序）
+		// 内部布线结果：本端口 -> 目标端口（已按 §2.9 扫描序排序）
 		TArray<int32> LinkTargets;
 		// 外部出边（本端口 -> 对端入端口；1:1，最多一条）
 		int32 OutEdge = INDEX_NONE;
+
+		// 入边源端口表（构建期算好：内部布线的源 + 外部入边的源）
+		TArray<int32> InSources;
+		// 本拍各入边送来的 SignalType（与 InSources 同序；用 InSignTick 判断是否本拍）
+		TArray<int16>  InSigns;
+		TArray<uint32> InSignTick;
 	};
 
 	int32 AllocNodeId();
@@ -144,8 +152,23 @@ private:
 	/** epoch 去重入活跃表；返回是否新加入。 */
 	bool ActivateSeg(int32 SegId);
 
-	/** 处理一个组合端口（内部布线分流 → 外部推送）；bOutHasEther 输出本段是否还有料。 */
+	/** 处理一个组合端口（op 求值 → 分流 → 外部推送）；bOutHasEther 输出本段是否还有料。 */
 	void ProcessPort(int32 PortId, bool& bOutHasEther);
+
+	/** op 求值：`And/Or` 按"本拍各入边送来的符号"定结果符号（份数不变；Empty 的入边不计入；0 号逻辑透明）。 */
+	void EvaluateOp(int32 PortId);
+
+	/** 把本端口缓冲里的料推出去：内部分流（Ordered/Balanced）+ 外部推送（1:1）。 */
+	void PushPortOutput(int32 PortId);
+
+	/** 把 FromPort 的 ether 按 §2.7/§2.8 规则推向 ToPort：异族 → 堵死（不动）；
+	 *  同族异号 → 1:1 湮灭（Wire/Not 目标；`And/Or` 目标不湮灭、只累加并记符号）；同族同号 → 累加（受吞吐上限）。
+	 *  Type = 本次推送的 SignalType（可能已被 Not 翻转）。返回实际处理的数量。 */
+	uint16 MoveUnits(int32 FromPort, int32 ToPort, uint16 Amount, int16 Type);
+
+	/** 记忆/时钟的"读取"：用 0 号 ether（能量）把 Type 重铸到 OutPort。
+	 *  `1 份 = abs(Type)` 份能量；能量不足 ⇒ 不产出、不消耗（不累积）。返回是否产出。 */
+	bool MintFromEnergy(const FNode& Node, int32 OutPort, int16 Type);
 
 	// —— DA 注册表 ——
 	TMap<FName, TWeakObjectPtr<UAsceEtherBuildingData>> BuildingDataRegistry;
