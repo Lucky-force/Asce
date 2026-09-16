@@ -1,9 +1,10 @@
 // AsceEtherDebugger.cpp
 #include "AsceEtherDebugger.h"
 
-#include "AsceMass/Ether/AsceEtherBuildingData.h"
+#include "AsceMass/Ether/AsceEtherBuildingConfig.h"
 #include "AsceMass/Ether/AsceEtherFragments.h"
 #include "AsceMass/Ether/AsceEtherNetworkSubsystem.h"
+#include "AsceMass/Ether/AsceEtherProcessCore.h"
 #include "AsceMass/Fragments/AsceFootprintFragment.h"
 #include "AsceMass/FlowField/AsceFlowFieldCores.h"   // GRID_SIZE
 #include "DrawDebugHelpers.h"
@@ -53,14 +54,19 @@ void AAsceEtherDebugger::SpawnAndRegister()
 
 	for (const FAsceEtherDebugPlacement& Placement : Placements)
 	{
-		if (!Placement.Data)
+		if (!Placement.ConfigClass)
+		{
+			continue;
+		}
+		const UAsceEtherBuildingConfig* Cfg = Placement.ConfigClass->GetDefaultObject<UAsceEtherBuildingConfig>();
+		if (!Cfg)
 		{
 			continue;
 		}
 
-		// 建筑类型数据登记（正式流程由 UAsceEtherBuildingTrait::BuildTemplate 做）
-		const FName DefId = Placement.Data->GetFName();
-		Net->RegisterBuildingData(DefId, Placement.Data);
+		// 建筑配置登记（正式流程由 UAsceEtherBuildingTrait::BuildTemplate 做）
+		const FName DefId = Placement.ConfigClass->GetFName();
+		Net->RegisterBuildingConfig(DefId, Placement.ConfigClass);
 
 		// 用"带初始值的 CreateEntity"建实体：Mass 的 Add 观察者在创建时立刻执行，
 		// 走裸 Archetype（默认构造 fragment）会让观察者读到 BuildingDefId=None；
@@ -79,8 +85,8 @@ void AAsceEtherDebugger::SpawnAndRegister()
 			FAsceGridFootprintFragment& Foot = FragmentList.Add_GetRef(FInstancedStruct::Make<FAsceGridFootprintFragment>())
 				.GetMutable<FAsceGridFootprintFragment>();
 			Foot.OriginGridLocation = Placement.Cell;
-			Foot.SizeX = FMath::Max(1, Placement.Data->SizeX);
-			Foot.SizeY = FMath::Max(1, Placement.Data->SizeY);
+			Foot.SizeX = FMath::Max(1, Cfg->SizeX);
+			Foot.SizeY = FMath::Max(1, Cfg->SizeY);
 			Foot.OcclusionHeightCm = 0;   // 调试建筑不参与视野遮挡
 		}
 		{
@@ -88,10 +94,6 @@ void AAsceEtherDebugger::SpawnAndRegister()
 			FEtherBuildingFragment& Ether = FragmentList.Add_GetRef(FInstancedStruct::Make<FEtherBuildingFragment>())
 				.GetMutable<FEtherBuildingFragment>();
 			Ether.BuildingDefId = DefId;
-		}
-		if (Placement.Data->bIsDevice)
-		{
-			FragmentList.Add(FInstancedStruct::Make<FEtherDeviceStateFragment>());
 		}
 
 		const FMassEntityHandle Entity = EM.CreateEntity(FragmentList);
@@ -189,21 +191,25 @@ void AAsceEtherDebugger::DrawDebugState()
 	int32 UsedNodes = 0;
 	for (int32 NodeId = 0; NodeId < NodeNum; ++NodeId)
 	{
-		const int32 Start = Net->GetNodePortStart(NodeId);
 		const int32 Count = Net->GetNodePortCount(NodeId);
-		if (Start == INDEX_NONE || Count <= 0)
+		if (Count <= 0)
 		{
 			continue;
 		}
 		++UsedNodes;
+		int32 FirstPortId = INDEX_NONE; // 器件状态显示用
 
 		for (int32 i = 0; i < Count; ++i)
 		{
-			const int32 PortId = Start + i;
+			const int32 PortId = Net->GetNodePortId(NodeId, i); // 端口持久化：按 slot 取 id（不连续）
 			UAsceEtherNetworkSubsystem::FPortView V;
 			if (!Net->GetPortView(PortId, V))
 			{
 				continue;
+			}
+			if (FirstPortId == INDEX_NONE)
+			{
+				FirstPortId = PortId;
 			}
 
 			const FVector2D P(
@@ -260,23 +266,17 @@ void AAsceEtherDebugger::DrawDebugState()
 			}
 		}
 
-		// 器件内部状态
-		if (const FEtherDeviceStateFragment* State = Net->GetDeviceState(NodeId))
+		// 器件内部状态（由 core 自己描述；无 core 就不画）
+		if (const UAsceEtherProcessCore* Core = Net->GetProcessCore(NodeId))
 		{
+			const FString State = Core->GetDebugString();
 			UAsceEtherNetworkSubsystem::FPortView V0;
-			if (Net->GetPortView(Start, V0))
+			if (!State.IsEmpty() && Net->GetPortView(FirstPortId, V0))
 			{
 				const FVector2D P(
 					(static_cast<float>(V0.CellX) + 0.5f) * GRID_SIZE,
 					(static_cast<float>(V0.CellY) + 0.5f) * GRID_SIZE);
-				DrawDebugString(World, FVector(P.X, P.Y, 160.f),
-					FString::Printf(TEXT("存储:%s%d 进度:%d 位:%d%d%d%d%d%d%d%d"),
-						State->StoredType < 0 ? TEXT("-") : TEXT("+"),
-						FMath::Abs(static_cast<int32>(State->StoredType)),
-						State->Progress,
-						State->StoredBits[0] != 0, State->StoredBits[1] != 0, State->StoredBits[2] != 0, State->StoredBits[3] != 0,
-						State->StoredBits[4] != 0, State->StoredBits[5] != 0, State->StoredBits[6] != 0, State->StoredBits[7] != 0),
-					nullptr, FColor::Yellow, 0.f, true);
+				DrawDebugString(World, FVector(P.X, P.Y, 160.f), State, nullptr, FColor::Yellow, 0.f, true);
 			}
 		}
 	}

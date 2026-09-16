@@ -33,7 +33,8 @@ void UAsceEtherRegistrationAddObserverProcessor::Execute(FMassEntityManager& Ent
 		const TConstArrayView<FMassEntityHandle> Entities = Ctx.GetEntities();
 		for (int32 i = 0; i < Entities.Num(); ++i)
 		{
-			Net.RegisterBuilding(Entities[i], Frags[i].BuildingDefId);
+			// 结构性修改走命令队列（tick 开头统一应用）
+			Net.PushAddNode(Entities[i], Frags[i].BuildingDefId);
 		}
 	});
 }

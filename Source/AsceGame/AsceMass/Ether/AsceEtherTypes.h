@@ -27,25 +27,32 @@ enum class EAsceEtherSplitMode : uint8
 	Balanced = 1 UMETA(DisplayName = "Balanced")   // 平均器
 };
 
-/** 器件 op（时序单元的类型；传输器不用）。 */
+/** 端口的传输角色。由 **core 在 `OnInit` 设定**（器件功能的定义，**玩家不可改**）。
+ *  只是元数据：建图定向时用一次 + core 自校验 + 表现层（入/出口长得不一样）；每 tick 的推流**不看**它。 */
 UENUM(BlueprintType)
-enum class EAsceEtherDeviceOp : uint8
+enum class EAsceEtherTransportType : uint8
 {
-	Facility    = 0 UMETA(DisplayName = "Facility"),      // 配方设施：扣 RecipeInputs → 产 RecipeOutput
-	Sink        = 1 UMETA(DisplayName = "Sink"),          // 汇：吃掉输入
-	Latch       = 2 UMETA(DisplayName = "Latch"),         // 记忆单元：写入覆盖编号；读取用 0 号能量重铸
-	Counter     = 3 UMETA(DisplayName = "Counter"),       // 计数：脉冲累计满阈值产 1 份
-	Clock       = 4 UMETA(DisplayName = "Clock"),         // 自振荡：每半周期翻转编号并重铸
-	Annihilator = 5 UMETA(DisplayName = "Annihilator"),   // 湮灭发电机：+X 与 −X ⇒ |X| 份 0 号
-	Register    = 6 UMETA(DisplayName = "Register")       // 寄存器：并行加载（最后一个入端口 = enable）
+	Input  = 0 UMETA(DisplayName = "Input"),   // 只收（外部边的终点）
+	Output = 1 UMETA(DisplayName = "Output"),  // 只发（外部边的起点）
+	Any    = 2 UMETA(DisplayName = "Any")      // 由内部布线结构决定（传输器默认）
 };
+
+/** 建筑类型：组合（传输器）还是时序（器件）。 */
+UENUM(BlueprintType)
+enum class EAsceEtherDeviceType : uint8
+{
+	Combinational = 0 UMETA(DisplayName = "Combinational"),  // 传输器：纯组合，引擎负责传播
+	Sequential    = 1 UMETA(DisplayName = "Sequential")      // 器件：每 tick 由 ProcessCore 执行
+};
+
+// 器件 op 已改为**行为类**实现：见 AsceMass/Ether/AsceEtherCores.h（UAsceEtherProcessCore 的子类）。
 
 namespace AsceEther
 {
 	/** 每个建筑支持的维度上限（端口维度范围 [0, MaxDims)）。 */
 	constexpr int32 MaxDims = 8;
 
-	/** 连线射线的最大搜索格数（防御；>= 地图尺寸即可）。 */
+	/** 连线距离的**约定默认值**（端口型号的 `LinkRangeCells` 默认填它；实际以端口型号为准）。 */
 	constexpr int32 MaxLinkRangeCells = 256;
 
 	/** 方向：从"左"起顺时针。 */
@@ -58,13 +65,12 @@ namespace AsceEther
 		Count = 4
 	};
 
-	/** 建筑在 ether 网络中的角色：器件（时序）由 bIsDevice + DeviceOp 描述；传输器 = 纯组合。 */
+	/** 建筑角色：器件（时序）由建筑配置的 `DeviceType` + `ProcessCoreClass` 描述；传输器 = 纯组合。 */
 
 	/** 能量（0 号 ether）的 SignalType。 */
 	constexpr int16 EnergySignalType = 0;
 
-	/** 通用材料编号（举例/默认值用）。 */
-	constexpr int16 GenericSignalType = 1;
+	// 编号约定：`0` = **能量**（族 0）；其它编号（含正/互补态）由配置/玩家定义，没有"内置通用材料"。
 
 	// ── 互补态（有符号 SignalType；最高位 = 互补标志） ──
 	// 族（family）= 去掉符号位；同族异号 = 互为正/反态（合流时湮灭）。

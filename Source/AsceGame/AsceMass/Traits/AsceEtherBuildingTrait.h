@@ -5,11 +5,12 @@
 #include "MassEntityTraitBase.h"
 #include "AsceEtherBuildingTrait.generated.h"
 
-class UAsceEtherBuildingData;
+class UAsceEtherBuildingConfig;
 
 /**
- * 建筑 ether 功能 Trait：给建筑实体加 ether 的网络 fragment。
- * 建筑类型在配置里组合 Trait（基础 Trait + 本 Trait + 其它功能 Trait），不需要为每个类型写 C++。
+ * 建筑 ether 功能 Trait：给建筑实体加 ether 的标记 fragment（+ 登记建筑配置）。
+ * 建筑类型在配置里组合 Trait（基础 Trait + 本 Trait + 其它功能 Trait），不需要为每个类型写 C++；
+ * 具体"是什么器件 / 有哪些端口"由 `BuildingConfig`（蓝图子类）与它的 `ProcessCore` 决定。
  */
 UCLASS(BlueprintType, meta = (DisplayName = "Asce Ether Building"))
 class UAsceEtherBuildingTrait : public UMassEntityTraitBase
@@ -17,11 +18,11 @@ class UAsceEtherBuildingTrait : public UMassEntityTraitBase
 	GENERATED_BODY()
 
 public:
-	/** 该建筑类型的 ether 静态数据（端口布局/配方/等级）。 */
+	/** 该建筑类型的配置（`UAsceEtherBuildingConfig` 的蓝图子类）。 */
 	UPROPERTY(EditAnywhere, Category = "Ether")
-	TObjectPtr<UAsceEtherBuildingData> BuildingData;
+	TSubclassOf<UAsceEtherBuildingConfig> BuildingConfig;
 
-	/** 运行时用于反查的唯一 id（可空白，默认取资产名）。 */
+	/** 运行时用于反查的唯一 id（可空白，默认取配置类名）。 */
 	UPROPERTY(EditAnywhere, Category = "Ether")
 	FName BuildingDefId;
 

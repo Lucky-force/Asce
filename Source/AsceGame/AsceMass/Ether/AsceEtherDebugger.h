@@ -3,19 +3,19 @@
 
 #include "GameFramework/Actor.h"
 #include "MassArchetypeTypes.h"
-#include "MassEntityHandle.h"
+#include "Mass/EntityHandle.h"
 #include "AsceEtherDebugger.generated.h"
 
-class UAsceEtherBuildingData;
+class UAsceEtherBuildingConfig;
 
-/** 调试放置：建筑类型资产 + 逻辑格坐标（与 footprint/流场同一格网，GRID_SIZE=100cm） */
+/** 调试放置：建筑配置类 + 逻辑格坐标（与 footprint/流场同一格网，GRID_SIZE=100cm） */
 USTRUCT()
 struct FAsceEtherDebugPlacement
 {
 	GENERATED_BODY()
 
 	UPROPERTY(EditAnywhere, Category = "Ether")
-	TObjectPtr<UAsceEtherBuildingData> Data;
+	TSubclassOf<UAsceEtherBuildingConfig> ConfigClass;
 
 	UPROPERTY(EditAnywhere, Category = "Ether")
 	FIntPoint Cell = FIntPoint(0, 0);

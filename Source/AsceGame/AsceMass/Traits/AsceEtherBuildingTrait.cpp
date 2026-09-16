@@ -2,7 +2,7 @@
 #include "AsceEtherBuildingTrait.h"
 
 #include "MassEntityTemplateRegistry.h"
-#include "AsceMass/Ether/AsceEtherBuildingData.h"
+#include "AsceMass/Ether/AsceEtherBuildingConfig.h"
 #include "AsceMass/Ether/AsceEtherFragments.h"
 #include "AsceMass/Ether/AsceEtherNetworkSubsystem.h"
 
@@ -10,25 +10,19 @@
 
 void UAsceEtherBuildingTrait::BuildTemplate(FMassEntityTemplateBuildContext& BuildContext, const UWorld& World) const
 {
-	const FName DefId = BuildingData
-		? (BuildingDefId.IsNone() ? FName(*BuildingData->GetName()) : BuildingDefId)
+	const FName DefId = BuildingConfig
+		? (BuildingDefId.IsNone() ? BuildingConfig->GetFName() : BuildingDefId)
 		: BuildingDefId;
 
-	// 登记建筑类型数据：Subsystem 按 BuildingDefId 反查（fragment 只留标记）
-	if (BuildingData)
+	// 登记建筑配置：Subsystem 按 BuildingDefId 反查（fragment 只留标记）
+	if (BuildingConfig)
 	{
 		if (UAsceEtherNetworkSubsystem* Net = UAsceEtherNetworkSubsystem::Get(&World))
 		{
-			Net->RegisterBuildingData(DefId, BuildingData);
+			Net->RegisterBuildingConfig(DefId, BuildingConfig);
 		}
 	}
 
 	// 标记 fragment：运行时注册/注销的锚点 + 身份
 	BuildContext.AddFragment_GetRef<FEtherBuildingFragment>().BuildingDefId = DefId;
-
-	// 器件：内部状态 fragment（时序单元的状态放这里，Subsystem 不持有）
-	if (BuildingData && BuildingData->bIsDevice)
-	{
-		BuildContext.AddFragment_GetRef<FEtherDeviceStateFragment>();
-	}
 }
