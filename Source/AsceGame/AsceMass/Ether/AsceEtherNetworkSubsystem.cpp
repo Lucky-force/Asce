@@ -7,6 +7,8 @@
 #include "MassEntitySubsystem.h"
 #include "AsceMass/Fragments/AsceFootprintFragment.h"
 #include "AsceMass/Ether/AsceEtherFragments.h"
+#include "AsceMass/FlowField/AscePathFindingSubsystem.h"
+#include "AsceMass/FlowField/AscePathFinder.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AsceEtherNetworkSubsystem)
 
@@ -33,6 +35,11 @@ bool UAsceEtherNetworkSubsystem::ShouldCreateSubsystem(UObject* Outer) const
 		return false;
 	}
 	if (!Super::ShouldCreateSubsystem(Outer))
+	{
+		return false;
+	}
+	// 客户端不参与逻辑（表现后续从复制数据来）：不创建实例，避免空转/误用
+	if (World->IsNetMode(NM_Client))
 	{
 		return false;
 	}
@@ -92,6 +99,48 @@ int32 UAsceEtherNetworkSubsystem::AllocNodeId()
 	return Nodes.AddDefaulted();
 }
 
+bool UAsceEtherNetworkSubsystem::GetPortView(int32 PortId, FPortView& OutView) const
+{
+	if (!Ports.IsValidIndex(PortId))
+	{
+		return false;
+	}
+	const FPort& P = Ports[PortId];
+	OutView.NodeId = P.NodeId;
+	OutView.Dir = P.Dir;
+	OutView.Dim = P.Dim;
+	OutView.CellX = P.CellX;
+	OutView.CellY = P.CellY;
+	OutView.Throughput = P.Throughput;
+	OutView.Ether = P.Ether;
+	OutView.SignalType = P.SignalType;
+	OutView.bIsInput = P.bIsInput;
+	OutView.OutTargetPort = (P.OutEdge != INDEX_NONE && Edges.IsValidIndex(P.OutEdge))
+		? Edges[P.OutEdge].ToPort : INDEX_NONE;
+	return true;
+}
+
+const TArray<int32>* UAsceEtherNetworkSubsystem::GetPortLinkTargets(int32 PortId) const
+{
+	return Ports.IsValidIndex(PortId) ? &Ports[PortId].LinkTargets : nullptr;
+}
+
+const FEtherDeviceStateFragment* UAsceEtherNetworkSubsystem::GetDeviceState(int32 NodeId) const
+{
+	if (!IsDevice(NodeId))
+	{
+		return nullptr;
+	}
+	const UWorld* World = GetWorld();
+	UMassEntitySubsystem* MassSub = World ? World->GetSubsystem<UMassEntitySubsystem>() : nullptr;
+	if (!MassSub)
+	{
+		return nullptr;
+	}
+	const FMassEntityManager& EM = MassSub->GetEntityManager();
+	return EM.GetFragmentDataPtr<FEtherDeviceStateFragment>(Nodes[NodeId].Entity);
+}
+
 int32 UAsceEtherNetworkSubsystem::RegisterBuilding(FMassEntityHandle Entity, FName BuildingDefId)
 {
 	const int32 NodeId = AllocNodeId();
@@ -108,8 +157,8 @@ int32 UAsceEtherNetworkSubsystem::RegisterBuilding(FMassEntityHandle Entity, FNa
 			*BuildingDefId.ToString());
 	}
 
-	// 结构变化：重建（先整图重建；后续可做脏区域增量）
-	RebuildGraph();
+	// 结构变化：置脏标记，真正重建延迟到下一次 RunEtherTick 开头（批量放置只重建一次）
+	bGraphDirty = true;
 	return NodeId;
 }
 
@@ -125,7 +174,8 @@ void UAsceEtherNetworkSubsystem::UnregisterBuilding(int32 NodeId)
 	Nodes[NodeId].RecipeInputs.Reset();
 	FreeIds.Add(NodeId);
 
-	RebuildGraph();
+	// 结构变化：置脏标记，延迟到下一次 RunEtherTick 开头统一重建
+	bGraphDirty = true;
 }
 
 void UAsceEtherNetworkSubsystem::UnregisterBuildingByEntity(FMassEntityHandle Entity)
@@ -169,6 +219,48 @@ bool UAsceEtherNetworkSubsystem::ActivateSeg(int32 SegId)
 
 void UAsceEtherNetworkSubsystem::RebuildGraph()
 {
+	bGraphDirty = false;
+
+	// 保存旧运行态（按 (nodeId, 建筑内端口下标) 映射），重建后恢复：
+	// 结构变化（放置/拆除其它建筑）不应该把全网的在制品和端口缓冲清空。
+	TMap<uint64, TPair<uint16, int16>> SavedPortState;
+	for (int32 NodeId = 0; NodeId < Nodes.Num(); ++NodeId)
+	{
+		const FNode& N = Nodes[NodeId];
+		if (!N.bAlive)
+		{
+			continue;
+		}
+		for (int32 li = 0; li < N.PortCount; ++li)
+		{
+			const int32 Pid = N.PortStart + li;
+			if (!Ports.IsValidIndex(Pid))
+			{
+				break;
+			}
+			const FPort& P = Ports[Pid];
+			if (P.Ether > 0)
+			{
+				SavedPortState.Add(
+					(static_cast<uint64>(static_cast<uint32>(NodeId)) << 32) | static_cast<uint32>(li),
+					TPair<uint16, int16>(P.Ether, P.SignalType));
+			}
+		}
+	}
+
+	// 连线射线扫描上限：至少 MaxLinkRangeCells，实际取"地图长边"，避免大地图上静默断连
+	int32 MaxScanCells = AsceEther::MaxLinkRangeCells;
+	if (UAscePathFindingSubsystem* PathFinding = UAscePathFindingSubsystem::Get(this))
+	{
+		if (const UPathFinder* Finder = PathFinding->GetPathFinder())
+		{
+			if (const FWorldMapData* Map = Finder->GetWorldMapData())
+			{
+				MaxScanCells = FMath::Max(MaxScanCells, FMath::Max(Map->GetGridCountX(), Map->GetGridCountY()));
+			}
+		}
+	}
+
 	ClearGraph();
 
 	const int32 NodeNum = Nodes.Num();
@@ -231,6 +323,27 @@ void UAsceEtherNetworkSubsystem::RebuildGraph()
 			continue; // 注册时已告警
 		}
 
+		// 配置校验（只告警、不跳过：跳过会打乱端口下标与 InternalLinks/角色表的对应关系）
+		for (int32 pi = 0; pi < Data->Ports.Num(); ++pi)
+		{
+			const FAsceEtherPortDef& DefI = Data->Ports[pi];
+			if (DefI.Dim >= Data->SupportedDimCount)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("[Ether] 端口维度超出 SupportedDimCount：%s 端口 %d（Dim=%d, Supported=%d）"),
+					*N.BuildingDefId.ToString(), pi, DefI.Dim, Data->SupportedDimCount);
+			}
+			for (int32 pj = 0; pj < pi; ++pj)
+			{
+				const FAsceEtherPortDef& DefJ = Data->Ports[pj];
+				if (DefI.CellOffsetX == DefJ.CellOffsetX && DefI.CellOffsetY == DefJ.CellOffsetY
+					&& DefI.Dir == DefJ.Dir && DefI.Dim == DefJ.Dim)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("[Ether] 重复端口（同格/同向/同维）：%s 端口 %d 与 %d"),
+						*N.BuildingDefId.ToString(), pj, pi);
+				}
+			}
+		}
+
 		// 器件 = 时序（由 DeviceOp 决定行为）；传输器 = 纯组合
 		N.bDevice = Data->bIsDevice;
 		N.DeviceOp = static_cast<uint8>(Data->DeviceOp);
@@ -284,6 +397,26 @@ void UAsceEtherNetworkSubsystem::RebuildGraph()
 			}
 		}
 		// 传输器：先全部当"出"，入由内部布线在 ② 里回填（被指向的端口 = 入）。
+
+		// Register 器件：输入端口应为 8 位 + 1 enable（超出部分会被忽略）
+		if (N.bDevice && N.DeviceOp == static_cast<uint8>(EAsceEtherDeviceOp::Register) && N.DeviceInputPorts.Num() > 9)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[Ether] Register 输入端口超过 9 个（8 位 + enable；多余会被忽略）：%s"),
+				*N.BuildingDefId.ToString());
+		}
+
+		// 恢复旧运行态（同建筑类型端口布局不变 → (nodeId, 本地端口下标) 映射稳定）
+		for (int32 pi = 0; pi < N.PortCount; ++pi)
+		{
+			const TPair<uint16, int16>* Saved = SavedPortState.Find(
+				(static_cast<uint64>(static_cast<uint32>(NodeId)) << 32) | static_cast<uint32>(pi));
+			if (Saved)
+			{
+				FPort& P = Ports[N.PortStart + pi];
+				P.Ether = Saved->Key;
+				P.SignalType = Saved->Value;
+			}
+		}
 	}
 
 	// ② 内部布线（变长边表；传输器的入/出由此推导）
@@ -338,7 +471,24 @@ void UAsceEtherNetworkSubsystem::RebuildGraph()
 			// rank = (Dir - SrcDir + 1) & 3；rank 0 = 源端口左手边那个方向
 			const int32 RA = (static_cast<int32>(PA.Dir) - SrcDir + 1) & 3;
 			const int32 RB = (static_cast<int32>(PB.Dir) - SrcDir + 1) & 3;
-			return (RA != RB) ? (RA < RB) : (PA.Dim < PB.Dim);
+			if (RA != RB)
+			{
+				return RA < RB;
+			}
+			if (PA.Dim != PB.Dim)
+			{
+				return PA.Dim < PB.Dim;
+			}
+			// 同 (rank, Dim) 的多格端口：用格坐标/PortId 兜底，保证顺序确定（Sort 本身不稳定）
+			if (PA.CellY != PB.CellY)
+			{
+				return PA.CellY < PB.CellY;
+			}
+			if (PA.CellX != PB.CellX)
+			{
+				return PA.CellX < PB.CellX;
+			}
+			return A < B;
 		});
 	}
 
@@ -365,7 +515,7 @@ void UAsceEtherNetworkSubsystem::RebuildGraph()
 		int32 cx = SPort.CellX;
 		int32 cy = SPort.CellY;
 		int32 ToPort = INDEX_NONE;
-		for (int32 step = 0; step < AsceEther::MaxLinkRangeCells; ++step)
+		for (int32 step = 0; step < MaxScanCells; ++step)
 		{
 			cx += dx;
 			cy += dy;
@@ -524,12 +674,10 @@ void UAsceEtherNetworkSubsystem::RebuildGraph()
 		}
 		if (Order.Num() != Comp.Num())
 		{
-			// 组合环（无器件破环）→ 非法；这里兜底把剩余端口接上（开发期应避免）
-			UE_LOG(LogTemp, Error, TEXT("[Ether] 组合环：段内 %d 个端口只排出 %d 个（应有器件破环）"), Comp.Num(), Order.Num());
-			for (const int32 U : Comp)
-			{
-				Order.AddUnique(U);
-			}
+			// 组合环（无器件破环）→ 非法：只把已排出拓扑序的端口接入处理，
+			// 环上的端口不参与运算（避免"带着环跑"产生不确定结果）。开发期应避免这种布线。
+			UE_LOG(LogTemp, Error, TEXT("[Ether] 组合环：段内 %d 个端口只排出 %d 个（环上端口已拒绝处理，应由器件破环）"),
+				Comp.Num(), Order.Num());
 		}
 
 		FAsceEtherSegment Seg;
@@ -570,13 +718,35 @@ void UAsceEtherNetworkSubsystem::RebuildGraph()
 		LinkDeviceSeg(E.FromPort, E.ToPort);
 	}
 
-	// TODO(阶段⑥)：首帧活跃表（可把有残留的段加入）；当前留空，靠器件采样注入。
+	// 初始活跃段：结构变化/首帧后，把仍有残留的段直接加入活跃表（不依赖器件采样先注入）。
+	// 注意：直接写 Stamp/ActiveList，不能用 ActivateSeg——ClearGraph 刚把 CurrentStamp 复位为 0，
+	// 与段的初始 Stamp == 0 相等会被判成"本帧已加入"而跳过。
+	for (int32 SegId = 0; SegId < Segments.Num(); ++SegId)
+	{
+		const FAsceEtherSegment& Seg = Segments[SegId];
+		bool bHasEther = false;
+		for (int32 k = Seg.Start; k < Seg.Start + Seg.Count && !bHasEther; ++k)
+		{
+			bHasEther = Ports[ProcessOrder[k]].Ether > 0;
+		}
+		if (bHasEther)
+		{
+			Segments[SegId].Stamp = CurrentStamp;
+			ActiveList.Add(SegId);
+		}
+	}
 }
 
 // ── 每 tick ──
 
 void UAsceEtherNetworkSubsystem::RunEtherTick()
 {
+	// 结构变化（注册/注销建筑）延迟到这里统一重建：批量放置只重建一次
+	if (bGraphDirty)
+	{
+		RebuildGraph();
+	}
+
 	++CurrentStamp;
 
 	const int32 NodeNum = Nodes.Num();
@@ -594,6 +764,13 @@ void UAsceEtherNetworkSubsystem::RunEtherTick()
 	}
 
 	// ── ① 器件采样（时序：拍边界；行为由 DeviceOp 决定） ──
+	// 两遍处理，保证"器件 → 器件"的外部边也是 1 tick/级（与 nodeId 顺序无关）：
+	//   Pass 1：全体器件采样（读输入 → 更新内部状态 → 写自己的输出端口缓冲）+ 激活相邻段；
+	//   Pass 2：全体器件统一把输出端口推出去（含上拍残留），推不掉留着下拍继续。
+	// 这样本拍任何器件写入下游器件入端口的料，下游只能下一拍采样到；写进组合段的料在本拍 ② 里继续传播。
+	TArray<int32> NodeOutPortUsed;
+	NodeOutPortUsed.Init(INDEX_NONE, NodeNum);
+
 	for (int32 NodeId = 0; NodeId < NodeNum; ++NodeId)
 	{
 		if (!IsDevice(NodeId))
@@ -635,8 +812,9 @@ void UAsceEtherNetworkSubsystem::RunEtherTick()
 				const uint16 OutRem = (OP.Throughput > OP.Ether)
 					? static_cast<uint16>(OP.Throughput - OP.Ether) : 0;
 
-				// 配方输入是否都够（只看角色表的入端口）
-				bool bEnough = (N.RecipeInputs.Num() > 0);
+				// 配方输入是否都够（只看角色表的入端口）。
+				// 空配方（无 Inputs）= 根产源（矿机/发电机型）：不扣料、自由产出，仅受输出端口吞吐限制。
+				bool bEnough = true;
 				for (int32 ii = 0; ii < N.RecipeInputs.Num() && bEnough; ++ii)
 				{
 					const FAsceEtherRecipeItem& Item = N.RecipeInputs[ii];
@@ -925,7 +1103,18 @@ void UAsceEtherNetworkSubsystem::RunEtherTick()
 			}
 		}
 
-		// 把输出端口的料推出去（可能还有上拍残留；推不掉就留着，下拍继续）
+		// 记录本拍写出/需要推出的输出端口，Pass 2 统一推送
+		NodeOutPortUsed[NodeId] = OutPortUsed;
+	}
+
+	// Pass 2：全体器件统一推送输出端口（可能还有上拍残留；推不掉就留着，下拍继续）
+	for (int32 NodeId = 0; NodeId < NodeNum; ++NodeId)
+	{
+		if (!IsDevice(NodeId))
+		{
+			continue;
+		}
+		FNode& N = Nodes[NodeId];
 		bool bOutLeft = false;
 		for (const int32 Pid : N.DeviceOutputPorts)
 		{
@@ -935,6 +1124,7 @@ void UAsceEtherNetworkSubsystem::RunEtherTick()
 				bOutLeft = true;
 			}
 		}
+		const int32 OutPortUsed = NodeOutPortUsed[NodeId];
 		if (OutPortUsed != INDEX_NONE && !N.DeviceOutputPorts.Contains(OutPortUsed))
 		{
 			PushPortOutput(OutPortUsed);
@@ -1019,7 +1209,14 @@ void UAsceEtherNetworkSubsystem::EvaluateOp(int32 PortId)
 		}
 		if (AsceEther::Family(T) != 0)
 		{
-			(AsceEther::IsComplement(T) ? bAnyMinus : bAnyPlus) = true;
+			if (AsceEther::IsComplement(T))
+			{
+				bAnyMinus = true;
+			}
+			else
+			{
+				bAnyPlus = true;
+			}
 		}
 	}
 	if (!bHas || P.Ether == 0)
@@ -1118,11 +1315,19 @@ uint16 UAsceEtherNetworkSubsystem::MoveUnits(int32 FromPort, int32 ToPort, uint1
 		const bool bLogicTarget = (T.Op == EAsceEtherPortOp::And) || (T.Op == EAsceEtherPortOp::Or);
 		if (!bLogicTarget && AsceEther::IsComplement(T.SignalType) != AsceEther::IsComplement(Type))
 		{
-			// 同族异号 → 1:1 湮灭（两边同时消耗，不产出）
-			const uint16 Kill = FMath::Min<uint16>(Left, T.Ether);
-			S.Ether = static_cast<uint16>(S.Ether - Kill);
-			T.Ether = static_cast<uint16>(T.Ether - Kill);
-			Left = static_cast<uint16>(Left - Kill);
+			if (T.InSources.Num() > 1)
+			{
+				// 合流节点（结构上多条入边）：不同来源往同一节点送入相反的 ether → 同族异号 1:1 湮灭
+				const uint16 Kill = FMath::Min<uint16>(Left, T.Ether);
+				S.Ether = static_cast<uint16>(S.Ether - Kill);
+				T.Ether = static_cast<uint16>(T.Ether - Kill);
+				Left = static_cast<uint16>(Left - Kill);
+			}
+			else
+			{
+				// 单一来源的普通节点：符号直接翻转（清空该端口残留、采用来料；值变化即时响应，§2.7）
+				T.Ether = 0;
+			}
 		}
 	}
 

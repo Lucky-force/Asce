@@ -19,6 +19,7 @@ UAsceEtherRegistrationAddObserverProcessor::UAsceEtherRegistrationAddObserverPro
 
 void UAsceEtherRegistrationAddObserverProcessor::ConfigureQueries(const TSharedRef<FMassEntityManager>& EntityManager)
 {
+	EntityQuery.RegisterWithProcessor(*this);
 	EntityQuery.AddRequirement<FEtherBuildingFragment>(EMassFragmentAccess::ReadOnly);
 	EntityQuery.AddSubsystemRequirement<UAsceEtherNetworkSubsystem>(EMassFragmentAccess::ReadWrite);
 }
@@ -49,6 +50,7 @@ UAsceEtherRegistrationRemoveObserverProcessor::UAsceEtherRegistrationRemoveObser
 
 void UAsceEtherRegistrationRemoveObserverProcessor::ConfigureQueries(const TSharedRef<FMassEntityManager>& EntityManager)
 {
+	EntityQuery.RegisterWithProcessor(*this);
 	EntityQuery.AddRequirement<FEtherBuildingFragment>(EMassFragmentAccess::ReadOnly);
 	EntityQuery.AddSubsystemRequirement<UAsceEtherNetworkSubsystem>(EMassFragmentAccess::ReadWrite);
 }

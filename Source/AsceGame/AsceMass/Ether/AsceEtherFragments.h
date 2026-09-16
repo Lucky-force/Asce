@@ -38,7 +38,7 @@ struct FEtherDeviceStateFragment : public FMassFragment
 	bool bHasStored = false;
 
 	/** 寄存器位（编号；0 = 空槽）。**上限 8 位**（= 单格的维度数；多位由玩家拼多个寄存器）。 */
-	int16 StoredBits[8];
+	int16 StoredBits[8] = { 0 };
 
 	/** 计数进度（Counter 等后续用）。 */
 	uint16 Progress = 0;

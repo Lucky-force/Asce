@@ -34,8 +34,8 @@ enum class EAsceEtherDeviceOp : uint8
 	Facility    = 0 UMETA(DisplayName = "Facility"),      // 配方设施：扣 RecipeInputs → 产 RecipeOutput
 	Sink        = 1 UMETA(DisplayName = "Sink"),          // 汇：吃掉输入
 	Latch       = 2 UMETA(DisplayName = "Latch"),         // 记忆单元：写入覆盖编号；读取用 0 号能量重铸
-	Counter     = 3 UMETA(DisplayName = "Counter"),       // 计数（待实现）
-	Clock       = 4 UMETA(DisplayName = "Clock"),         // 自振荡（待实现）
+	Counter     = 3 UMETA(DisplayName = "Counter"),       // 计数：脉冲累计满阈值产 1 份
+	Clock       = 4 UMETA(DisplayName = "Clock"),         // 自振荡：每半周期翻转编号并重铸
 	Annihilator = 5 UMETA(DisplayName = "Annihilator"),   // 湮灭发电机：+X 与 −X ⇒ |X| 份 0 号
 	Register    = 6 UMETA(DisplayName = "Register")       // 寄存器：并行加载（最后一个入端口 = enable）
 };

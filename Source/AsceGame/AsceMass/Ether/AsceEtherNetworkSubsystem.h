@@ -3,11 +3,13 @@
 
 #include "CoreMinimal.h"
 #include "Subsystems/WorldSubsystem.h"
-#include "Mass/EntityHandle.h"
+#include "MassEntityHandle.h"
 #include "MassEntityTypes.h"
 #include "AsceMass/Ether/AsceEtherTypes.h"
 #include "AsceMass/Ether/AsceEtherBuildingData.h"
 #include "AsceEtherNetworkSubsystem.generated.h"
+
+struct FEtherDeviceStateFragment;
 
 /**
  * 外部连接边（端口级，1:1）。FromPort/ToPort 是**全局 PortId**。
@@ -83,8 +85,32 @@ public:
 	// ── 端口查询（调试/外部访问） ──
 
 	int32 GetPortNum() const { return Ports.Num(); }
+	int32 GetNodeNum() const { return Nodes.Num(); }
 	int32 GetNodePortStart(int32 NodeId) const { return IsNodeAlive(NodeId) ? Nodes[NodeId].PortStart : INDEX_NONE; }
 	int32 GetNodePortCount(int32 NodeId) const { return IsNodeAlive(NodeId) ? Nodes[NodeId].PortCount : 0; }
+
+	/** 端口只读视图（调试/表现用；真实运行态在私有 FPort 里） */
+	struct FPortView
+	{
+		int32 NodeId = INDEX_NONE;
+		uint8 Dir = 0;
+		uint8 Dim = 0;
+		int32 CellX = 0;
+		int32 CellY = 0;
+		uint16 Throughput = 1;
+		uint16 Ether = 0;
+		int16  SignalType = 0;
+		bool   bIsInput = false;
+		int32  OutTargetPort = INDEX_NONE;   // 外部出边目标（全局 PortId；INDEX_NONE = 无）
+	};
+
+	bool GetPortView(int32 PortId, FPortView& OutView) const;
+
+	/** 内部布线目标列表（调试/表现用；无则 nullptr） */
+	const TArray<int32>* GetPortLinkTargets(int32 PortId) const;
+
+	/** 器件内部状态（调试/表现用；非器件/无实体则 nullptr） */
+	const FEtherDeviceStateFragment* GetDeviceState(int32 NodeId) const;
 
 	// ── 建图 / 重建（结构变化时，服务器） ──
 
@@ -194,4 +220,8 @@ private:
 	// —— 活跃调度 ——
 	TArray<int32> ActiveList;   // 持久活跃段（每段唯一）
 	uint32 CurrentStamp = 0;
+
+	/** 结构变化脏标记：注册/注销只置位，真正重建延迟到下一次 RunEtherTick 开头（一次），
+	 *  避免批量放置 N 个建筑触发 N 次全图重建。 */
+	bool bGraphDirty = false;
 };
