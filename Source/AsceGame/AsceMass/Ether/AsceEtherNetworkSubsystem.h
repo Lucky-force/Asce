@@ -3,7 +3,7 @@
 
 #include "CoreMinimal.h"
 #include "Subsystems/WorldSubsystem.h"
-#include "Mass/EntityHandle.h"
+#include "MassEntityHandle.h"
 #include "MassEntityTypes.h"
 #include "AsceMass/Ether/AsceEtherTypes.h"
 #include "AsceMass/Ether/AsceEtherBuildingConfig.h"
@@ -35,7 +35,7 @@ struct FAsceEtherPortData
 	FName PortTypeId;
 	EAsceEtherPortOp Op = EAsceEtherPortOp::Wire;
 	uint16 Throughput = 1;
-	int32 LinkRange = 0;   // 发射距离（格数；0 = 不能连线；只看发射端）
+	uint8 LinkRange = 0;   // 发射距离（格数；0 = 不能连线；只看发射端）
 
 	// —— 实例配置 ——
 	EAsceEtherSplitMode SplitMode = EAsceEtherSplitMode::Ordered;
@@ -57,10 +57,9 @@ struct FAsceEtherPortData
 	int32 OutTargetPort = INDEX_NONE;  // 外部出边对端（本端口发向谁）
 	int32 InSourcePort = INDEX_NONE;   // 外部入边来源（谁发向本端口；反向索引，O(1) 撤销/重扫）
 
-	// —— And/Or 的入边符号记录 ——
+	// —— 入边（pull 模型：只有 `And/Or` 会被推入跳过、由它自己按这个列表取料）——
+	// 内容 = 内部布线源 + 唯一一条外部入边源；**始终按 PortId 升序**（pull/合流顺序确定）。
 	TArray<int32> InSources;
-	TArray<int16> InSigns;
-	TArray<uint32> InSignTick;
 };
 
 /**
@@ -172,7 +171,6 @@ public:
 
 	// ── 建图 / 每 tick ──
 
-	void RebuildGraph();
 	void RunEtherTick();
 
 	// ── 调试 ──
@@ -181,15 +179,16 @@ public:
 	const TArray<int32>* GetPortLinkTargets(int32 PortId) const;
 
 private:
-	/** 建筑实例（静态配置在 `RebuildGraph` 里按 `ConfigClass` 解析）。 */
+	/** 建筑实例（静态配置在 `RebuildGraphInternal` 里按 `ConfigClass` 解析）。 */
 	struct FNode
 	{
 		FMassEntityHandle Entity;
 		FName BuildingId;
 		bool bAlive = false;
 
-		UAsceEtherBuildingConfig* Config = nullptr;  // CDO（注册表保活；RebuildGraph 直接用，不再查）
+		UAsceEtherBuildingConfig* Config = nullptr;  // CDO（注册表保活；RebuildGraphInternal 直接用，不再查）
 		bool bDevice = false;                    // DeviceType == Sequential
+		bool bLinksInitialized = false;          // 内布线是否已初始化过（玩家清空后不允许默认值回填）
 		uint8 CachedDirection = 0;               // 建筑旋转（预留：暂恒 0）
 		/** slot 序号 -> 全局 PortId（**端口持久化**：按相对几何身份复用，id 不随别的建筑增删而漂）。 */
 		TArray<int32> SlotPortIds;
@@ -206,7 +205,10 @@ private:
 
 	void ClearGraph();
 
-	/** 消费命令队列（tick 开头、`RebuildGraph` 之前）：应用结构性修改，必要时触发重建。 */
+	/** 全量重建（**只允许系统内部调用**：命令应用 / 开发期校验）。外部请用 `PushFullRebuild`。 */
+	void RebuildGraphInternal();
+
+	/** 消费命令队列（tick 开头、`RebuildGraphInternal` 之前）：应用结构性修改，必要时触发重建。 */
 	void ApplyGraphCommands();
 
 	/** 建/拆节点（命令应用内部用）。 */
@@ -222,6 +224,10 @@ private:
 
 	/** 重建某建筑的内布线衍生数据（`LinkTargets` + 目标的 `InSources` + 记录数组）；返回受影响的端口集合。 */
 	void RebuildNodeInternalTopology(int32 NodeId, TArray<int32>& OutTouchedPorts);
+
+	/** 外部边写入/撤销：同步维护对端的 `InSourcePort / InSources`（pull 用；按 PortId 升序）。 */
+	void SetExternalEdge(int32 SrcPort, int32 DstPort);
+	void ClearExternalEdge(int32 SrcPort);
 
 	/** **局部段重算**：只以"受影响端口所在的旧段 + 受影响端口"为范围重跑连通分量与拓扑序（合并/拆分自然处理）。
 	 *  `OutAllAffectedPorts`（可空）回传实际参与重算的全部端口（供调用方整理器件邻接表）；
@@ -245,8 +251,9 @@ private:
 	/** 校验：先取局部结果摘要 → 全量重建 → 再取摘要 → 对比（不一致打日志）。 */
 	void ValidateIncrementalAgainstFullRebuild();
 
-	/** 端口类型解析（查端口类型表 ⇒ `Op/Throughput/LinkRange`；缺行告警 + 默认值）。 */
-	void ResolvePortTypeConfig(FAsceEtherPortData& P) const;
+	/** 端口类型解析（查端口类型表 ⇒ `Op/Throughput/LinkRange`；缺行告警 + 默认值）。
+	 *  顺带维护 `MaxPortLinkRange`（反向扫描上限），所以非 const。 */
+	void ResolvePortTypeConfig(FAsceEtherPortData& P);
 
 	/** 收集与这些端口相邻的器件节点（用于局部重算它们的"相邻段"表）。 */
 	void GatherAdjacentDeviceNodes(const TArray<int32>& TouchedPorts, TArray<int32>& OutDeviceNodes) const;
@@ -291,7 +298,9 @@ private:
 
 	void PushPort(int32 PortId);
 	void ProcessPort(int32 PortId, bool& bOutHasEther);
-	void EvaluateOp(int32 PortId);
+	/** `And/Or` 端口的求值（pull 模型）：轮到它处理时按 `InSources` 顺序从上游取料（合流、上限=本端口吞吐），
+	 *  再统一符号（And：全 + 才 +；Or：有 + 则 +；0 号逻辑透明）；异族/无输入 ⇒ 本拍不动作。 */
+	void PullAndEvaluate(int32 PortId);
 	uint16 MoveUnits(int32 FromPort, int32 ToPort, uint16 Amount, int16 Type);
 
 	const UAsceEtherBuildingConfig* GetConfigCDO(int32 NodeId) const;
@@ -312,12 +321,15 @@ private:
 	TArray<FAsceEtherPortData> Ports;
 	TArray<int32> FreePortIds;
 
+	/** 全端口射程最大值（反向扫描的上限；重建时精确重算，增量时只增不减——只会多扫一点，无害） */
+	int32 MaxPortLinkRange = 0;
+
 	// —— 段 / 顺序 / 映射 ——
 	TArray<FAsceEtherSegment> Segments;   // 段池（bActive 标记在用；Order 自带拓扑序）
 	TArray<int32> FreeSegIds;
 	TArray<int32> PortSegId;              // portId -> segId（-1 = 器件端口/无）
 	TArray<TArray<int32>> DeviceAdjSegs;  // 器件 nodeId -> 相邻段
-	TArray<int32> DeviceNodes;            // 器件（时序）nodeId，**升序**（RebuildGraph 缓存；Pass 1/2 只遍历它）
+	TArray<int32> DeviceNodes;            // 器件（时序）nodeId，**升序**（RebuildGraphInternal 缓存；Pass 1/2 只遍历它）
 
 	// —— 活跃调度（并行安全） ——
 	TArray<int32> ActiveList;             // 合并后的主表（Pass 3 遍历它）

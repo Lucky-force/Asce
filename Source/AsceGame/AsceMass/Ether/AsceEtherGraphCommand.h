@@ -2,10 +2,15 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Mass/EntityHandle.h"
+#include "MassEntityHandle.h"
 #include "AsceMass/Ether/AsceEtherTypes.h"
 #include "AsceMass/Ether/AsceEtherBuildingConfig.h"
 #include "AsceEtherGraphCommand.generated.h"
+
+/**
+ * 命令里的实体键：`FMassEntityHandle::AsNumber()`（int64，蓝图友好；还原用 `FromNumber`）。
+ * 命令本身是 C++ 侧的结构性修改载体（也可从蓝图构造后走 `PushCommand`）。
+ */
 
 /**
  * 端口身份：**建筑默认朝向下的相对几何**（移动/旋转/重排 slot 都不改变身份）。
@@ -91,7 +96,7 @@ USTRUCT(BlueprintType)
 struct FAsceEtherCmd_AddNode
 {
 	GENERATED_BODY()
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ether") FMassEntityHandle Entity;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ether") int64 EntityNumber = 0;
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ether") FName BuildingId;
 };
 
@@ -100,7 +105,7 @@ USTRUCT(BlueprintType)
 struct FAsceEtherCmd_RemoveNode
 {
 	GENERATED_BODY()
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ether") FMassEntityHandle Entity;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ether") int64 EntityNumber = 0;
 };
 
 /** 改建筑：换类型 / 移动 / 旋转。 */
@@ -108,7 +113,7 @@ USTRUCT(BlueprintType)
 struct FAsceEtherCmd_PatchNode
 {
 	GENERATED_BODY()
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ether") FMassEntityHandle Entity;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ether") int64 EntityNumber = 0;
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ether") FAsceEtherNodePatch Patch;
 };
 
@@ -117,7 +122,7 @@ USTRUCT(BlueprintType)
 struct FAsceEtherCmd_SetNodeLinks
 {
 	GENERATED_BODY()
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ether") FMassEntityHandle Entity;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ether") int64 EntityNumber = 0;
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ether") TArray<FAsceEtherLinkDef> Links;
 };
 
@@ -126,7 +131,7 @@ USTRUCT(BlueprintType)
 struct FAsceEtherCmd_PatchPort
 {
 	GENERATED_BODY()
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ether") FMassEntityHandle Entity;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ether") int64 EntityNumber = 0;
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ether") FAsceEtherSlotKey Slot;
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ether") FAsceEtherPortPatch Patch;
 };

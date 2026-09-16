@@ -131,7 +131,7 @@ USTRUCT(BlueprintType) struct FAsceEtherPortTypeRow : public FTableRowBase   // 
 {
     EAsceEtherPortOp Op = Wire;        // 组合 op
     int32 ThroughputPerTick = 1;       // 轴 1：每 tick 吞吐 = 缓冲上限
-    int32 LinkRangeCells = 256;        // 轴 2：发射距离（只看发射端；0 = 不能连线）
+    uint8 LinkRangeCells = 255;        // 轴 2：发射距离（uint8，255 格 = 16 扇区；只看发射端；0 = 不能连线）
 };
 // MDT 在 UAsceDataTableSettings::AsceEtherPortTypeRow 指定（变量名给人看，运行时按行结构类型解析）；
 // SDT 由 UGameFeatureAction_AddDataTableSources 挂/卸；C++ 查表：
@@ -214,14 +214,14 @@ struct FNode
 struct FAsceEtherPortData
 {
     // 端口类型（建图/换类型时查表解析成缓存）
-    FName PortTypeId;  EAsceEtherPortOp Op;  uint16 Throughput;  int32 LinkRange;
+    FName PortTypeId;  EAsceEtherPortOp Op;  uint16 Throughput;  uint8 LinkRange;
     // 实例配置
     EAsceEtherSplitMode SplitMode;  EAsceEtherTransportType TransportType;  uint8 Dimension, Direction, Offset;
     // 运行态
     int32 NodeId, CellX, CellY;  bool bActive;  uint16 Ether;  int16 SignalType;
     // 图（外部边 1:1 ⇒ 直接存对端，不再需要全局边表；反向索引用于 O(1) 撤销/重扫）
     TArray<int32> LinkTargets;  int32 OutTargetPort;  int32 InSourcePort;
-    TArray<int32> InSources;  TArray<int16> InSigns;  TArray<uint32> InSignTick;   // And/Or 入边符号记录
+    TArray<int32> InSources;   // 入边源（内部布线源 + 唯一外部入边源；按 PortId 升序）——And/Or pull 用
 };
 
 // 组合段（段池；段自带拓扑序）
@@ -292,7 +292,7 @@ USTRUCT() struct FEtherBuildingFragment : public FMassFragment { FName BuildingD
      应用完 ⇒ **本 tick 内图最新且冻结**（这也是三个 pass 能并行、且 core 只碰运行态的前提）。
   1. **Pass 1（**并行**：按器件）**：全体器件 `Core->Tick`（只写自己的端口缓冲，不推）；有料则把相邻段**标进线程本地分片**；
   2. **Pass 2（**并行**：按器件）**：全体器件把自己的端口**推出去**（含上拍残留）⇒ 保证"器件 → 器件"外部边也是 **1 tick/级**，与 nodeId 顺序无关；随后主线程 `MergeActiveShards()` 合并分片；
-  3. **Pass 3（**并行**：按段）**：各活跃段内按 `Seg.Order`（拓扑序）处理端口（`EvaluateOp` → 沿后继推）；并行结果（是否还有料）记到 `Survived[]`，主线程**串行收尾**：存活段留到下一拍（`Stamp = CurrentStamp + 1`），其余移除。
+  3. **Pass 3（**并行**：按段）**：各活跃段内按 `Seg.Order`（拓扑序）处理端口（**`And/Or` 先按 `InSources` 顺序 pull 上游合流并统一符号**，再沿后继推；逻辑端口**不被上游推入**——料留在上游等它 pull）；并行结果（是否还有料）记到 `Survived[]`，主线程**串行收尾**：存活段留到下一拍（`Stamp = CurrentStamp + 1`），其余移除。
 
 **增量的落地（P1）**
 - **端口持久化 + 身份复用**：端口对象常驻（端口池 + `bActive`），重建/改动都按**相对几何身份**复用 ⇒ id 稳定、在制品原地不动（不再需要"保存/恢复"）；
@@ -305,7 +305,7 @@ USTRUCT() struct FEtherBuildingFragment : public FMassFragment { FName BuildingD
 - 活跃表：段 `Stamp` 用**原子交换**去重（`InterlockedExchange`）；激活写**线程本地分片**，主线程合并 ⇒ 不竞争；
 - **core 并行契约**：`Tick` 会被并行调用 ⇒ `bInstance == false` 的 core（共享 CDO）**禁止写成员/共享状态**，只能碰"自己建筑的端口"；要状态就 `bInstance = true`；
 - **建图/增量断言**：① 一个端口**最多一条外部入边**（射线"遇第一个建筑就停"+ 目标朝向固定）；② 内部布线**两端同建筑** ⇒ 同目标的多次推入必在同一线程（Pass 2 同一器件 / Pass 3 同一段）内**按序**发生（湮灭、`And/Or` 符号记录都依赖顺序）。
-- **推流不看端口类型**：端口只沿 `LinkTargets + OutTargetPort` 推；`Input` 端口在定向时就没建出边，所以不会"推回原处"。
+- **推流不看端口类型**：端口只沿 `LinkTargets + OutTargetPort` 推；`Input` 端口在定向时就没建出边，所以不会"推回原处"。**例外**：`And/Or` 逻辑端口不接收推入（料留上游），由它自己在处理时按 `InSources` pull。
 - **段**：端口级连通分量；段间由器件隔开 ⇒ 互不相连；段内串行、段间可并行。
 - **活跃表（持久 + epoch 去重）**：器件有料 → 激活相邻段；段处理末尾判空：有料 ⇒ 留活跃（`Stamp = CurrentStamp+1`），排空 ⇒ 移除；空闲段不跑。
 
@@ -316,7 +316,7 @@ USTRUCT() struct FEtherBuildingFragment : public FMassFragment { FName BuildingD
 1. `CurrentStamp++` ⇒ 命令队列非空则 `ApplyGraphCommands()`（结构性修改的唯一入口；全量兜底/局部更新见 §4）⇒ 本 tick 内图**最新且冻结**。
 2. Pass 1：器件 `Core->Tick`（配方/锁存/计数/寄存器…按自己的逻辑读写端口）→ 有料则激活 `DeviceAdjSegs`（写线程本地分片）。
 3. Pass 2：器件端口推出（`PushPort`）。
-4. Pass 3：活跃段 `ProcessPort`（`EvaluateOp` 处理 `And/Or` 符号 → `PushPort` 分流/外部推送 → 判空）。
+4. Pass 3：活跃段 `ProcessPort`（`And/Or`：先 pull 上游合流 + 统一符号 → `PushPort` 分流/外部推送 → 判空）。
 5. 表现/复制：同步状态给客户端（待做）。
 
 ---
@@ -326,6 +326,7 @@ USTRUCT() struct FEtherBuildingFragment : public FMassFragment { FName BuildingD
 - **配置/实例/行为三分**：型号与建筑配置是**共享蓝图 CDO**；端口实例/布线在 **Subsystem**；功能与状态在 **core**。
 - **端口类型只在建图用一次**：`Output` 只发、`Input` 只收、`Any` 由内部布线结构推；tick 推流不看。
 - **取值**：Empty ≠ 0；无输入 ⇒ 不输出；逻辑 0 = 负号态；`Not` = 推出时取互补态。
+- **逻辑端口（And/Or）**：不被上游推入；轮到自己处理时按 `InSources` 顺序 **pull**（合流，上限 = 自身吞吐；不做湮灭），再统一符号（And：全 + 才 +；Or：有 + 则 +；0 号逻辑透明）。
 - **扫描序**：源端口左手边起顺时针；同方向内 `Dim` 低→高（§2.9）。
 - **合流**：≥2 入边且同族异号 → 1:1 湮灭；单入边 → 符号直接翻转；异族 → 堵死；`And/Or` 目标不湮灭。
 - **分流**：`Ordered` / `Balanced`（余数靠前多分 + 份额顺延）。

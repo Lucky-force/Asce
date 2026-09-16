@@ -3,7 +3,7 @@
 
 #include "GameFramework/Actor.h"
 #include "MassArchetypeTypes.h"
-#include "Mass/EntityHandle.h"
+#include "MassEntityHandle.h"
 #include "AsceEtherDebugger.generated.h"
 
 class UAsceEtherBuildingConfig;

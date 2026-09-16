@@ -29,7 +29,8 @@ struct FAsceEtherPortTypeRow : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ether")
 	int32 ThroughputPerTick = 1;
 
-	/** 轴 2：发射距离（连线射线最大格数；只看发射端；`0 = 不能连线`）。 */
+	/** 轴 2：发射距离（连线射线最大格数；只看发射端；`0 = 不能连线`）。
+	 *  uint8：255 格 = 16 个扇区，足够远。 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ether")
-	int32 LinkRangeCells = 256;
+	uint8 LinkRangeCells = 255;
 };

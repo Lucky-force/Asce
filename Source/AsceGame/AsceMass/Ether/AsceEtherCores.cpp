@@ -323,7 +323,7 @@ void UAsceEtherRegisterCore::OnInit(UAsceEtherNetworkSubsystem& Net, int32 NodeI
 	}
 	if (FAsceEtherPortData* E = Net.GetPort(NodeId, Bits * 2))
 	{
-		E->TransportType = EAsceEtherTransportType::Any; // enable
+		E->TransportType = EAsceEtherTransportType::Input; // enable：要收外部写使能，必须是"收"
 	}
 }
 
@@ -333,7 +333,7 @@ void UAsceEtherRegisterCore::Tick(UAsceEtherNetworkSubsystem& Net, int32 NodeId)
 
 	// 使能 = enable 端口收到"正 ether"（非 0 号、非互补态）
 	bool bWrite = false;
-	const int32 EnableIdx = Net.FindPortByTransport(NodeId, EAsceEtherTransportType::Any);
+	const int32 EnableIdx = Bits * 2;   // 约定：enable = 下标 2*BitCount（由 OnInit 设为 Input）
 	if (EnableIdx >= 0)
 	{
 		const FAsceEtherPortData* EP = Net.GetPort(NodeId, EnableIdx);

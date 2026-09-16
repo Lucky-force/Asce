@@ -52,8 +52,8 @@ namespace AsceEther
 	/** 每个建筑支持的维度上限（端口维度范围 [0, MaxDims)）。 */
 	constexpr int32 MaxDims = 8;
 
-	/** 连线距离的**约定默认值**（端口型号的 `LinkRangeCells` 默认填它；实际以端口型号为准）。 */
-	constexpr int32 MaxLinkRangeCells = 256;
+	/** 连线距离的**上限**（端口型号的 `LinkRangeCells` 是 uint8，满值 255 格 = 16 个扇区） */
+	constexpr int32 MaxLinkRangeCells = 255;
 
 	/** 方向：从"左"起顺时针。 */
 	enum class EDir : uint8
