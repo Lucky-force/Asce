@@ -82,6 +82,11 @@ void AAsceWorldMapReplicatorActor::InitializeMapDimensions()
 		bBakedDataApplied = true;
 	}
 
+	// 初始化阶段（loading）就把墙簇表建好，不让碰撞解算在游戏内等待第一次重建：
+	// - 权威端：SetCostField 已同步写了 CostFields，这里直接得到正确簇表；
+	// - 客户端：先用默认（全通行）代价建一份空表，之后 CostFields 复制下来变墙时会再触发重建。
+	WorldMapData.RebuildWallClusters();
+
 	// 两端都做：写入视野高度场（本地数据，不复制）
 	if (UAsceFogSubsystem* Fog = UAsceFogSubsystem::Get(this))
 	{

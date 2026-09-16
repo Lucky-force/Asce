@@ -14,6 +14,8 @@
 #include "AsceMass/Movement/AsceArrivalProcessor.h"
 #include "AsceMass/Movement/AsceTerrainHeightProcessor.h"
 #include "Movement/MassMovementProcessors.h"
+#include "GameFramework/GameStateBase.h"
+#include "GameModes/AsceExperienceManagerComponent.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AsceMassMovementSimulationSubsystem)
 
@@ -77,6 +79,12 @@ void UAsceMassMovementSimulationSubsystem::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
 
+	// loading 门控：Experience 加载完成前不跑管线（此时地图/墙簇初始化可能还在进行中）
+	if (!CheckSimulationReady())
+	{
+		return;
+	}
+
 	if (!SteeringProcessor || !ApplyMovementProcessor || !CollisionSolverProcessor || !ArrivalProcessor || !TerrainHeightProcessor || !OrientationProcessor || !CorrectionProcessor)
 	{
 		return;
@@ -108,9 +116,35 @@ void UAsceMassMovementSimulationSubsystem::Tick(float DeltaTime)
 	ExecuteProcessorIfAllowed(*CorrectionProcessor, CurrentNetModeFlags, ProcessingContext);
 }
 
-EProcessorExecutionFlags UAsceMassMovementSimulationSubsystem::ConvertNetModeToExecutionFlags(ENetMode NetMode) const
+bool UAsceMassMovementSimulationSubsystem::CheckSimulationReady()
 {
-	switch (NetMode)
+	if (bSimulationReady)
+	{
+		return true;
+	}
+
+	const UWorld* World = GetWorld();
+	const AGameStateBase* GameState = World ? World->GetGameState() : nullptr;
+	if (!GameState)
+	{
+		return false;   // GameState 还没就绪：再等一帧
+	}
+
+	// loading 期间（Experience 未加载完成）不跑管线。没有这个组件的普通测试地图视为已就绪。
+	if (const UAsceExperienceManagerComponent* ExperienceManager = GameState->FindComponentByClass<UAsceExperienceManagerComponent>())
+	{
+		if (!ExperienceManager->IsExperienceLoaded())
+		{
+			return false;
+		}
+	}
+
+	bSimulationReady = true;
+	return true;
+}
+
+EProcessorExecutionFlags UAsceMassMovementSimulationSubsystem::ConvertNetModeToExecutionFlags(ENetMode NetMode) const
+{	switch (NetMode)
 	{
 		case NM_Standalone:
 			return EProcessorExecutionFlags::Standalone;

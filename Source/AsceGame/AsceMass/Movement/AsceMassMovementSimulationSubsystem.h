@@ -60,6 +60,11 @@ private:
 	// 手动模式要自己调用ShouldExecute）。
 	void ExecuteProcessorIfAllowed(UMassProcessor& Processor, EProcessorExecutionFlags CurrentNetModeFlags, FMassProcessingContext& InContext);
 
+	// loading 门控：Experience 未加载完成前不跑移动管线。
+	// 地图初始化（含墙簇表构建）在 loading 阶段完成，避免处理器与初始化/重建交叉；
+	// 加载完成后只查一个 bool，无逐帧开销。
+	bool CheckSimulationReady();
+
 	// World->GetNetMode()的ENetMode枚举值≠EProcessorExecutionFlags位掩码，需要手动映射。
 	EProcessorExecutionFlags ConvertNetModeToExecutionFlags(ENetMode NetMode) const;
 
@@ -84,4 +89,7 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMassProcessor> CorrectionProcessor;
+
+	/** 见 CheckSimulationReady：一旦确认可跑（loading完成/无loading系统）就置位，之后零开销 */
+	bool bSimulationReady = false;
 };
