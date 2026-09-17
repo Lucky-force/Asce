@@ -87,22 +87,21 @@ void UAsceFogSubsystem::OnWorldEndPlay(UWorld& InWorld)
 
 void UAsceFogSubsystem::Tick(float DeltaTime)
 {
+	// 自 tick 已停用：本 tick 体已挪成 `RunFogLogicStage`，由 `UAsceSimulationSubsystem` 按阶段顺序调用
 	Super::Tick(DeltaTime);
+}
 
+void UAsceFogSubsystem::RunFogLogicStage(const FAsceTickContext& Ctx)
+{
 	if (!FogProcessor)
 	{
 		return;
 	}
 
-	UWorld* World = GetWorld();
-	if (!IsValid(World))
+	// MassEntity 子系统/实体管理器从上下文取（调度器每帧填好）
+	if (Ctx.EntityManager)
 	{
-		return;
-	}
-	if (UMassEntitySubsystem* EntitySubsys = World->GetSubsystem<UMassEntitySubsystem>())
-	{
-		FMassEntityManager& EntityManager = EntitySubsys->GetMutableEntityManager();
-		FMassProcessingContext ProcessingContext(EntityManager, DeltaTime);
+		FMassProcessingContext ProcessingContext(*Ctx.EntityManager, Ctx.DeltaTime);
 		UE::Mass::Executor::Run(*FogProcessor, ProcessingContext);
 	}
 }

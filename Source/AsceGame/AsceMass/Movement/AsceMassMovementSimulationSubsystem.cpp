@@ -15,7 +15,7 @@
 #include "AsceMass/Movement/AsceTerrainHeightProcessor.h"
 #include "Movement/MassMovementProcessors.h"
 #include "GameFramework/GameStateBase.h"
-#include "GameModes/AsceExperienceManagerComponent.h"
+// #include "GameModes/AsceExperienceManagerComponent.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AsceMassMovementSimulationSubsystem)
 
@@ -77,8 +77,12 @@ void UAsceMassMovementSimulationSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 
 void UAsceMassMovementSimulationSubsystem::Tick(float DeltaTime)
 {
+	// 自 tick 已停用：本 tick 体已挪成 `RunMovementStage`，由 `UAsceSimulationSubsystem` 按阶段顺序调用
 	Super::Tick(DeltaTime);
+}
 
+void UAsceMassMovementSimulationSubsystem::RunMovementStage(const FAsceTickContext& Ctx)
+{
 	// loading 门控：Experience 加载完成前不跑管线（此时地图/墙簇初始化可能还在进行中）
 	if (!CheckSimulationReady())
 	{
@@ -90,14 +94,13 @@ void UAsceMassMovementSimulationSubsystem::Tick(float DeltaTime)
 		return;
 	}
 
-	UWorld* World = GetWorld();
+	UWorld* World = Ctx.World ? Ctx.World : GetWorld();
 	if (!IsValid(World))
 	{
 		return;
 	}
 
-	UMassEntitySubsystem* EntitySubsystem = World->GetSubsystem<UMassEntitySubsystem>();
-	if (!EntitySubsystem)
+	if (!Ctx.EntityManager)
 	{
 		return;
 	}
@@ -105,7 +108,7 @@ void UAsceMassMovementSimulationSubsystem::Tick(float DeltaTime)
 	// Pipeline顺序手动编排（组依赖在Executor::Run单处理器时被忽略）：
 	// Steering(决策) → ApplyMovement(积分) → CollisionSolver(碰撞) → Arrival(到达判定)
 	// → TerrainHeight(贴地) → Orientation(朝向) → Correction(位置修正)
-	FMassProcessingContext ProcessingContext(EntitySubsystem->GetMutableEntityManager(), DeltaTime);
+	FMassProcessingContext ProcessingContext(*Ctx.EntityManager, Ctx.DeltaTime);
 	EProcessorExecutionFlags CurrentNetModeFlags = ConvertNetModeToExecutionFlags(World->GetNetMode());
 	ExecuteProcessorIfAllowed(*SteeringProcessor, CurrentNetModeFlags, ProcessingContext);
 	ExecuteProcessorIfAllowed(*ApplyMovementProcessor, CurrentNetModeFlags, ProcessingContext);
@@ -131,13 +134,13 @@ bool UAsceMassMovementSimulationSubsystem::CheckSimulationReady()
 	}
 
 	// loading 期间（Experience 未加载完成）不跑管线。没有这个组件的普通测试地图视为已就绪。
-	if (const UAsceExperienceManagerComponent* ExperienceManager = GameState->FindComponentByClass<UAsceExperienceManagerComponent>())
-	{
-		if (!ExperienceManager->IsExperienceLoaded())
-		{
-			return false;
-		}
-	}
+	// if (const UAsceExperienceManagerComponent* ExperienceManager = GameState->FindComponentByClass<UAsceExperienceManagerComponent>())
+	// {
+	// 	if (!ExperienceManager->IsExperienceLoaded())
+	// 	{
+	// 		return false;
+	// 	}
+	// }
 
 	bSimulationReady = true;
 	return true;

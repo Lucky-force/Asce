@@ -2,6 +2,7 @@
 #include "AsceEtherBuildingTrait.h"
 
 #include "MassEntityTemplateRegistry.h"
+#include "AsceMass/Fragments/AsceCoreFragments.h"
 #include "AsceMass/Ether/AsceEtherBuildingConfig.h"
 #include "AsceMass/Ether/AsceEtherFragments.h"
 #include "AsceMass/Ether/AsceEtherNetworkSubsystem.h"
@@ -25,4 +26,7 @@ void UAsceEtherBuildingTrait::BuildTemplate(FMassEntityTemplateBuildContext& Bui
 
 	// 标记 fragment：运行时注册/注销的锚点 + 身份
 	BuildContext.AddFragment_GetRef<FEtherBuildingFragment>().BuildingDefId = DefId;
+
+	// 标记 tag：SpatialGrid "建筑层"按它收录（footprint 由放置方填：OriginGridLocation/Size/OcclusionHeightCm）
+	BuildContext.AddTag<FAsceBuildingTag>();
 }

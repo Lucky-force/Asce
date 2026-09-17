@@ -62,3 +62,45 @@ struct FAsceSpatialGridBaseData
 	uint8 Cost = 1;
 };
 
+
+// ──────────────────────────────────────────
+// 建筑层（独立一份数据；坐标用**逻辑格**，粗格边长 = 逻辑格边长 × CoarseFactor）
+// ──────────────────────────────────────────
+
+/** 建筑在建筑网格里的一份登记（多格建筑会出现在它覆盖到的每个粗格里）。 */
+struct FAsceGridBuildingPart
+{
+	FMassEntityHandle Entity;
+
+	/** 逻辑格（与 footprint 同一口径：**旋转后的最终 AABB**；costfield/视野层也按这个矩形遍历）。 */
+	FIntPoint Origin = FIntPoint::ZeroValue;
+	FIntPoint Size = FIntPoint(1, 1);
+};
+
+/** 建筑网格的一格：一格可能覆盖多个（小）建筑。 */
+struct FAsceGridBuildingsData
+{
+	TArray<FAsceGridBuildingPart, TInlineAllocator<4>> Buildings;
+
+	mutable TAtomic<bool> LockFlag { false };  // 自旋锁（并行插入同一粗格时用）
+
+	void Reset() { Buildings.Reset(); }
+
+	FORCEINLINE void Lock()
+	{
+		while (LockFlag.Exchange(true));
+	}
+
+	FORCEINLINE void Unlock()
+	{
+		LockFlag = false;
+	}
+
+	FORCEINLINE void AddBuilding(const FAsceGridBuildingPart& Part)
+	{
+		Lock();
+		Buildings.Add(Part);
+		Unlock();
+	}
+};
+

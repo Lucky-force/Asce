@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "AsceMass/Simulation/AsceTickContext.h"
+
 #include "Subsystems/WorldSubsystem.h"
 #include "MassEntityTypes.h"
 #include "AsceMassMovementSimulationSubsystem.generated.h"
@@ -51,6 +53,10 @@ public:
 	virtual void OnWorldBeginPlay(UWorld& InWorld) override;
 	virtual TStatId GetStatId() const override;
 	//~End UTickableWorldSubsystem Interface
+
+	/** **阶段入口**（由 `UAsceSimulationSubsystem` 调用；本系统已关闭自 tick）：
+	 *  按固定顺序 Run 移动管线的 7 个 processor（loading 门控 + netmode 过滤都在函数内）。 */
+	void RunMovementStage(const FAsceTickContext& Ctx);
 
 protected:
 	virtual void Tick(float DeltaTime) override;

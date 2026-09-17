@@ -205,7 +205,9 @@ struct FNode
     bool  bAlive;
     UAsceEtherBuildingConfig* Config;       // CDO（注册表 UPROPERTY 保活）
     bool  bDevice;                          // DeviceType == Sequential
-    uint8 CachedDirection;                  // 建筑旋转（预留：暂恒 0）
+    uint8 CachedDirection;                  // 建筑朝向（绕中心顺时针 90° 次数；从实体 Transform 读）
+    FAsceGridFootprintFragment CachedFootprint;  // 上次建端口时的 footprint（搬家/拆除时"旧位置"重扫要用；实体销毁后取不到 fragment）
+    bool  bHasCachedFootprint;
     TArray<int32> SlotPortIds;              // slot 序号 -> 全局 PortId（**持久化：按相对几何身份复用**）
     TArray<FAsceEtherLinkDef> InternalLinks;// 实例内布线（玩家可改）
 };
@@ -234,7 +236,6 @@ TArray<FAsceEtherSegment> Segments; TArray<int32> FreeSegIds;         // 段池
 TArray<int32> PortSegId;                       // portId -> segId
 TArray<TArray<int32>> DeviceAdjSegs;           // 器件 node -> 相邻段
 TArray<int32> DeviceNodes;                     // 器件 nodeId（升序；Pass 1/2 只遍历它）
-TArray<int32> GridToNode; int32 GridW, GridH;  // **扁平占用网格**（cell -> nodeId；射线 O(1) 查格）
 TArray<int32> ActiveList; TArray<TArray<int32>> ActiveShards;          // 活跃段（分片）
 uint32 CurrentStamp; TArray<FInstancedStruct> GraphCommands;           // 命令队列
 UPROPERTY(Transient) TArray<TObjectPtr<UAsceEtherProcessCore>> NodeCores;   // 按 nodeId（CDO 或实例）
@@ -260,11 +261,11 @@ USTRUCT() struct FEtherBuildingFragment : public FMassFragment { FName BuildingD
 **两条路径**：
 
 - **A. 局部更新（常态）**：只动受影响的建筑/端口/段 —— 端口**持久化**（按相对几何身份复用，id 不漂、在制品不动）；
-  内布线只重建该建筑（`RebuildNodeInternalTopology`）；外部边只重扫**受影响的线路**（`RescanExternalEdgesForNode`：本建筑的出边 + 沿每个占用格反方向找到的"最近建筑"上朝本建筑发的那些端口）；
+  内布线只重建该建筑（`RebuildNodeInternalTopology`）；外部边只重扫**受影响的线路**（`RescanExternalEdgesForNode`：本建筑的出边 + 沿每个占用格反方向用 `FindBuildingOnRay` 找到的"最近建筑"上朝本建筑发的那些端口）；
   段只重算"受影响端口所在旧段 ∪ 受影响端口"范围内的连通分量与拓扑序（`RecomputeSegmentsForPorts`，切段/合段自然处理）；
   最后把"仍有料"的段重新入列（`RefreshInitialActiveSegments`）。
 - **B. 全量重建（兜底/批量）**：`RebuildGraph()` —— 保存/恢复不再需要（端口持久化），流程为：
-  1. `EnsureGridIndex()`（扁平占用网格，尺寸取地图）；
+  1. **建筑网格**：由 SpatialGrid 建筑层提供（见 §8 步骤⑫；建筑占用/遮挡的唯一真相）；
   2. **端口实例**：`BuildNodePorts`（slot → 端口池，按相对几何身份复用；换建筑类型才重建整组端口）；
   3. **内部布线 → `LinkTargets`**（校验不自连/不越界；按 §2.9 扫描序排序）；
   4. **core 创建/复用 + `OnInit`**（`EnsureNodeCore`；设定各端口 `TransportType`，这是"定向"的依据）；
@@ -374,18 +375,58 @@ USTRUCT() struct FEtherBuildingFragment : public FMassFragment { FName BuildingD
    - **局部更新**（已接入）：`RecomputeSegmentsForPorts`（只在"受影响旧段 ∪ 受影响端口"范围内重跑连通分量 + 拓扑序，合并/拆分自然处理）、`RebuildNodeInternalTopology`、`RecomputeDeviceAdjSegsForNodes`、`RefreshInitialActiveSegments`；`SetNodeLinks` 与 `PatchPort`(分流/类型未改射程) 已走**局部**路径，其余暂落 `FullRebuild`。
    - ⏳ 待做：射线"按线路重扫"（`AddNode/RemoveNode/改维度/改射程/移动旋转`要局部化）、扁平 `cell → node` 索引、`bValidateIncremental`（增量 vs 全量 diff 校验）。
 7. ✅ **步骤⑪（本次，P1 完成）**：
-   - **扁平占用网格**（`GridToNode/GridW/GridH`，射线 O(1) 查格；`MarkNodeCells` 局部增删）；
+   - **建筑射线查询**（早期为 Ether 自带扁平占用网格 `GridToNode/GridW/GridH`；已在步骤⑫ 换成 SpatialGrid 建筑层）；
    - **按线路重扫**（`RayScanPort` + `RescanExternalEdgesForNode`：本建筑出边 + 沿占用格反方向找到的"最近建筑"上朝本建筑发的端口）；
-   - **命令全部局部化**：`AddNode` / `RemoveNode`（先清占用格→重扫→带旧段范围重算段→再回收）/ `SetNodeLinks` / `PatchPort`（含维度/射程变化）都走局部路径；只剩 `PatchNode`（摆放）落兜底；
+   - **命令全部局部化**：`AddNode` / `RemoveNode`（先重扫→带旧段范围重算段→再回收）/ `SetNodeLinks` / `PatchPort`（含维度/射程变化）都走局部路径；只剩 `PatchNode`（摆放）落兜底；
    - **开发期校验**：`bValidateIncremental` + `BuildGraphDigest`（局部 vs 全量 diff，按端口/段端口集合/器件邻接签名比较），不一致报错并以全量兜底。
    - ⏳ 仍待做：`PatchNode`（摆放，依赖建筑系统的 footprint 改动）、建筑旋转（`CachedDirection`）、`RefreshData` 的精准失效（目前整表刷新走全量）、局部更新的单元/回归测试。
+8. ✅ **步骤⑫（本次，建筑网格统一）**：
+   - **弃用 Ether 自带占用网格**：`GridToNode/GridW/GridH` + `EnsureGridIndex/GetNodeAtCell/MarkNodeCells` 全删；建筑占用/遮挡的**唯一真相**在 SpatialGrid 的**建筑层**（独立粗格 `FAsceGridBuildingsData`；`FAsceBuildingTag` + `FAsceGridFootprintFragment` 由**并行** chunk 登记，每粗格一把自旋锁）；
+   - **射线查询换成建筑层**：`RayScanPort` / `RescanExternalEdgesForNode` 调 `UAsceSpatialGridSubsystem::FindBuildingOnRay(起点逻辑格, 方向, 射程, &建筑, &命中格)`（粗格 walk：**空**粗格直接跳到出口；非空粗格逐格细判"绕 footprint 中心旋转的矩形"）；
+   - **不再有版本/兜底**：Ether 不轮询建筑层版本（一致性问题改由**统一调度器**解决：见步骤⑬）；
+   - ⏳ 仍待做：`PatchNode`（摆放）局部化。
+9. ✅ **步骤⑬（本次，统一 tick 调度）**：
+   - 新增 `UAsceSimulationSubsystem`（`AsceMass/Simulation/`）：把各 sim 系统的每帧实现从各自 `Tick` 挪成**阶段函数**，在一个地方**按固定顺序连续**执行 ⇒ 不依赖 UE tick group/priority/注册顺序，阶段之间没有别的游戏代码插入；
+   - **阶段链**（全部在 tickable 批次：引擎 `UWorld::Tick` 里 `TG_PostPhysics` 之后）：
+     1. `UAscePathFindingSubsystem::RunFlowFieldStage`（goal-LOS 重算预算；移动 steering 要读流场）
+     2. `UAsceSpatialGridSubsystem::RunGridStages`（单位层 + 建筑层，内部并行；**单位层吃上一帧末位置** = 先建索引、移动再吃索引）
+     3. `UAsceMassMovementSimulationSubsystem::RunMovementStage`（7 个 processor 顺序 Run；产出本帧位置/朝向/到达事件）
+     4. `UAsceFogSubsystem::RunFogLogicStage`（吃本帧位置 + 本帧遮挡数据）
+     5. `UAsceEtherNetworkSubsystem::RunCommandDrainStage`（命令 drain，**唯一入口**）→ `RunSimulationStage`（Pass 1/2/3）
+     6. `UAsceFogRenderSubsystem::RunFogRenderStage`（上传本帧雾结果/dirty tile）
+   - **不在阶段链里的**：结构变化（footprint 增删/搬家、Ether 注册）由 Mass 全局阶段（`ProcessingPhase = PrePhysics` ⇒ `TG_PrePhysics`）的 observer 处理，早于本调度器；actor（debug 画线等）在自己的 tick group；
+   - **唯一 drain 点的不变式**：变化发生在 drain 之前 ⇒ 同一轮建筑层已重建；发生在 drain 之后 ⇒ 命令留到下一轮，而下一轮建筑层先重建 ⇒ **永远拿最新数据**，因此不需要版本号/脏标记/延后一帧；
+   - 6 个系统的 `Tick` 已停用（自 tick 体清空，改由调度器驱动）；各自的**门控留在阶段函数内**（移动的 loading 门控 + netmode 过滤、雾的尺寸早退、Ether 仅在服务器创建 ⇒ 调度器取不到实例就跳过）。
+10. ✅ **步骤⑭（本次，建筑旋转接通）**：
+   - **朝向来源**：建筑系统把作者摆的朝向写进**实体 Transform**（`Rotation × 90°`）；Ether 在 `BuildNodePorts` 开头用 `GetNodeRotation(Entity)` 读进 `N.CachedDirection`（不再恒 0，也不再在 AddNode 里手工置 0）；
+   - **端口方向拆成两份**：`FAsceEtherPortData::Direction` = **世界方向**（= 槽位本地方向 + 朝向；射线 `RayScanPort`、对端匹配、扫描序都用它）；新增 `SlotDirection` = **槽位本地方向**（不随旋转变，用于**身份复用**与槽位匹配）；
+   - **`SlotToCell` 真正旋转**：先把"最终 AABB 尺寸"还原成未旋转尺寸（奇数旋转长宽对调），按槽位本地方向求出本地格，再绕中心顺时针旋转到世界，最后加上最终 AABB 的 Origin；
+   - 因为"搬家/换朝向/改尺寸 = 拆 + 建"，旋转变化必然走全量重建 ⇒ 端口按新朝向重建（在制品丢失，符合决策）。
+11. ✅ **步骤⑮（本次，`PatchNode(摆放)` 局部化）**：
+   - `PatchNode` 的 `MaskPlacement` 不再落全量兜底，改走局部：`BuildNodePorts`（按新 footprint/朝向重摆端口，**身份复用 ⇒ 在制品保留**）→ `RebuildNodeInternalTopology` → `RescanExternalEdgesForNode` → `RecomputeSegmentsForPorts` → 器件邻接；
+   - 新增 `FNode::CachedFootprint`（`BuildNodePorts` 时缓存）：**搬家/拆除**时用"旧位置"再跑一遍邻居收集（`CollectAdjacentSourcePorts`），否则"搬走后本该连通的那条线"补不上、"旧位置挡住的线"也撤不掉；`PatchNode` 场景里缓存已被刷成新位置 ⇒ 由调用方在重建端口**之前**抓下旧 footprint 通过新参数 `ExtraFootprint` 传进重扫；
+   - `BuildGraphDigest` 把 footprint 缓存/朝向也纳入摘要（局部 vs 全量的校验能抓到缓存不一致）；
+   - 注意：搬迁语义仍是"**拆 + 建**"（`PlaceBuilding`/`DemolishBuilding`）；`PatchNode(摆放)` 是留给"不拆建的原地重配"（例如以后原地改尺寸/换端口布局）用的接口，目前无调用者，已可用。
+12. ✅ **步骤⑯（本次，跨系统数据统一走 `FAsceTickContext`）**：
+   - 阶段之间共享的东西（各阶段子系统指针、`UMassEntitySubsystem` / `FMassEntityManager`、本帧 `DeltaTime / Frame / bAuthority`）集中在 `FAsceTickContext`（`AsceMass/Simulation/AsceTickContext.h`），由 `UAsceSimulationSubsystem` 每帧填好、**按引用**传给各阶段；
+   - 各子系统**不再互相存指针 / 查表**（删掉了 `CachedGrid`、`CachedMassSubsystem` 这类缓存）⇒ 依赖显式、只有 `OnWorldBeginPlay` 一处解析；Ether 热点（`RayScanPort`、邻居收集）从 `Ctx.Grid` 取，每次射线不再走 `GEngine->GetWorldFromContextObject`；
+   - 不用文件级全局变量：PIE 同一个进程可能同时跑 server + 多个 client 世界，全局会被互相覆盖；上下文挂在调度器（每世界一份）上按引用传递没有这个问题。
+13. ✅ **步骤⑰（本次，世界初始化 / loading 依赖）**：
+    - 世界数据初始化从 `AAsceWorldMapReplicatorActor::BeginPlay` 收到 `UAsceSimulationSubsystem`：Actor 只 `RegisterWorldDataSource(this)`（**注册即初始化**，不依赖 Tick —— loading 期间世界可能不 tick）；
+    - 顺序固定为一次 `Source->InitializeMapDimensions()`：世界数据（尺寸/代价场/烘焙阻挡/墙簇）→ 路径地图注册 → 视野高度场 → `ConstructGrid` → `ConstructBuildingsGrid`；调度器只管"什么时候调"，Actor 仍是实现者；
+    - 调度器两道门控（`Tick` 开头，先于任何阶段）：① `!bWorldInitialized` ⇒ 直接 `TryRunWorldInit()` 后返回（fail-closed：关卡里没有 `AAsceWorldMapReplicatorActor` 就永远不启动，>2s 报一次 Error；顺带 loading 界面也不会消失）；② `!bLoadingFinished` ⇒ 返回（默认 true；完整工程在 `UAsceExperienceManagerComponent` 走到 `Loaded` 时调 `NotifyLoadingFinished()`）；
+    - loading 侧（只在 AsceGame）：`ShouldShowLoadingScreen()` 追加 `!Sim->IsWorldInitialized()` ⇒ **世界数据初始化完成之前 loading 界面不消失**；
+    - 客户端：地图 Actor 也在关卡里（本地维度照旧 init ✔）；costfield **内容**随后由 FastArray 复制，墙簇在复制回调里重建，不影响 init 完成判定。
+14. ⏳ **待做**：`RefreshData` 仍是整表刷新走全量；局部更新的单元/回归测试。
 
 ---
 
 ## 9. 未决 / 待办
 
-- **建筑旋转**：`CachedDirection` 目前恒 0；`SlotToCell` 与"反方向匹配"都已留好位置，接上 entity 旋转即可（slot 的 `Offset` 已按"顺时针第几格"定义，天然随转）。
-- **玩家改端口**：换型号 / 改维度 / 改分流 / 改内部布线的 UI 与 RPC（接口已就绪：改完 `SetBuildingDirty`）。
+- **建筑旋转**：已接通（步骤⑭：`CachedDirection` 从实体 Transform 读，`SlotToCell` 按朝向旋转，端口方向拆成"世界/本地"两份）；剩余：`Offset` 在 90° 倍数下天然随转已成立，非 90° 朝向不支持（也不需要）。
+- **玩家改端口**：换型号 / 改维度 / 改分流 / 改内部布线的 UI 与 RPC（接口已就绪：`PushPatchPort` / `PushSetNodeLinks`；改完下一轮 drain 生效）。
+- **`PatchNode(摆放)`**：已局部化（步骤⑮）；等真正的"原地重配"需求（原地改尺寸/换布局）出现再接调用方。
+- **建筑搬迁**：按决策走"拆 + 建"（`UAsceBuildingSubsystem::DemolishBuilding` + `PlaceBuilding`）。
 - **客户端同步**：需要同步哪些字段（端口在制品、core 状态）+ RPC 清单。
 - **增量重建**（脏区域）取代整图重建。
 - **更多 core**：移位寄存器/比较器（比较"编号核数"？寄存器值？需定值语义）、能量计。

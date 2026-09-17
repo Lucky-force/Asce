@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "AsceMass/Simulation/AsceTickContext.h"
+
 #include "Subsystems/WorldSubsystem.h"
 #include "RHIResources.h"
 #include "AsceFogRenderSubsystem.generated.h"
@@ -29,6 +31,10 @@ public:
 	virtual bool ShouldCreateSubsystem(UObject* Outer) const override;
 	virtual void Tick(float DeltaTime) override;
 	virtual TStatId GetStatId() const override;
+
+	/** **阶段入口**（由 `UAsceSimulationSubsystem` 调用；本系统已关闭自 tick）：
+	 *  把本帧雾结果/dirty tile 上传到渲染侧。 */
+	void RunFogRenderStage(const FAsceTickContext& Ctx);
 
 	/** 设置本地队伍键（打包键）。切换后全量标脏重建。 */
 	void SetLocalTeamKey(int32 InTeamKey);

@@ -83,4 +83,6 @@ void UAsceRTSUnitTrait::BuildTemplate(FMassEntityTemplateBuildContext& BuildCont
 
 	// 自定义 Tag：初始存活
 	BuildContext.AddTag<FAsceAliveTag>();
+	// 自定义 Tag：可移动单位（SpatialGrid "单位层"按它收录，避免以后子弹/投射物等被误收）
+	BuildContext.AddTag<FAsceMovableUnitTag>();
 }

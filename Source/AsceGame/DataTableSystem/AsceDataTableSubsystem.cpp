@@ -4,7 +4,7 @@
 #include "Engine/CompositeDataTable.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
-#include "AsceMass/Data/AsceDataTableSettings.h"
+#include "DataTableSystem/AsceDataTableSettings.h"
 #include "UObject/UnrealType.h"
 #include "UObject/Stack.h"
 

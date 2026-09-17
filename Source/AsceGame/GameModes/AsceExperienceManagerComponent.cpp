@@ -11,6 +11,7 @@
 #include "TimerManager.h"
 #include "Settings/AsceSettingsLocal.h"
 #include "AsceLogChannels.h"
+#include "AsceMass/Simulation/AsceSimulationSubsystem.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AsceExperienceManagerComponent)
 
@@ -374,6 +375,12 @@ void UAsceExperienceManagerComponent::OnExperienceFullLoadCompleted()
 
 	LoadState = EAsceExperienceLoadState::Loaded;
 
+	// Asce 模拟：loading 结束，允许调度器开始跑阶段链（世界数据初始化在此之前已完成，见 ShouldShowLoadingScreen）
+	if (UAsceSimulationSubsystem* Sim = UAsceSimulationSubsystem::Get(GetWorld()))
+	{
+		Sim->NotifyLoadingFinished();
+	}
+
 	OnExperienceLoaded_HighPriority.Broadcast(CurrentExperience);
 	OnExperienceLoaded_HighPriority.Clear();
 
@@ -481,10 +488,20 @@ bool UAsceExperienceManagerComponent::ShouldShowLoadingScreen(FString& OutReason
 		OutReason = TEXT("Experience still loading");
 		return true;
 	}
-	else
+
+	// 世界数据（地图尺寸/代价场/墙簇/视野高度场/空间网格）还没初始化完 ⇒ 继续收着 loading 界面。
+	// 初始化由 UAsceSimulationSubsystem 在 AAsceWorldMapReplicatorActor 注册时完成（fail-closed：
+	// 关卡里没放这个 Actor 就永远初始化不了 ⇒ 界面不消失，日志里会有一条 Error 说明原因）。
+	if (const UAsceSimulationSubsystem* Sim = UAsceSimulationSubsystem::Get(GetWorld()))
 	{
-		return false;
+		if (!Sim->IsWorldInitialized())
+		{
+			OutReason = TEXT("Asce world data not initialized");
+			return true;
+		}
 	}
+
+	return false;
 }
 
 void UAsceExperienceManagerComponent::OnAllActionsDeactivated()

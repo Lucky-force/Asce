@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "AsceMass/Simulation/AsceTickContext.h"
+
 #include "CoreMinimal.h"
 #include "Containers/Array.h"
 #include "Containers/Map.h"
@@ -12,6 +14,7 @@
 #include "AsceFogSubsystem.generated.h"
 
 class UAsceFogProcessor;
+class UMassEntitySubsystem;
 
 // ══════════════════════════════════════════════════════════════════════════════
 // MOD-POINT 2026-09-09 17:20:39
@@ -166,6 +169,10 @@ public:
 	virtual TStatId GetStatId() const override;
 	virtual bool ShouldCreateSubsystem(UObject* Outer) const override;
 	//~UTickableWorldSubsystem Interface
+
+	/** **阶段入口**（由 `UAsceSimulationSubsystem` 调用；本系统已关闭自 tick）：
+	 *  跑 `UAsceFogProcessor`（吃本帧位置 + 本帧遮挡数据）。 */
+	void RunFogLogicStage(const FAsceTickContext& Ctx);
 
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;

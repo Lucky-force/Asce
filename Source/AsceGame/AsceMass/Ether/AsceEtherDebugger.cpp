@@ -5,6 +5,7 @@
 #include "AsceMass/Ether/AsceEtherFragments.h"
 #include "AsceMass/Ether/AsceEtherNetworkSubsystem.h"
 #include "AsceMass/Ether/AsceEtherProcessCore.h"
+#include "AsceMass/Fragments/AsceCoreFragments.h"
 #include "AsceMass/Fragments/AsceFootprintFragment.h"
 #include "AsceMass/FlowField/AsceFlowFieldCores.h"   // GRID_SIZE
 #include "DrawDebugHelpers.h"
@@ -90,7 +91,7 @@ void AAsceEtherDebugger::SpawnAndRegister()
 			Foot.OcclusionHeightCm = 0;   // 调试建筑不参与视野遮挡
 		}
 		{
-			// 标记 fragment：Add 观察者会 RegisterBuilding（下一次 RunEtherTick 开头统一重建图）
+			// 标记 fragment：Add 观察者会 RegisterBuilding（下一次命令 drain 阶段统一重建图）
 			FEtherBuildingFragment& Ether = FragmentList.Add_GetRef(FInstancedStruct::Make<FEtherBuildingFragment>())
 				.GetMutable<FEtherBuildingFragment>();
 			Ether.BuildingDefId = DefId;
@@ -101,6 +102,8 @@ void AAsceEtherDebugger::SpawnAndRegister()
 		{
 			continue;
 		}
+		// 调试建筑也进 SpatialGrid "建筑层"：`CreateEntity(实例表)` 只能带 fragment ⇒ tag 创建后补
+		EM.AddTagToEntity(Entity, FAsceBuildingTag::StaticStruct());
 
 		SpawnedEntities.Add(Entity);
 	}
@@ -234,7 +237,7 @@ void AAsceEtherDebugger::DrawDebugState()
 				nullptr, Color, 0.f, true);
 
 			// 内部布线（同建筑内）
-			if (const TArray<int32>* Targets = Net->GetPortLinkTargets(PortId))
+			if (const FAsceEtherPortIdList* Targets = Net->GetPortLinkTargets(PortId))
 			{
 				for (const int32 ToId : *Targets)
 				{

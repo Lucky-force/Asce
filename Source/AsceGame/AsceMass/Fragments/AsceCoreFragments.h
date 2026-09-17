@@ -67,3 +67,17 @@ struct FAsceDeadTag : public FMassTag
 {
 	GENERATED_BODY()
 };
+
+/** 建筑（有 `FAsceGridFootprintFragment` 的静态实体；SpatialGrid 的"建筑层"与 Ether 等消费者按它筛选）。 */
+USTRUCT()
+struct FAsceBuildingTag : public FMassTag
+{
+	GENERATED_BODY()
+};
+
+/** 可移动单位（会被 SpatialGrid 的"单位层"收录；子弹/投射物等以后各自加 tag）。 */
+USTRUCT()
+struct FAsceMovableUnitTag : public FMassTag
+{
+	GENERATED_BODY()
+};

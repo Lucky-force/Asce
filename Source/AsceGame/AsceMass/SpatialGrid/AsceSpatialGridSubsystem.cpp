@@ -1,8 +1,9 @@
-﻿// Fill out your copyright notice in the Description page of Project Settings.
+// Fill out your copyright notice in the Description page of Project Settings.
 
 #include "AsceSpatialGridSubsystem.h"
 
 #include "AsceGridEntitiesUpdateProcessor.h"
+#include "AsceGridBuildingsUpdateProcessor.h"
 #include "AsceSpatialGridDefines.h"
 #include "MassEntitySubsystem.h"
 #include "Engine/World.h"
@@ -21,11 +22,17 @@ void UAsceSpatialGridSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
 void UAsceSpatialGridSubsystem::Tick(float DeltaTime)
 {
-    //在TG_PostPhysical之后调用
+    // 自 tick 已停用：本 tick 体已挪成 `RunGridStages`，由 `UAsceSimulationSubsystem` 按阶段顺序调用
+    // （必须排在 Ether 的 drain 之前，保证 Ether 建图时读到的空间数据是本轮最新的）。
     Super::Tick(DeltaTime);
+}
+
+void UAsceSpatialGridSubsystem::RunGridStages(const FAsceTickContext& Ctx)
+{
     // 1. 重建网格
     bIsRebuilding = true;
-    RebuildGridEntitiesData(DeltaTime);
+    RebuildGridEntitiesData(Ctx);
+    RebuildBuildingsData(Ctx);
     bIsRebuilding = false;
 
     // 2. 消费所有回调
@@ -42,7 +49,7 @@ void UAsceSpatialGridSubsystem::Tick(float DeltaTime)
     }
 }
 
-void UAsceSpatialGridSubsystem::RebuildGridEntitiesData(float DeltaTime)
+void UAsceSpatialGridSubsystem::RebuildGridEntitiesData(const FAsceTickContext& Ctx)
 {
     if (EntitiesDataCells.Num() == 0 || !GridEntitiesUpdateProcessor)
     {
@@ -55,17 +62,10 @@ void UAsceSpatialGridSubsystem::RebuildGridEntitiesData(float DeltaTime)
         Cell.Reset();
     }
 
-    // 按需执行 Processor（同步完成，支持并行）
-    UWorld* World = GetWorld();
-    if (!IsValid(World))
+    // 按需执行 Processor（同步完成，支持并行）；MassEntity 子系统/实体管理器从上下文取
+    if (Ctx.EntityManager)
     {
-        return;
-    }
-    UMassEntitySubsystem* EntitySubsys = World->GetSubsystem<UMassEntitySubsystem>();
-    if (EntitySubsys)
-    {
-        FMassEntityManager& EntityManager = EntitySubsys->GetMutableEntityManager();
-        FMassProcessingContext ProcessingContext(EntityManager, DeltaTime);
+        FMassProcessingContext ProcessingContext(*Ctx.EntityManager, Ctx.DeltaTime);
         UE::Mass::Executor::Run(*GridEntitiesUpdateProcessor, ProcessingContext);
     }
 }
@@ -101,12 +101,16 @@ void UAsceSpatialGridSubsystem::OnWorldBeginPlay(UWorld& InWorld)
         EntityManager.Initialize();
         GridEntitiesUpdateProcessor = NewObject<UAsceGridEntitiesUpdateProcessor>(this);
         GridEntitiesUpdateProcessor->CallInitialize(this, EntityManager.AsShared());
+        GridBuildingsUpdateProcessor = NewObject<UAsceGridBuildingsUpdateProcessor>(this);
+        GridBuildingsUpdateProcessor->CallInitialize(this, EntityManager.AsShared());
     }
 }
 
 void UAsceSpatialGridSubsystem::OnWorldEndPlay(UWorld& InWorld)
 {
     EntitiesDataCells.Empty();
+    BuildingCells.Empty();
+    BuildingsGridDim = FIntPoint::ZeroValue;
     WorldStart = FVector2D::ZeroVector;
     WorldEnd   = FVector2D::ZeroVector;
     GridDimension = FIntVector2::ZeroValue;
@@ -506,6 +510,271 @@ void UAsceSpatialGridSubsystem::ConstructGrid(const FVector2D InWorldStart, cons
     EntitiesDataCells.AddDefaulted(TotalCells);
 
     UE_LOG(LogTemp, Log, TEXT("SpatialGrid: Constructed %d cells (%dx%d), cell size %.0f"), TotalCells, GridDimension.X, GridDimension.Y, GridCellSize);
+}
+
+// ──────────────────────────────────────────
+// 建筑层
+// ──────────────────────────────────────────
+
+void UAsceSpatialGridSubsystem::ConstructBuildingsGrid(const FIntPoint LogicalGridDimension, const int32 InLogicalCellSize, const int32 InCoarseFactor)
+{
+	LogicalCellSize = FMath::Max(1, InLogicalCellSize);
+	CoarseFactor = FMath::Max(1, InCoarseFactor);
+	BuildingsGridDim = FIntPoint(
+		FMath::Max(1, FMath::DivideAndRoundUp(FMath::Max(1, LogicalGridDimension.X), CoarseFactor)),
+		FMath::Max(1, FMath::DivideAndRoundUp(FMath::Max(1, LogicalGridDimension.Y), CoarseFactor)));
+
+	BuildingCells.Empty();
+	BuildingCells.AddDefaulted(BuildingsGridDim.X * BuildingsGridDim.Y);
+
+	UE_LOG(LogTemp, Log, TEXT("SpatialGrid: buildings grid %dx%d (coarse = %d logical cells, logical cell = %dcm)"),
+		BuildingsGridDim.X, BuildingsGridDim.Y, CoarseFactor, LogicalCellSize);
+}
+
+const FAsceGridBuildingsData* UAsceSpatialGridSubsystem::GetBuildingsDataCell(const FIntPoint& CoarseCell) const
+{
+	return IsValidBuildingCoord(CoarseCell) ? &BuildingCells[BuildingCoordToIndex(CoarseCell)] : nullptr;
+}
+
+namespace
+{
+	/** 逻辑格中心是否落在建筑（**旋转后的最终 AABB**）footprint 内。 */
+	FORCEINLINE bool IsLogicalCellInsidePart(const FAsceGridBuildingPart& Part, const FVector2D& CellCenter, int32 LogicalCellSize)
+	{
+		const FIntPoint Size(FMath::Max(1, Part.Size.X), FMath::Max(1, Part.Size.Y));
+		return CellCenter.X >= Part.Origin.X * LogicalCellSize
+			&& CellCenter.X < (Part.Origin.X + Size.X) * LogicalCellSize
+			&& CellCenter.Y >= Part.Origin.Y * LogicalCellSize
+			&& CellCenter.Y < (Part.Origin.Y + Size.Y) * LogicalCellSize;
+	}
+}
+
+void UAsceSpatialGridSubsystem::RebuildBuildingsData(const FAsceTickContext& Ctx)
+{
+	if (BuildingCells.Num() == 0 || !GridBuildingsUpdateProcessor)
+	{
+		return;
+	}
+
+	// 全清 + 由 processor **并行**重填（与单位层同一套：每格一把自旋锁）
+	for (FAsceGridBuildingsData& Cell : BuildingCells)
+	{
+		Cell.Reset();
+	}
+
+	// 跑建筑 processor（并行重填）；MassEntity 子系统/实体管理器从上下文取
+	if (Ctx.EntityManager)
+	{
+		FMassProcessingContext ProcessingContext(*Ctx.EntityManager, Ctx.DeltaTime);
+		UE::Mass::Executor::Run(*GridBuildingsUpdateProcessor, ProcessingContext);
+	}
+}
+
+void UAsceSpatialGridSubsystem::AddBuildingPart(const FAsceGridBuildingPart& Part)
+{
+	AddPartToCells(Part);
+}
+
+bool UAsceSpatialGridSubsystem::GetBuildingLogicalBounds(const FAsceGridBuildingPart& Part, FIntPoint& OutMin, FIntPoint& OutMax) const
+{
+	const FIntPoint Size(FMath::Max(1, Part.Size.X), FMath::Max(1, Part.Size.Y));
+	OutMin = Part.Origin;
+	OutMax = FIntPoint(Part.Origin.X + Size.X - 1, Part.Origin.Y + Size.Y - 1);
+	return true;
+}
+
+void UAsceSpatialGridSubsystem::FindBuildingsInLogicalRect(const FIntPoint& Min, const FIntPoint& Max, TArray<FMassEntityHandle>& OutBuildings) const
+{
+	if (BuildingCells.Num() == 0)
+	{
+		return;
+	}
+	const FIntPoint Lo(FMath::Min(Min.X, Max.X), FMath::Min(Min.Y, Max.Y));
+	const FIntPoint Hi(FMath::Max(Min.X, Max.X), FMath::Max(Min.Y, Max.Y));
+	const FIntPoint CoarseMin = LogicalToCoarse(Lo);
+	const FIntPoint CoarseMax = LogicalToCoarse(Hi);
+
+	for (int32 cy = CoarseMin.Y; cy <= CoarseMax.Y; ++cy)
+	{
+		for (int32 cx = CoarseMin.X; cx <= CoarseMax.X; ++cx)
+		{
+			const FIntPoint Coord(cx, cy);
+			if (!IsValidBuildingCoord(Coord))
+			{
+				continue;
+			}
+			for (const FAsceGridBuildingPart& Part : BuildingCells[BuildingCoordToIndex(Coord)].Buildings)
+			{
+				FIntPoint PMin, PMax;
+				GetBuildingLogicalBounds(Part, PMin, PMax);
+				if (PMin.X <= Hi.X && Lo.X <= PMax.X && PMin.Y <= Hi.Y && Lo.Y <= PMax.Y)
+				{
+					OutBuildings.AddUnique(Part.Entity);
+				}
+			}
+		}
+	}
+}
+
+void UAsceSpatialGridSubsystem::GetPartCoarseRange(const FAsceGridBuildingPart& Part, FIntPoint& OutMin, FIntPoint& OutMax) const
+{
+	// footprint 已是"旋转后的最终 AABB" ⇒ 直接换算粗格（与 costfield/视野同一口径）
+	const FIntPoint Size(FMath::Max(1, Part.Size.X), FMath::Max(1, Part.Size.Y));
+	OutMin = LogicalToCoarse(Part.Origin);
+	OutMax = LogicalToCoarse(FIntPoint(Part.Origin.X + Size.X - 1, Part.Origin.Y + Size.Y - 1));
+}
+
+void UAsceSpatialGridSubsystem::AddPartToCells(const FAsceGridBuildingPart& Part)
+{
+	FIntPoint Min, Max;
+	GetPartCoarseRange(Part, Min, Max);
+	for (int32 cy = Min.Y; cy <= Max.Y; ++cy)
+	{
+		for (int32 cx = Min.X; cx <= Max.X; ++cx)
+		{
+			const FIntPoint Coord(cx, cy);
+			if (!IsValidBuildingCoord(Coord))
+			{
+				continue;
+			}
+			FAsceGridBuildingsData& Cell = BuildingCells[BuildingCoordToIndex(Coord)];
+			const bool bExists = Cell.Buildings.ContainsByPredicate([&Part](const FAsceGridBuildingPart& P) { return P.Entity == Part.Entity; });
+			if (!bExists)
+			{
+				Cell.AddBuilding(Part);   // 每格自旋锁（并行 chunk 可能同时写同一粗格）
+			}
+		}
+	}
+}
+
+bool UAsceSpatialGridSubsystem::FindBuildingOnRay(const FIntPoint& FromLogicalCell, uint8 Dir, int32 MaxLogicalCells,
+	FMassEntityHandle& OutBuilding, FIntPoint& OutEnterCell) const
+{
+	OutBuilding = FMassEntityHandle();
+	OutEnterCell = FIntPoint::ZeroValue;
+	if (BuildingCells.Num() == 0 || MaxLogicalCells <= 0)
+	{
+		return false;
+	}
+
+	int32 dx = 0, dy = 0;
+	// Dir 约定与 AsceEther::EDir 一致：0=Left / 1=Up / 2=Right / 3=Down（这里不引入对 Ether 的依赖）
+	switch (Dir & 3)
+	{
+		case 0: dx = -1; break;
+		case 1: dy = 1; break;
+		case 2: dx = 1; break;
+		case 3: dy = -1; break;
+		default: return false;
+	}
+
+	const FIntPoint LogicalDim(BuildingsGridDim.X * CoarseFactor, BuildingsGridDim.Y * CoarseFactor);
+	int32 lx = FromLogicalCell.X;
+	int32 ly = FromLogicalCell.Y;
+
+	for (int32 step = 0; step < MaxLogicalCells; )
+	{
+		lx += dx;
+		ly += dy;
+		++step;
+		if (lx < 0 || ly < 0 || lx >= LogicalDim.X || ly >= LogicalDim.Y)
+		{
+			break;
+		}
+
+		const FIntPoint Coarse = LogicalToCoarse(FIntPoint(lx, ly));
+		if (!IsValidBuildingCoord(Coarse))
+		{
+			break;
+		}
+
+		// 粗格里有建筑：逐个候选做"逻辑格中心是否在 footprint 内"的细判
+		const TArray<FAsceGridBuildingPart, TInlineAllocator<4>>& List = BuildingCells[BuildingCoordToIndex(Coarse)].Buildings;
+		if (List.Num() > 0)
+		{
+			const FVector2D CellCenter(
+				(static_cast<float>(lx) + 0.5f) * LogicalCellSize,
+				(static_cast<float>(ly) + 0.5f) * LogicalCellSize);
+			for (const FAsceGridBuildingPart& Part : List)
+			{
+				if (IsLogicalCellInsidePart(Part, CellCenter, LogicalCellSize))
+				{
+					OutBuilding = Part.Entity;
+					OutEnterCell = FIntPoint(lx, ly);
+					return true;
+				}
+			}
+		}
+
+		// 本粗格为空：直接跳到该粗格沿方向的出口，省掉格内剩余逻辑格
+		// **非空粗格不能跳**：同一粗格内别的逻辑格可能被建筑覆盖（跳过去会穿墙）
+		if (List.Num() == 0)
+		{
+			const int32 CoarseMinX = Coarse.X * CoarseFactor;
+			const int32 CoarseMinY = Coarse.Y * CoarseFactor;
+			int32 Jump = INDEX_NONE;
+			if (dx > 0)      { Jump = (CoarseMinX + CoarseFactor - 1) - lx; }
+			else if (dx < 0) { Jump = lx - CoarseMinX; }
+			if (dy > 0)      { Jump = (Jump == INDEX_NONE) ? ((CoarseMinY + CoarseFactor - 1) - ly) : FMath::Min(Jump, (CoarseMinY + CoarseFactor - 1) - ly); }
+			else if (dy < 0) { Jump = (Jump == INDEX_NONE) ? (ly - CoarseMinY) : FMath::Min(Jump, ly - CoarseMinY); }
+			if (Jump > 0)
+			{
+				lx += dx * Jump;
+				ly += dy * Jump;
+				step += Jump;
+			}
+		}
+	}
+	return false;
+}
+
+void UAsceSpatialGridSubsystem::FindBuildingsInRadius(const FVector2D& CenterWorldLocation, float Radius, TArray<FMassEntityHandle>& OutBuildings) const
+{
+	if (BuildingCells.Num() == 0)
+	{
+		return;
+	}
+	const FVector2D MinWorld = CenterWorldLocation - FVector2D(Radius, Radius);
+	const FVector2D MaxWorld = CenterWorldLocation + FVector2D(Radius, Radius);
+	const FIntPoint CoarseMin = LogicalToCoarse(FIntPoint(
+		FMath::FloorToInt(MinWorld.X / LogicalCellSize), FMath::FloorToInt(MinWorld.Y / LogicalCellSize)));
+	const FIntPoint CoarseMax = LogicalToCoarse(FIntPoint(
+		FMath::FloorToInt(MaxWorld.X / LogicalCellSize), FMath::FloorToInt(MaxWorld.Y / LogicalCellSize)));
+
+	const float RadiusSq = Radius * Radius;
+	TSet<FMassEntityHandle> Seen;
+	for (int32 cy = CoarseMin.Y; cy <= CoarseMax.Y; ++cy)
+	{
+		for (int32 cx = CoarseMin.X; cx <= CoarseMax.X; ++cx)
+		{
+			const FIntPoint Coord(cx, cy);
+			if (!IsValidBuildingCoord(Coord))
+			{
+				continue;
+			}
+			for (const FAsceGridBuildingPart& Part : BuildingCells[BuildingCoordToIndex(Coord)].Buildings)
+			{
+				if (Seen.Contains(Part.Entity))
+				{
+					continue;
+				}
+				const FVector2D PartCenter(
+					(static_cast<float>(Part.Origin.X) + Part.Size.X * 0.5f) * LogicalCellSize,
+					(static_cast<float>(Part.Origin.Y) + Part.Size.Y * 0.5f) * LogicalCellSize);
+				const FVector2D Half(
+					Part.Size.X * 0.5f * LogicalCellSize,
+					Part.Size.Y * 0.5f * LogicalCellSize);
+				const FVector2D Closest(
+					FMath::Clamp(CenterWorldLocation.X, PartCenter.X - Half.X, PartCenter.X + Half.X),
+					FMath::Clamp(CenterWorldLocation.Y, PartCenter.Y - Half.Y, PartCenter.Y + Half.Y));
+				if (FVector2D::DistSquared(Closest, CenterWorldLocation) <= RadiusSq)
+				{
+					Seen.Add(Part.Entity);
+					OutBuildings.Add(Part.Entity);
+				}
+			}
+		}
+	}
 }
 
 const FAsceSpatialGridEntitiesData* UAsceSpatialGridSubsystem::GetGridEntitiesDataCell(FIntVector2 GridLocation)

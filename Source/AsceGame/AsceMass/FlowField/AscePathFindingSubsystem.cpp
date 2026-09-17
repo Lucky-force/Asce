@@ -31,8 +31,12 @@ UAscePathFindingSubsystem* UAscePathFindingSubsystem::Get(const UObject* WorldCo
 
 void UAscePathFindingSubsystem::Tick(float DeltaTime)
 {
+	// 自 tick 已停用：本 tick 体已挪成 `RunFlowFieldStage`，由 `UAsceSimulationSubsystem` 按阶段顺序调用
 	Super::Tick(DeltaTime);
+}
 
+void UAscePathFindingSubsystem::RunFlowFieldStage(const FAsceTickContext& Ctx)
+{
 	// 每帧给 goal LOS 失效队列一个预算（与实体寻路调用解耦，即使本帧没有实体也推进重算）。
 	constexpr int32 GoalLOSRefreshBudgetPerFrame = 10;
 	if (PathFinder)

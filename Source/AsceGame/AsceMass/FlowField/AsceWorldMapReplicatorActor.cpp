@@ -6,6 +6,7 @@
 #include "Net/UnrealNetwork.h"
 #include "AsceMass/Vision/AsceFogSubsystem.h"
 #include "AsceMass/SpatialGrid/AsceSpatialGridSubsystem.h"
+#include "AsceMass/Simulation/AsceSimulationSubsystem.h"
 
 AAsceWorldMapReplicatorActor::AAsceWorldMapReplicatorActor()
 {
@@ -105,27 +106,47 @@ void AAsceWorldMapReplicatorActor::InitializeMapDimensions()
 			FlowGridX * GRID_SIZE,
 			FlowGridY * GRID_SIZE);
 		SpatialGrid->ConstructGrid(FVector2D::ZeroVector, WorldEnd, SpatialMinEntityRadius);
+
+		// 建筑层：粗格覆盖整张逻辑地图（逻辑格 = costfield 格 = GRID_SIZE = 100cm；粗格取 4×4 逻辑格）
+		SpatialGrid->ConstructBuildingsGrid(
+			FIntPoint(FlowGridX, FlowGridY),
+			static_cast<int32>(GRID_SIZE),
+			4);
 	}
 
 	UE_LOG(LogTemp, Log, TEXT("[AsceWorldMap] 初始化地图：%d x %d 扇区，流场格 %d x %d，视野格 %d x %d（Level=%d, Scale=%d, %.1fcm/格, Baked=%s）"),
 		SectorX, SectorY, FlowGridX, FlowGridY, VisionGridX, VisionGridY,
 		VisionDetailLevel, Scale, VisionCellCm, bBakedDimsOk ? TEXT("yes") : TEXT("no"));
-}
 
-void AAsceWorldMapReplicatorActor::BeginPlay()
-{
-	Super::BeginPlay();
-
-	InitializeMapDimensions();
-
+	// 路径地图注册（原来在 BeginPlay 里，挪进来让"世界初始化"是一个完整动作，由调度器调用）
 	if (UAscePathFindingSubsystem* Subsystem = UAscePathFindingSubsystem::Get(this))
 	{
 		Subsystem->RegisterWorldMapReplicator(this);
 	}
 }
 
+void AAsceWorldMapReplicatorActor::BeginPlay()
+{
+	Super::BeginPlay();
+
+	// 只注册自己：世界数据的实际初始化由 `UAsceSimulationSubsystem` 按固定时机调用（`InitializeMapDimensions`），
+	// 这样"世界数据 → 雾高度场 → 网格构建 → 路径地图注册"的顺序由调度器统一管控，而不是压在一个 Actor 的 BeginPlay 上。
+	if (UAsceSimulationSubsystem* Sim = UAsceSimulationSubsystem::Get(this))
+	{
+		Sim->RegisterWorldDataSource(this);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Error, TEXT("[AsceWorldMap] 找不到 UAsceSimulationSubsystem：世界数据未初始化"));
+	}
+}
+
 void AAsceWorldMapReplicatorActor::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	if (UAsceSimulationSubsystem* Sim = UAsceSimulationSubsystem::Get(this))
+	{
+		Sim->UnregisterWorldDataSource(this);
+	}
 	if (UAscePathFindingSubsystem* Subsystem = UAscePathFindingSubsystem::Get(this))
 	{
 		Subsystem->UnregisterWorldMapReplicator(this);

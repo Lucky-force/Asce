@@ -74,6 +74,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ether")
 	int32 SizeY = 1;
 
+	/** 视野遮挡高度（cm；写进 footprint 的 `OcclusionHeightCm`；0 = 不参与视野遮挡）。 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ether")
+	int32 OcclusionHeightCm = 0;
+
 	/** 支持挂载端口的维度数量（端口 Dimension 须 < 它）。 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ether", meta = (ClampMin = "1", ClampMax = "8"))
 	uint8 SupportedDimCount = 1;

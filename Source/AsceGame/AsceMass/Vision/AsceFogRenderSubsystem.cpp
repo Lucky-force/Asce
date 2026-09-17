@@ -1,4 +1,4 @@
-﻿// Fill out your copyright notice in the Description page of Project Settings.
+// Fill out your copyright notice in the Description page of Project Settings.
 
 #include "AsceFogRenderSubsystem.h"
 
@@ -130,8 +130,12 @@ void UAsceFogRenderSubsystem::FlushDirtyTiles()
 
 void UAsceFogRenderSubsystem::Tick(float DeltaTime)
 {
+	// 自 tick 已停用：本 tick 体已挪成 `RunFogRenderStage`，由 `UAsceSimulationSubsystem` 按阶段顺序调用
 	Super::Tick(DeltaTime);
+}
 
+void UAsceFogRenderSubsystem::RunFogRenderStage(const FAsceTickContext& Ctx)
+{
 	const bool bFogReady = UpdateFogDimensions();
 	if (!bFogReady)
 	{

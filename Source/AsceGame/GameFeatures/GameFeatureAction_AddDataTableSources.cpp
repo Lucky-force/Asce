@@ -4,7 +4,7 @@
 
 #include "Engine/CompositeDataTable.h"
 #include "Engine/DataTable.h"
-#include "AsceMass/Data/AsceDataTableSubsystem.h"
+#include "DataTableSystem/AsceDataTableSubsystem.h"
 
 #if WITH_EDITOR
 #include "Misc/DataValidation.h"

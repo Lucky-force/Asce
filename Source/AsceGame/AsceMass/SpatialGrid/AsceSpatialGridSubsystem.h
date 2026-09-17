@@ -1,5 +1,7 @@
-﻿// Fill out your copyright notice in the Description page of Project Settings.
+// Fill out your copyright notice in the Description page of Project Settings.
 #pragma once
+
+#include "AsceMass/Simulation/AsceTickContext.h"
 
 #include "Subsystems/WorldSubsystem.h"
 #include "AsceSpatialGridDefines.h"
@@ -8,6 +10,8 @@ DECLARE_DYNAMIC_DELEGATE_OneParam(FOnGridQueryReadyDynamic, TArray<FMassEntityHa
 DECLARE_DELEGATE_OneParam(FOnGridQueryReady, TArray<FMassEntityHandle>&)
 
 class UAsceGridEntitiesUpdateProcessor;
+class UAsceGridBuildingsUpdateProcessor;
+class UMassEntitySubsystem;
 /**网格子系统
  * 主要用于记录和查询
  */
@@ -56,7 +60,65 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable)
 	void ConstructGrid(const FVector2D WorldStartLocation, const FVector2D WorldEndLocation, const float MinimalEntityRadius = 75.f);
+
+	/** **阶段入口**（由 `UAsceSimulationSubsystem` 调用；本系统已关闭自 tick）：
+	 *  单位层重建 → 建筑层重建（processor 内部并行）→ 消费查询回调。 */
+	void RunGridStages(const FAsceTickContext& Ctx);
 	
+	// ──────────────────────────────────────────
+	// 建筑层（独立一份数据；坐标用**逻辑格**，粗格边长 = 逻辑格边长 × CoarseFactor）
+	// ──────────────────────────────────────────
+
+	/** 构建建筑网格（粗格覆盖整张逻辑地图）。`InCoarseFactor` 一般取 4（= costfield 边长 × 4）。 */
+	UFUNCTION(BlueprintCallable)
+	void ConstructBuildingsGrid(const FIntPoint LogicalGridDimension, const int32 InLogicalCellSize = 100, const int32 InCoarseFactor = 4);
+
+	/** **线程安全**：把一个建筑写进它覆盖到的每个粗格（由建筑 processor 在并行 chunk 里调用）。 */
+	void AddBuildingPart(const FAsceGridBuildingPart& Part);
+
+	/** 建筑层是否已构建（`ConstructBuildingsGrid` 之后为真；建筑引导阶段等的就绪条件）。 */
+	FORCEINLINE bool IsBuildingsGridReady() const { return BuildingCells.Num() > 0; }
+
+	/** 建筑层的**逻辑格**尺寸（粗格数 × CoarseFactor；放置校验的越界判据）。 */
+	FORCEINLINE FIntPoint GetBuildingsLogicalDim() const
+	{
+		return FIntPoint(BuildingsGridDim.X * CoarseFactor, BuildingsGridDim.Y * CoarseFactor);
+	}
+
+	/** 一个建筑占用的**逻辑格 AABB**（按 Rotation 绕中心旋转后；与登记口径一致）。 */
+	bool GetBuildingLogicalBounds(const FAsceGridBuildingPart& Part, FIntPoint& OutMin, FIntPoint& OutMax) const;
+
+	/** 收集与给定逻辑格 AABB **相交**的已有建筑（Entity 去重；放置校验用）。 */
+	void FindBuildingsInLogicalRect(const FIntPoint& Min, const FIntPoint& Max, TArray<FMassEntityHandle>& OutBuildings) const;
+
+	/**
+	 * **射线查询（逻辑格空间）**：从 `FromLogicalCell` 出发、沿 `Dir`（AsceEther::EDir）、最多 `MaxLogicalCells` 格，
+	 * 返回**最近**命中的建筑与"射线进入它 footprint 的那一格"。粗格为空则整格跳过（遍历量 ÷ CoarseFactor）。
+	 */
+	bool FindBuildingOnRay(const FIntPoint& FromLogicalCell, uint8 Dir, int32 MaxLogicalCells,
+		FMassEntityHandle& OutBuilding, FIntPoint& OutEnterCell) const;
+
+	/** 半径查询（世界坐标）：返回覆盖到的建筑（按 Entity 去重）。 */
+	void FindBuildingsInRadius(const FVector2D& CenterWorldLocation, float Radius, TArray<FMassEntityHandle>& OutBuildings) const;
+
+	const FAsceGridBuildingsData* GetBuildingsDataCell(const FIntPoint& CoarseCell) const;
+
+	FORCEINLINE int32 GetBuildingsCoarseCellSize() const { return LogicalCellSize * CoarseFactor; }
+	FORCEINLINE FIntPoint LogicalToCoarse(const FIntPoint& LogicalCell) const
+	{
+		return FIntPoint(LogicalCell.X / FMath::Max(1, CoarseFactor), LogicalCell.Y / FMath::Max(1, CoarseFactor));
+	}
+	FORCEINLINE bool IsValidBuildingCoord(const FIntPoint& CoarseCell) const
+	{
+		return CoarseCell.X >= 0 && CoarseCell.X < BuildingsGridDim.X
+			&& CoarseCell.Y >= 0 && CoarseCell.Y < BuildingsGridDim.Y
+			&& BuildingCells.Num() == BuildingsGridDim.X * BuildingsGridDim.Y;
+	}
+	FORCEINLINE int32 BuildingCoordToIndex(const FIntPoint& CoarseCell) const
+	{
+		return CoarseCell.X + BuildingsGridDim.X * CoarseCell.Y;
+	}
+
 	const FAsceSpatialGridEntitiesData* GetGridEntitiesDataCell(FIntVector2 GridLocation);
 	
 	//UTickableWorldSubsystem Interface
@@ -70,6 +132,7 @@ protected:
 	//~UTickableWorldSubsystem Interface
 	
 	friend class UAsceGridEntitiesUpdateProcessor;
+	friend class UAsceGridBuildingsUpdateProcessor;
 	
 	void InsertEntity(FMassEntityHandle EntityHandle, const FVector& Location, float Radius, float Height);
 	
@@ -106,7 +169,14 @@ public:
 	}
 protected:
 	// 重建网格实体信息
-	void RebuildGridEntitiesData(float DeltaTime);  
+	void RebuildGridEntitiesData(const FAsceTickContext& Ctx);  
+
+	// 重建"建筑层"（清格 + 并行跑建筑 processor 重填）
+	void RebuildBuildingsData(const FAsceTickContext& Ctx);
+
+	/** 建筑的粗格覆盖范围 / 写格（旋转后的世界 AABB → 粗格）。 */
+	void GetPartCoarseRange(const FAsceGridBuildingPart& Part, FIntPoint& OutMin, FIntPoint& OutMax) const;
+	void AddPartToCells(const FAsceGridBuildingPart& Part);
 	
 	// 查找范围内的实体
 	void FindEntities_Internal(const FVector2D& StartWorldLocation, const FVector2D& EndWorldLocation, TArray<FMassEntityHandle>& OutHandles);
@@ -164,9 +234,24 @@ public:
 private:
 	//EntitiesData格子数据
 	TArray<FAsceSpatialGridEntitiesData> EntitiesDataCells;
-	
+
 	UPROPERTY(Transient)
 	TObjectPtr<UMassProcessor> GridEntitiesUpdateProcessor;
+
+	// ── 建筑层 ──
+
+	/** 建筑网格（粗格；尺寸 = ceil(逻辑格数 / CoarseFactor)）。 */
+	TArray<FAsceGridBuildingsData> BuildingCells;
+	FIntPoint BuildingsGridDim = FIntPoint::ZeroValue;
+
+	/** 逻辑格边长（cm；与 footprint 的格一致，默认 100）。 */
+	int32 LogicalCellSize = 100;
+
+	/** 粗格 = 逻辑格边长 × CoarseFactor。 */
+	int32 CoarseFactor = 4;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMassProcessor> GridBuildingsUpdateProcessor;
 	
 	struct FQueryCommand
 	{

@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "AsceMass/Simulation/AsceTickContext.h"
+
 #include "Subsystems/WorldSubsystem.h"
 #include "MassExternalSubsystemTraits.h"
 #include "AsceMass/FlowField/AsceFlowFieldCores.h"
@@ -40,6 +42,9 @@ public:
 	// UTickableWorldSubsystem：每帧驱动 goal LOS 失效队列重算
 	virtual void Tick(float DeltaTime) override;
 	virtual TStatId GetStatId() const override;
+
+	/** **阶段入口**（由 `UAsceSimulationSubsystem` 调用；本系统已关闭自 tick）：推进 goal-LOS 重算预算（移动管线读流场之前）。 */
+	void RunFlowFieldStage(const FAsceTickContext& Ctx);
 
 	UPathFinder* GetPathFinder() const { return PathFinder; }
 	FWorldMapData* GetWorldMapDataMutableForAuthority();

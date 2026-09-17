@@ -9,12 +9,12 @@
 #include "Async/ParallelFor.h"
 #include "MassEntityManager.h"
 #include "MassEntitySubsystem.h"
+#include "MassCommonFragments.h"   // FTransformFragment（读建筑朝向）
 #include "AsceMass/Fragments/AsceFootprintFragment.h"
-#include "AsceMass/Data/AsceDataTableSubsystem.h"
+#include "DataTableSystem/AsceDataTableSubsystem.h"
 #include "AsceMass/Ether/AsceEtherCores.h"
 #include "AsceMass/Ether/AsceEtherPortTypeTable.h"
-#include "AsceMass/FlowField/AscePathFindingSubsystem.h"
-#include "AsceMass/FlowField/AscePathFinder.h"
+#include "AsceMass/SpatialGrid/AsceSpatialGridSubsystem.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AsceEtherNetworkSubsystem)
 
@@ -46,19 +46,37 @@ namespace
 	}
 
 	/** 建筑内的格偏移 -> 端口所在格。slot 规则：该方向边上、从**左手侧**起顺时针第 Offset 格。
-	 *  （旋转预留：现在 CachedDirection 恒 0，后面在这里按 CachedDirection 旋转） */
-	FIntPoint SlotToCell(const FIntPoint& Origin, int32 SizeX, int32 SizeY, uint8 Direction, uint8 Offset, uint8 /*CachedDirection*/)
+	 *  - `Origin`/`SizeX`/`SizeY` 是 footprint 的**最终 AABB**（旋转已折进去）；
+	 *  - `Direction`/`Offset` 是**建筑本地**槽位定义；
+	 *  - `CachedDirection` = 建筑绕中心**顺时针** 90° 的次数（0~3）。 */
+	FIntPoint SlotToCell(const FIntPoint& Origin, int32 SizeX, int32 SizeY, uint8 Direction, uint8 Offset, uint8 CachedDirection)
 	{
-		const int32 SX = FMath::Max(1, SizeX);
-		const int32 SY = FMath::Max(1, SizeY);
-		switch (static_cast<AsceEther::EDir>(Direction))
+		// 最终 AABB 尺寸 → 未旋转尺寸（奇数旋转时长宽对调）
+		const bool bSwap = (CachedDirection & 1) != 0;
+		const int32 SX = FMath::Max(1, bSwap ? SizeY : SizeX);
+		const int32 SY = FMath::Max(1, bSwap ? SizeX : SizeY);
+
+		// 1) 本地格（相对"未旋转 footprint 的最小角"）
+		FIntPoint Local(0, 0);
+		switch (static_cast<AsceEther::EDir>(Direction & 3))
 		{
-			case AsceEther::EDir::Left:  return FIntPoint(Origin.X, Origin.Y + Offset);
-			case AsceEther::EDir::Up:    return FIntPoint(Origin.X + Offset, Origin.Y + SY - 1);
-			case AsceEther::EDir::Right: return FIntPoint(Origin.X + SX - 1, Origin.Y + SY - 1 - Offset);
-			case AsceEther::EDir::Down:  return FIntPoint(Origin.X + SX - 1 - Offset, Origin.Y);
-			default:                     return Origin;
+			case AsceEther::EDir::Left:  Local = FIntPoint(0, Offset); break;
+			case AsceEther::EDir::Up:    Local = FIntPoint(Offset, SY - 1); break;
+			case AsceEther::EDir::Right: Local = FIntPoint(SX - 1, SY - 1 - Offset); break;
+			case AsceEther::EDir::Down:  Local = FIntPoint(SX - 1 - Offset, 0); break;
+			default: break;
 		}
+
+		// 2) 本地 → 世界（绕中心顺时针 90°；结果仍落在最终 AABB 的局部坐标里）
+		switch (CachedDirection & 3)
+		{
+			case 1: Local = FIntPoint(Local.Y, SX - 1 - Local.X); break;
+			case 2: Local = FIntPoint(SX - 1 - Local.X, SY - 1 - Local.Y); break;
+			case 3: Local = FIntPoint(SY - 1 - Local.Y, Local.X); break;
+			default: break;
+		}
+
+		return Origin + Local;
 	}
 }
 
@@ -119,14 +137,9 @@ UAsceEtherNetworkSubsystem* UAsceEtherNetworkSubsystem::Get(const UObject* World
 
 void UAsceEtherNetworkSubsystem::Tick(float DeltaTime)
 {
+	// 自 tick 已停用：本 tick 体已挪成阶段函数，由 `UAsceSimulationSubsystem` 按固定顺序连续调用
+	// （RunCommandDrainStage → RunSimulationStage），避免依赖 UE 的 tick 顺序。
 	Super::Tick(DeltaTime);
-
-	const UWorld* World = GetWorld();
-	if (!World || World->GetNetMode() == NM_Client)
-	{
-		return;
-	}
-	RunEtherTick();
 }
 
 // ── 建筑配置注册表 ──
@@ -606,111 +619,86 @@ void UAsceEtherNetworkSubsystem::RebuildNodeInternalTopology(int32 NodeId, TArra
 	}
 }
 
-void UAsceEtherNetworkSubsystem::EnsureGridIndex()
-{
-	// 地图尺寸优先取流场的地图数据；拿不到就用一个足够大的兜底尺寸（只在开发期可能发生）
-	int32 NewW = 0;
-	int32 NewH = 0;
-	if (UAscePathFindingSubsystem* PathFinding = UAscePathFindingSubsystem::Get(this))
-	{
-		if (const UPathFinder* Finder = PathFinding->GetPathFinder())
-		{
-			if (const FWorldMapData* Map = Finder->GetWorldMapData())
-			{
-				NewW = Map->GetGridCountX();
-				NewH = Map->GetGridCountY();
-			}
-		}
-	}
-	if (NewW <= 0 || NewH <= 0)
-	{
-		NewW = 1024;
-		NewH = 1024;
-	}
-
-	if (NewW != GridW || NewH != GridH)
-	{
-		GridW = NewW;
-		GridH = NewH;
-		GridToNode.Init(INDEX_NONE, GridW * GridH);
-	}
-	else
-	{
-		// 尺寸没变：清空（重建时重填；增量时用 MarkNodeCells 局部改）
-		for (int32& NodeId : GridToNode)
-		{
-			NodeId = INDEX_NONE;
-		}
-	}
-}
-
-int32 UAsceEtherNetworkSubsystem::GetNodeAtCell(int32 X, int32 Y) const
-{
-	if (X < 0 || Y < 0 || X >= GridW || Y >= GridH || GridToNode.Num() != GridW * GridH)
-	{
-		return INDEX_NONE;
-	}
-	return GridToNode[Y * GridW + X];
-}
-
-void UAsceEtherNetworkSubsystem::MarkNodeCells(int32 NodeId, bool bMark)
+void UAsceEtherNetworkSubsystem::DetachNodeFromGraph(int32 NodeId)
 {
 	if (!IsNodeAlive(NodeId))
 	{
 		return;
 	}
-	// 占用格来自建筑系统的 footprint（Ether 只读它）
-	UWorld* World = GetWorld();
-	UMassEntitySubsystem* MassSub = World ? World->GetSubsystem<UMassEntitySubsystem>() : nullptr;
-	const FMassEntityManager* EM = MassSub ? &MassSub->GetEntityManager() : nullptr;
-	if (!EM)
+	for (const int32 PortId : Nodes[NodeId].SlotPortIds)
 	{
-		return;
-	}
-	const FAsceGridFootprintFragment* Foot = EM->GetFragmentDataPtr<FAsceGridFootprintFragment>(Nodes[NodeId].Entity);
-	if (!Foot)
-	{
-		return;
-	}
-	for (int32 y = 0; y < Foot->SizeY; ++y)
-	{
-		for (int32 x = 0; x < Foot->SizeX; ++x)
+		if (!Ports.IsValidIndex(PortId) || !Ports[PortId].bActive)
 		{
-			const int32 cx = Foot->OriginGridLocation.X + x;
-			const int32 cy = Foot->OriginGridLocation.Y + y;
-			if (cx < 0 || cy < 0 || cx >= GridW || cy >= GridH)
+			continue;
+		}
+		FAsceEtherPortData& P = Ports[PortId];
+
+		// ① 入边（内部源/外部源）：把"我"从对方的出边里摘掉
+		for (const int32 SrcPort : P.InSources)
+		{
+			if (!Ports.IsValidIndex(SrcPort))
 			{
 				continue;
 			}
-			int32& Slot = GridToNode[cy * GridW + cx];
-			Slot = bMark ? NodeId : INDEX_NONE;
+			Ports[SrcPort].LinkTargets.RemoveSingle(PortId);
+			if (Ports[SrcPort].OutTargetPort == PortId)
+			{
+				Ports[SrcPort].OutTargetPort = INDEX_NONE;
+			}
 		}
+
+		// ② 出边：外部出边（顺带清对端的 InSourcePort/InSources）；内部布线目标同理
+		if (P.OutTargetPort != INDEX_NONE)
+		{
+			ClearExternalEdge(PortId);
+		}
+		for (const int32 ToPort : P.LinkTargets)
+		{
+			if (Ports.IsValidIndex(ToPort))
+			{
+				Ports[ToPort].InSources.RemoveSingle(PortId);
+			}
+		}
+
+		// ③ 自身图字段清零（在制品/玩家配置保留）
+		P.LinkTargets.Reset();
+		P.InSources.Reset();
+		P.OutTargetPort = INDEX_NONE;
+		P.InSourcePort = INDEX_NONE;
 	}
 }
 
-void UAsceEtherNetworkSubsystem::BuildNodePorts(int32 NodeId)
+void UAsceEtherNetworkSubsystem::BuildNodePorts(int32 NodeId, const FAsceTickContext& Ctx)
 {
 	if (!IsNodeAlive(NodeId))
 	{
 		return;
 	}
+	// 先脱网：无论后面是否因缺配置/缺 footprint 提前返回，都不会留下幽灵引用
+	DetachNodeFromGraph(NodeId);
+
 	FNode& N = Nodes[NodeId];
 	const UAsceEtherBuildingConfig* Cfg = GetConfigCDO(NodeId);
 	if (!Cfg)
 	{
 		return; // 注册时已告警
 	}
-	N.bDevice = (Cfg->DeviceType == EAsceEtherDeviceType::Sequential);
+				N.bDevice = (Cfg->DeviceType == EAsceEtherDeviceType::Sequential);
 
-	// 摆放/占用格来自建筑系统的 footprint（Ether 只读）
-	UWorld* World = GetWorld();
-	UMassEntitySubsystem* MassSub = World ? World->GetSubsystem<UMassEntitySubsystem>() : nullptr;
-	const FMassEntityManager* EM = MassSub ? &MassSub->GetEntityManager() : nullptr;
+	// 摆放来自建筑系统的 footprint（Ether 只读）
+	const FMassEntityManager* EM = Ctx.EntityManager;
 	const FAsceGridFootprintFragment* Foot = EM ? EM->GetFragmentDataPtr<FAsceGridFootprintFragment>(N.Entity) : nullptr;
 	if (!Foot)
 	{
 		return;
 	}
+
+	// 建筑朝向：从实体 Transform 读（建筑系统写入 = Rotation × 90°）；端口的世界方向/格位都按它旋转
+	N.CachedDirection = GetNodeRotation(N.Entity, Ctx);
+
+	// footprint 缓存：搬家/拆除后要靠"旧位置"重扫邻居（实体销毁后 fragment 就取不到了）
+	N.CachedFootprint = *Foot;
+	N.bHasCachedFootprint = true;
 
 	// **端口持久化 + 身份复用**：按"相对几何身份"（Direction/Offset/Dimension）匹配旧端口 ⇒ id 不变、运行态原地保留
 	const TArray<int32> OldPortIds = N.SlotPortIds;   // 旧映射（副本；匹配用）
@@ -731,11 +719,13 @@ void UAsceEtherNetworkSubsystem::BuildNodePorts(int32 NodeId)
 			{
 				continue;
 			}
-			const int32 OldId = OldPortIds[o];
-			if (Ports.IsValidIndex(OldId) && Ports[OldId].bActive
-				&& Ports[OldId].Direction == Slot.Direction
-				&& Ports[OldId].Offset == Slot.Offset
-				&& Ports[OldId].Dimension == Slot.Dimension)
+				const int32 OldId = OldPortIds[o];
+				// 命中条件：槽位在用 **且仍属于本建筑** 且几何身份相同
+				if (Ports.IsValidIndex(OldId) && Ports[OldId].bActive
+					&& Ports[OldId].NodeId == NodeId
+					&& Ports[OldId].SlotDirection == Slot.Direction
+					&& Ports[OldId].Offset == Slot.Offset
+					&& Ports[OldId].Dimension == Slot.Dimension)
 			{
 				PortId = OldId;
 				OldUsed[o] = 1;
@@ -751,16 +741,18 @@ void UAsceEtherNetworkSubsystem::BuildNodePorts(int32 NodeId)
 			NewPort.PortTypeId = Slot.PortTypeId;
 			NewPort.SplitMode = Slot.SplitMode;
 			NewPort.Dimension = Slot.Dimension;
-			NewPort.Direction = Slot.Direction;
+			NewPort.SlotDirection = Slot.Direction;
+			NewPort.Direction = static_cast<uint8>((Slot.Direction + N.CachedDirection) & 3);
 			NewPort.Offset = Slot.Offset;
 			NewPort.TransportType = EAsceEtherTransportType::Any;
 		}
 		FAsceEtherPortData& P = Ports[PortId];
 
-		// 3) 位置/朝向始终按当前 slot；图相关字段清空（重建图会重填），实例字段/在制品保留
+		// 3) 位置/朝向始终按当前 slot（世界方向 = 本地方向 + 建筑朝向）；图相关字段清空，实例字段/在制品保留
 		P.NodeId = NodeId;
 		P.bActive = true;
-		P.Direction = Slot.Direction;
+		P.SlotDirection = Slot.Direction;
+		P.Direction = static_cast<uint8>((Slot.Direction + N.CachedDirection) & 3);
 		P.Offset = Slot.Offset;
 		P.Dimension = Slot.Dimension;
 		P.LinkTargets.Reset();
@@ -771,8 +763,8 @@ void UAsceEtherNetworkSubsystem::BuildNodePorts(int32 NodeId)
 		// 4) 端口类型：查端口类型表，解析 Op / Throughput / LinkRange
 		ResolvePortTypeConfig(P);
 
-		// 5) 摆放（旋转预留：CachedDirection 暂恒 0）
-		const FIntPoint Cell = SlotToCell(Foot->OriginGridLocation, Foot->SizeX, Foot->SizeY, P.Direction, P.Offset, N.CachedDirection);
+		// 5) 摆放（按槽位本地方向 + 建筑朝向，落到最终 AABB 里）
+		const FIntPoint Cell = SlotToCell(Foot->OriginGridLocation, Foot->SizeX, Foot->SizeY, P.SlotDirection, P.Offset, N.CachedDirection);
 		P.CellX = Cell.X;
 		P.CellY = Cell.Y;
 
@@ -785,12 +777,17 @@ void UAsceEtherNetworkSubsystem::BuildNodePorts(int32 NodeId)
 		NewPortIds.Add(PortId);
 	}
 
-	// 6) 回收不再使用的旧端口（在制品随之丢弃）
+	// 6) 回收不再使用的旧端口（在制品随之丢弃）：回收前先摘掉自己的出边，保证不留悬空引用
 	for (int32 o = 0; o < OldPortIds.Num(); ++o)
 	{
 		if (!OldUsed[o])
 		{
-			FreePortId(OldPortIds[o]);
+			const int32 OldId = OldPortIds[o];
+			if (Ports.IsValidIndex(OldId) && Ports[OldId].bActive && Ports[OldId].OutTargetPort != INDEX_NONE)
+			{
+				ClearExternalEdge(OldId);
+			}
+			FreePortId(OldId);
 		}
 	}
 	N.SlotPortIds = MoveTemp(NewPortIds);
@@ -827,7 +824,7 @@ void UAsceEtherNetworkSubsystem::EnsureNodeCore(int32 NodeId)
 	}
 }
 
-int32 UAsceEtherNetworkSubsystem::RayScanPort(int32 PortId) const
+int32 UAsceEtherNetworkSubsystem::RayScanPort(int32 PortId, const UAsceSpatialGridSubsystem* Grid) const
 {
 	if (!Ports.IsValidIndex(PortId) || !Ports[PortId].bActive)
 	{
@@ -839,55 +836,40 @@ int32 UAsceEtherNetworkSubsystem::RayScanPort(int32 PortId) const
 		return INDEX_NONE;
 	}
 
-	int32 dx = 0, dy = 0;
-	switch (static_cast<AsceEther::EDir>(SPort.Direction))
-	{
-		case AsceEther::EDir::Left:  dx = -1; break;
-		case AsceEther::EDir::Right: dx = 1; break;
-		case AsceEther::EDir::Up:    dy = 1; break;
-		case AsceEther::EDir::Down:  dy = -1; break;
-		default: break;
-	}
 	const uint8 OppDir = static_cast<uint8>(AsceEther::Opposite(static_cast<AsceEther::EDir>(SPort.Direction)));
-
-	int32 cx = SPort.CellX;
-	int32 cy = SPort.CellY;
-	// 发射距离只看**源端口**（0 = 不能连）；接收端不需要距离
-	for (int32 step = 0; step < SPort.LinkRange; ++step)
+	if (!Grid)
 	{
-		cx += dx;
-		cy += dy;
-		if (cx < 0 || cy < 0 || cx >= GridW || cy >= GridH)
-		{
-			break; // 出地图：停
-		}
-		const int32 B = GetNodeAtCell(cx, cy);
-		if (B == INDEX_NONE)
-		{
-			continue; // 空地：继续
-		}
-		if (B == SPort.NodeId)
-		{
-			break; // 打到自己：停
-		}
-		const int32 BCount = GetNodePortCount(B);
-		for (int32 qi = 0; qi < BCount; ++qi)
-		{
-			const int32 QPortId = GetNodePortId(B, qi);
-			if (!Ports.IsValidIndex(QPortId))
-			{
-				continue;
-			}
-			const FAsceEtherPortData& Q = Ports[QPortId];
-			// 必须落在射线命中的那一格（多格建筑在同一 (方向,维度) 上可能有多个端口）
-			if (Q.bActive && IsAcceptingPort(Q) && Q.Direction == OppDir && Q.Dimension == SPort.Dimension
-				&& Q.CellX == cx && Q.CellY == cy)
-			{
-				return QPortId;
-			}
-		}
-		break; // 遇到第一个建筑就停（不管接不接）
+		return INDEX_NONE;
 	}
+
+	FMassEntityHandle HitBuilding;
+	FIntPoint EnterCell = FIntPoint::ZeroValue;
+	if (!Grid->FindBuildingOnRay(FIntPoint(SPort.CellX, SPort.CellY), SPort.Direction, SPort.LinkRange, HitBuilding, EnterCell))
+	{
+		return INDEX_NONE;
+	}
+	const int32 HitNode = FindNodeByEntity(HitBuilding);
+	if (HitNode == INDEX_NONE || HitNode == SPort.NodeId)
+	{
+		return INDEX_NONE;
+	}
+
+	const int32 BCount = GetNodePortCount(HitNode);
+	for (int32 qi = 0; qi < BCount; ++qi)
+	{
+		const int32 QPortId = GetNodePortId(HitNode, qi);
+		if (!Ports.IsValidIndex(QPortId))
+		{
+			continue;
+		}
+		const FAsceEtherPortData& Q = Ports[QPortId];
+		if (Q.bActive && IsAcceptingPort(Q) && Q.Direction == OppDir && Q.Dimension == SPort.Dimension
+			&& Q.CellX == EnterCell.X && Q.CellY == EnterCell.Y)
+		{
+			return QPortId;
+		}
+	}
+
 	return INDEX_NONE;
 }
 
@@ -929,7 +911,49 @@ void UAsceEtherNetworkSubsystem::ClearExternalEdge(int32 SrcPort)
 	}
 }
 
-void UAsceEtherNetworkSubsystem::RescanExternalEdgesForNode(int32 NodeId, TArray<int32>& OutTouchedPorts)
+void UAsceEtherNetworkSubsystem::CollectAdjacentSourcePorts(int32 NodeId, const FAsceGridFootprintFragment& Foot, const UAsceSpatialGridSubsystem* Grid, TArray<int32>& OutSources) const
+{
+	if (!Grid)
+	{
+		return;
+	}
+	const int32 ScanLimit = FMath::Max(1, MaxPortLinkRange);
+
+	for (int32 y = 0; y < Foot.SizeY; ++y)
+	{
+		for (int32 x = 0; x < Foot.SizeX; ++x)
+		{
+			const FIntPoint BaseCell(Foot.OriginGridLocation.X + x, Foot.OriginGridLocation.Y + y);
+			for (uint8 d = 0; d < 4; ++d)
+			{
+				const uint8 BackDir = static_cast<uint8>(AsceEther::Opposite(static_cast<AsceEther::EDir>(d)));
+				FMassEntityHandle HitBuilding;
+				FIntPoint EnterCell = FIntPoint::ZeroValue;
+				if (!Grid->FindBuildingOnRay(BaseCell, BackDir, ScanLimit, HitBuilding, EnterCell))
+				{
+					continue;
+				}
+				const int32 B = FindNodeByEntity(HitBuilding);
+				if (B == INDEX_NONE || B == NodeId)
+				{
+					continue;
+				}
+				const int32 BCount = GetNodePortCount(B);
+				for (int32 qi = 0; qi < BCount; ++qi)
+				{
+					const int32 QPortId = GetNodePortId(B, qi);
+					if (Ports.IsValidIndex(QPortId) && Ports[QPortId].bActive
+						&& Ports[QPortId].Direction == d && IsEmittingPort(Ports[QPortId]))
+					{
+						OutSources.AddUnique(QPortId);
+					}
+				}
+			}
+		}
+	}
+}
+
+void UAsceEtherNetworkSubsystem::RescanExternalEdgesForNode(int32 NodeId, TArray<int32>& OutTouchedPorts, const FAsceTickContext& Ctx, const FAsceGridFootprintFragment* ExtraFootprint)
 {
 	OutTouchedPorts.Reset();
 	if (!IsNodeAlive(NodeId))
@@ -958,63 +982,44 @@ void UAsceEtherNetworkSubsystem::RescanExternalEdgesForNode(int32 NodeId, TArray
 		}
 	}
 
-	// 沿本建筑每个占用格、4 个方向找最近的建筑 B（跳过自己），把 B 面对该方向的"发"端口纳入候选
-	UWorld* World = GetWorld();
-	UMassEntitySubsystem* MassSub = World ? World->GetSubsystem<UMassEntitySubsystem>() : nullptr;
-	const FMassEntityManager* EM = MassSub ? &MassSub->GetEntityManager() : nullptr;
+	const FMassEntityManager* EM = Ctx.EntityManager;
 	const FAsceGridFootprintFragment* Foot = EM ? EM->GetFragmentDataPtr<FAsceGridFootprintFragment>(N.Entity) : nullptr;
+
+	// ①b 当前位置的邻居
 	if (Foot)
 	{
-		for (int32 y = 0; y < Foot->SizeY; ++y)
+		CollectAdjacentSourcePorts(NodeId, *Foot, Ctx.Grid, Sources);
+	}
+
+	// ①c **旧位置**的邻居（搬家/拆除时：旧位置挡住或放开过的那些来源必须一起重扫，
+	//     否则"搬走后本该连通的那条线"不会补上、"旧位置挡住的线"也不会撤销）
+	if (N.bHasCachedFootprint)
+	{
+		const bool bSameAsCurrent = Foot
+			&& Foot->OriginGridLocation == N.CachedFootprint.OriginGridLocation
+			&& Foot->SizeX == N.CachedFootprint.SizeX
+			&& Foot->SizeY == N.CachedFootprint.SizeY;
+		const bool bSameAsExtra = ExtraFootprint
+			&& ExtraFootprint->OriginGridLocation == N.CachedFootprint.OriginGridLocation
+			&& ExtraFootprint->SizeX == N.CachedFootprint.SizeX
+			&& ExtraFootprint->SizeY == N.CachedFootprint.SizeY;
+		if (!bSameAsCurrent && !bSameAsExtra)
 		{
-			for (int32 x = 0; x < Foot->SizeX; ++x)
-			{
-				const int32 BaseX = Foot->OriginGridLocation.X + x;
-				const int32 BaseY = Foot->OriginGridLocation.Y + y;
-				for (int32 d = 0; d < 4; ++d)
-				{
-					int32 dx = 0, dy = 0;
-					switch (static_cast<AsceEther::EDir>(d))
-					{
-						case AsceEther::EDir::Left:  dx = -1; break;
-						case AsceEther::EDir::Right: dx = 1; break;
-						case AsceEther::EDir::Up:    dy = 1; break;
-						case AsceEther::EDir::Down:  dy = -1; break;
-						default: break;
-					}
-						int32 cx = BaseX;
-						int32 cy = BaseY;
-						// 反向扫描上限 = 全端口射程最大值（地图边界由下面的 break 兜底，"射程 ∩ 上界"共同作用）
-						const int32 ScanLimit = FMath::Max(0, MaxPortLinkRange);
-						for (int32 step = 0; step < ScanLimit; ++step)
-					{
-						// 反方向找最近建筑（即"射线朝本建筑来"的那个来源所在建筑）
-						cx -= dx;
-						cy -= dy;
-						if (cx < 0 || cy < 0 || cx >= GridW || cy >= GridH)
-						{
-							break;
-						}
-						const int32 B = GetNodeAtCell(cx, cy);
-						if (B == INDEX_NONE || B == NodeId)
-						{
-							continue;
-						}
-						// B 上所有"朝着本建筑方向发"的端口都纳入候选（同维度会自然匹配）
-						const int32 BCount = GetNodePortCount(B);
-						for (int32 qi = 0; qi < BCount; ++qi)
-						{
-							const int32 QPortId = GetNodePortId(B, qi);
-							if (Ports.IsValidIndex(QPortId) && Ports[QPortId].bActive
-								&& Ports[QPortId].Direction == d && IsEmittingPort(Ports[QPortId]))
-							{
-								Sources.AddUnique(QPortId);
-							}
-						}
-						break;
-					}
-				}
-			}
+			CollectAdjacentSourcePorts(NodeId, N.CachedFootprint, Ctx.Grid, Sources);
+		}
+	}
+
+	// ①d 调用方显式给的"旧 footprint"（`PatchNode(摆放)` 场景：`BuildNodePorts` 已经把缓存刷成新位置了，
+	//     所以旧位置必须由调用方在重建端口**之前**抓下来传进来）
+	if (ExtraFootprint)
+	{
+		const bool bSameAsCurrent = Foot
+			&& Foot->OriginGridLocation == ExtraFootprint->OriginGridLocation
+			&& Foot->SizeX == ExtraFootprint->SizeX
+			&& Foot->SizeY == ExtraFootprint->SizeY;
+		if (!bSameAsCurrent)
+		{
+			CollectAdjacentSourcePorts(NodeId, *ExtraFootprint, Ctx.Grid, Sources);
 		}
 	}
 
@@ -1055,7 +1060,7 @@ void UAsceEtherNetworkSubsystem::RescanExternalEdgesForNode(int32 NodeId, TArray
 		{
 			continue;
 		}
-		const int32 NewTarget = RayScanPort(Src);
+		const int32 NewTarget = RayScanPort(Src, Ctx.Grid);
 		if (NewTarget != INDEX_NONE)
 		{
 			SetExternalEdge(Src, NewTarget);
@@ -1077,9 +1082,9 @@ void UAsceEtherNetworkSubsystem::BuildGraphDigest(TArray<FString>& OutDigest) co
 			continue;
 		}
 		const FAsceEtherPortData& P = Ports[PortId];
-		TArray<int32> Targets = P.LinkTargets;
+		FAsceEtherPortIdList Targets = P.LinkTargets;
 		Targets.Sort();
-		TArray<int32> InSrc = P.InSources;
+		FAsceEtherPortIdList InSrc = P.InSources;
 		InSrc.Sort();
 		OutDigest.Add(FString::Printf(TEXT("P%d Out=%d In=%d Tgt=%s Src=%s"),
 			PortId, P.OutTargetPort, P.InSourcePort,
@@ -1131,16 +1136,32 @@ void UAsceEtherNetworkSubsystem::BuildGraphDigest(TArray<FString>& OutDigest) co
 			*FString::JoinBy(AdjPorts, TEXT(","), [](int32 V) { return FString::FromInt(V); })));
 	}
 
+	// 节点：footprint 缓存（局部 vs 全量的差异也会体现在这里；搬家/拆除的重扫依赖它）
+	for (int32 NodeId = 0; NodeId < Nodes.Num(); ++NodeId)
+	{
+		const FNode& N = Nodes[NodeId];
+		if (!N.bAlive)
+		{
+			continue;
+		}
+		OutDigest.Add(FString::Printf(TEXT("N%d Foot=%s Origin=%d,%d Size=%d,%d Rot=%d"),
+			NodeId,
+			N.bHasCachedFootprint ? TEXT("1") : TEXT("0"),
+			N.CachedFootprint.OriginGridLocation.X, N.CachedFootprint.OriginGridLocation.Y,
+			N.CachedFootprint.SizeX, N.CachedFootprint.SizeY,
+			static_cast<int32>(N.CachedDirection)));
+	}
+
 	OutDigest.Sort();
 }
 
-void UAsceEtherNetworkSubsystem::ValidateIncrementalAgainstFullRebuild()
+void UAsceEtherNetworkSubsystem::ValidateIncrementalAgainstFullRebuild(const FAsceTickContext& Ctx)
 {
 	TArray<FString> LocalDigest;
 	BuildGraphDigest(LocalDigest);
 
 	// 全量重建（端口持久化 ⇒ 结果应当与局部更新一致；不一致时以全量结果为准）
-	RebuildGraphInternal();
+	RebuildGraphInternal(Ctx);
 
 	TArray<FString> FullDigest;
 	BuildGraphDigest(FullDigest);
@@ -1231,7 +1252,7 @@ void UAsceEtherNetworkSubsystem::GatherAdjacentDeviceNodes(const TArray<int32>& 
 	}
 }
 
-void UAsceEtherNetworkSubsystem::ApplyGraphCommands()
+void UAsceEtherNetworkSubsystem::ApplyGraphCommands(const FAsceTickContext& Ctx)
 {
 	bool bNeedRebuild = false;
 	bool bLocalChanged = false;
@@ -1249,8 +1270,8 @@ void UAsceEtherNetworkSubsystem::ApplyGraphCommands()
 				N.BuildingId = Add->BuildingId;
 				N.bAlive = true;
 				N.Config = FindBuildingConfig(Add->BuildingId);
-				N.CachedDirection = 0;
 				N.InternalLinks.Reset();
+				N.bHasCachedFootprint = false;   // 新节点：清掉可能残留的 footprint 缓存
 				if (NodeCores.IsValidIndex(NodeId))
 				{
 					NodeCores[NodeId] = nullptr;
@@ -1262,15 +1283,14 @@ void UAsceEtherNetworkSubsystem::ApplyGraphCommands()
 						*Add->BuildingId.ToString());
 				}
 
-				// **局部**：占用格 → 端口 → core → 内布线 → 射线重扫 → 段/器件邻接
-				MarkNodeCells(NodeId, true);
-				BuildNodePorts(NodeId);
+				// **局部**：端口 → core → 内布线 → 射线重扫 → 段/器件邻接
+				BuildNodePorts(NodeId, Ctx);
 				EnsureNodeCore(NodeId);
 
 				TArray<int32> Touched;
 				RebuildNodeInternalTopology(NodeId, Touched);
 				TArray<int32> RescanTouched;
-				RescanExternalEdgesForNode(NodeId, RescanTouched);
+				RescanExternalEdgesForNode(NodeId, RescanTouched, Ctx);
 				for (const int32 PortId : RescanTouched)
 				{
 					Touched.AddUnique(PortId);
@@ -1300,7 +1320,7 @@ void UAsceEtherNetworkSubsystem::ApplyGraphCommands()
 			{
 				const int32 NodeId = *Found;
 
-				// **局部**：清占用格 → 重扫受影响的边 → **先回收节点/端口** → 再重算段。
+				// **局部**：重扫受影响的边 → **先回收节点/端口** → 再重算段。
 				// 段重算放在回收之后：死端口会被 `IsCombinationalPort` 过滤掉，不会残留在段 Order 里
 				// （否则端口 id 被池子复用后，旧段会重复处理新端口）。
 				TArray<int32> OldSegs;
@@ -1317,10 +1337,9 @@ void UAsceEtherNetworkSubsystem::ApplyGraphCommands()
 					}
 				}
 
-				MarkNodeCells(NodeId, false);
 				TArray<int32> Touched = NodePorts;
 				TArray<int32> RescanTouched;
-				RescanExternalEdgesForNode(NodeId, RescanTouched);
+				RescanExternalEdgesForNode(NodeId, RescanTouched, Ctx);
 				for (const int32 PortId : RescanTouched)
 				{
 					Touched.AddUnique(PortId);
@@ -1369,8 +1388,25 @@ void UAsceEtherNetworkSubsystem::ApplyGraphCommands()
 				}
 				if (PatchNode->Patch.Mask & FAsceEtherNodePatch::MaskPlacement)
 				{
-					// TODO：摆放来自建筑系统的 footprint fragment（要改那边）⇒ 暂只触发重建
-					bNeedRebuild = true;
+					// **局部**：摆放变了（建筑系统已改好 footprint + 实体 Transform，Ether 这里重读）⇒
+					// 端口按新朝向重摆（身份复用 ⇒ 在制品保留）+ 重扫（含**旧位置**挡住/放开的邻居）+ 段重算
+					const FAsceGridFootprintFragment OldFootprint = N.CachedFootprint;
+					const bool bHadOldFootprint = N.bHasCachedFootprint;
+					BuildNodePorts(*NodeId, Ctx);
+					TArray<int32> Touched;
+					RebuildNodeInternalTopology(*NodeId, Touched);
+					TArray<int32> RescanTouched;
+					RescanExternalEdgesForNode(*NodeId, RescanTouched, Ctx, bHadOldFootprint ? &OldFootprint : nullptr);
+					for (const int32 PortId : RescanTouched)
+					{
+						Touched.AddUnique(PortId);
+					}
+					TArray<int32> AllAffected;
+					RecomputeSegmentsForPorts(Touched, &AllAffected);
+					TArray<int32> DevNodes;
+					GatherAdjacentDeviceNodes(AllAffected, DevNodes);
+					RecomputeDeviceAdjSegsForNodes(DevNodes);
+					bLocalChanged = true;
 				}
 			}
 		}
@@ -1399,32 +1435,35 @@ void UAsceEtherNetworkSubsystem::ApplyGraphCommands()
 			if (Ports.IsValidIndex(PortId) && Ports[PortId].bActive)
 			{
 				FAsceEtherPortData& P = Ports[PortId];
-				bool bTouched = false;
-
+				// 只有"影响线路"的改动才需要重扫/段重算：射程变化（PortTypeId）或维度变化
+				bool bGraphAffected = false;
 				if (PatchPort->Patch.Mask & FAsceEtherPortPatch::MaskSplitMode)
 				{
-					P.SplitMode = PatchPort->Patch.SplitMode; // 只改行为，不动拓扑
-					bTouched = true;
+					P.SplitMode = PatchPort->Patch.SplitMode; // 纯行为改动：不动图、不用重扫
 				}
 				if (PatchPort->Patch.Mask & FAsceEtherPortPatch::MaskPortTypeId)
 				{
+					const int32 OldLinkRange = P.LinkRange;
 					P.PortTypeId = PatchPort->Patch.PortTypeId;
-					ResolvePortTypeConfig(P);
-					bTouched = true;
+					ResolvePortTypeConfig(P); // Op 变化不影响图；射程变化才需要重扫
+					if (P.LinkRange != OldLinkRange)
+					{
+						bGraphAffected = true;
+					}
 				}
 				if (PatchPort->Patch.Mask & FAsceEtherPortPatch::MaskDimension)
 				{
 					P.Dimension = PatchPort->Patch.Dimension;
-					bTouched = true;
+					bGraphAffected = true;
 				}
 
-				if (bTouched)
+				if (bGraphAffected)
 				{
 					// **局部**：几何/射程可能变了 ⇒ 重扫该建筑的外部边（不含整图重建）
 					TArray<int32> Touched;
 					Touched.Add(PortId);
 					TArray<int32> RescanTouched;
-					RescanExternalEdgesForNode(*NodeId, RescanTouched);
+					RescanExternalEdgesForNode(*NodeId, RescanTouched, Ctx);
 					for (const int32 Other : RescanTouched)
 					{
 						Touched.AddUnique(Other);
@@ -1448,13 +1487,13 @@ void UAsceEtherNetworkSubsystem::ApplyGraphCommands()
 
 	if (bNeedRebuild)
 	{
-		RebuildGraphInternal();
+		RebuildGraphInternal(Ctx);
 	}
 	else if (bLocalChanged)
 	{
 		if (bValidateIncremental)
 		{
-			ValidateIncrementalAgainstFullRebuild(); // 内部会跑一次全量重建做 diff（并用全量结果兜底）
+			ValidateIncrementalAgainstFullRebuild(Ctx); // 内部会跑一次全量重建做 diff（并用全量结果兜底）
 		}
 		else
 		{
@@ -1462,6 +1501,18 @@ void UAsceEtherNetworkSubsystem::ApplyGraphCommands()
 			RefreshInitialActiveSegments();
 		}
 	}
+}
+
+uint8 UAsceEtherNetworkSubsystem::GetNodeRotation(FMassEntityHandle Entity, const FAsceTickContext& Ctx) const
+{
+	const FMassEntityManager* EM = Ctx.EntityManager;
+	const FTransformFragment* Transform = EM ? EM->GetFragmentDataPtr<FTransformFragment>(Entity) : nullptr;
+	if (!Transform)
+	{
+		return 0;
+	}
+	// Yaw → 顺时针 90° 次数（负角度也归一化到 0~3）
+	return static_cast<uint8>(((FMath::RoundToInt(Transform->GetTransform().Rotator().Yaw / 90.f) % 4) + 4) % 4);
 }
 
 int32 UAsceEtherNetworkSubsystem::FindNodeByEntity(FMassEntityHandle Entity) const
@@ -1476,7 +1527,7 @@ int32 UAsceEtherNetworkSubsystem::FindPortBySlotKey(int32 NodeId, const FAsceEth
 	for (int32 i = 0; i < Count; ++i)
 	{
 		const FAsceEtherPortData* P = GetPort(NodeId, i);
-		if (P && P->Direction == Slot.Direction && P->Offset == Slot.Offset && P->Dimension == Slot.Dimension)
+		if (P && P->SlotDirection == Slot.Direction && P->Offset == Slot.Offset && P->Dimension == Slot.Dimension)
 		{
 			return GetNodePortId(NodeId, i);
 		}
@@ -1491,6 +1542,11 @@ void UAsceEtherNetworkSubsystem::RemoveNodeInternal(int32 NodeId)
 		return;
 	}
 	EntityToNode.Remove(Nodes[NodeId].Entity);
+	// 顺手清掉它残留的"相邻段"表（死节点不该再有邻接；Reset 保容量，O(1)）
+	if (DeviceAdjSegs.IsValidIndex(NodeId))
+	{
+		DeviceAdjSegs[NodeId].Reset();
+	}
 	// 回收该建筑的端口槽位（在制品随之丢弃）
 	for (const int32 PortId : Nodes[NodeId].SlotPortIds)
 	{
@@ -1586,7 +1642,15 @@ void UAsceEtherNetworkSubsystem::FreePortId(int32 PortId)
 {
 	if (Ports.IsValidIndex(PortId) && Ports[PortId].bActive)
 	{
-		// 引用清理（内部布线目标 / 外部边 / 入边）由重建或调用方负责，这里只回收槽位
+		// 不变量：回收前调用方必须已经摘掉它的**出边**（`ClearExternalEdge`）；入边由对端负责
+		if (Ports[PortId].OutTargetPort != INDEX_NONE)
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("[Ether] 回收端口 %d 时它仍有一条外部出边（-> %d）：调用方应先 ClearExternalEdge 再 FreePortId"),
+				PortId, Ports[PortId].OutTargetPort);
+			ClearExternalEdge(PortId);
+		}
+		// 内部布线/入边引用由重建或调用方负责，这里只回收槽位
 		Ports[PortId] = FAsceEtherPortData();
 		if (PortSegId.IsValidIndex(PortId))
 		{
@@ -1833,7 +1897,7 @@ void UAsceEtherNetworkSubsystem::MergeActiveShards()
 	}
 }
 
-void UAsceEtherNetworkSubsystem::RebuildGraphInternal()
+void UAsceEtherNetworkSubsystem::RebuildGraphInternal(const FAsceTickContext& Ctx)
 {
 	// ① 端口**持久化**：端口数组不再重建，按"相对几何身份"原地复用（id 稳定、在制品不动）⇒ 不需要快照
 	// ② 连线扫描上限由**端口类型**的 `LinkRangeCells` 决定（只看发射端；0 = 不能连）
@@ -1851,9 +1915,7 @@ void UAsceEtherNetworkSubsystem::RebuildGraphInternal()
 		return;
 	}
 
-	UWorld* World = GetWorld();
-	UMassEntitySubsystem* MassSub = World ? World->GetSubsystem<UMassEntitySubsystem>() : nullptr;
-	const FMassEntityManager* EM = MassSub ? &MassSub->GetEntityManager() : nullptr;
+	const FMassEntityManager* EM = Ctx.EntityManager;
 	if (!EM)
 	{
 		return;
@@ -1862,10 +1924,6 @@ void UAsceEtherNetworkSubsystem::RebuildGraphInternal()
 	TArray<TArray<int32>> NodePortIds; // nodeId -> 全局 PortId
 	NodePortIds.SetNum(NodeNum);
 
-	// 占用图：格 -> nodeId
-	// 占用索引：持久扁平网格（射线 O(1) 查格；增量增删只要改一小片）
-	EnsureGridIndex();
-
 	// ③ 端口实例：slot → 端口（**持久化 + 身份复用**；实现在 `BuildNodePorts`，增量路径共用）
 	for (int32 NodeId = 0; NodeId < NodeNum; ++NodeId)
 	{
@@ -1873,8 +1931,7 @@ void UAsceEtherNetworkSubsystem::RebuildGraphInternal()
 		{
 			continue;
 		}
-		MarkNodeCells(NodeId, true);   // 占用格写进扁平网格（格子超出地图范围会被忽略）
-		BuildNodePorts(NodeId);
+		BuildNodePorts(NodeId, Ctx);
 		NodePortIds[NodeId] = Nodes[NodeId].SlotPortIds;
 	}
 
@@ -1968,7 +2025,7 @@ void UAsceEtherNetworkSubsystem::RebuildGraphInternal()
 		{
 			continue;
 		}
-		const int32 ToPort = RayScanPort(PortId);
+		const int32 ToPort = RayScanPort(PortId, Ctx.Grid);
 		if (ToPort != INDEX_NONE)
 		{
 			// 外部边是 1:1：直接记对端 + 反向索引（同一目标最多一条入边，由建图规则保证）
@@ -2183,15 +2240,18 @@ void UAsceEtherNetworkSubsystem::RebuildGraphInternal()
 
 // ── 每 tick ──
 
-void UAsceEtherNetworkSubsystem::RunEtherTick()
+void UAsceEtherNetworkSubsystem::RunCommandDrainStage(const FAsceTickContext& Ctx)
 {
-	// 结构变化只通过命令队列进来；tick 开头先 drain（保证本 tick 内图是最新且冻结的）
+	// 结构变化只通过命令队列进来；本阶段是**唯一 drain 点**（排在空间数据重建之后，图在本拍内冻结）
 	++CurrentStamp;
 	if (GraphCommands.Num() > 0)
 	{
-		ApplyGraphCommands();
+		ApplyGraphCommands(Ctx);
 	}
+}
 
+void UAsceEtherNetworkSubsystem::RunSimulationStage(const FAsceTickContext& Ctx)
+{
 	if (Ports.Num() == 0)
 	{
 		return;
@@ -2587,7 +2647,7 @@ bool UAsceEtherNetworkSubsystem::GetPortView(int32 PortId, FPortView& OutView) c
 	return true;
 }
 
-const TArray<int32>* UAsceEtherNetworkSubsystem::GetPortLinkTargets(int32 PortId) const
+const FAsceEtherPortIdList* UAsceEtherNetworkSubsystem::GetPortLinkTargets(int32 PortId) const
 {
 	return Ports.IsValidIndex(PortId) ? &Ports[PortId].LinkTargets : nullptr;
 }

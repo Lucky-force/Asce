@@ -19,6 +19,7 @@ UAsceGridEntitiesUpdateProcessor::UAsceGridEntitiesUpdateProcessor()
 void UAsceGridEntitiesUpdateProcessor::ConfigureQueries(const TSharedRef<FMassEntityManager>& EntityManager)
 {
 	EntityQuery.RegisterWithProcessor(*this);
+	EntityQuery.AddTagRequirement<FAsceMovableUnitTag>(EMassFragmentPresence::All);
 	EntityQuery.AddRequirement<FTransformFragment>(EMassFragmentAccess::ReadOnly);
 	EntityQuery.AddRequirement<FAgentRadiusFragment>(EMassFragmentAccess::ReadOnly);
 	EntityQuery.AddRequirement<FAsceHeightFragment>(EMassFragmentAccess::ReadOnly);
