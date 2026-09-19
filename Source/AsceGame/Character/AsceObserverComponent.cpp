@@ -11,16 +11,41 @@
 #include "Camera/AsceCameraComponent.h"
 #include "Camera/AsceCameraMode.h"
 #include "Components/GameFrameworkComponentManager.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Input/AsceInputComponent.h"
+#include "InputMappingContext.h"
 #include "Misc/UObjectToken.h"
 #include "Player/AsceLocalPlayer.h"
 #include "Player/AscePlayerController.h"
 #include "Player/AscePlayerState.h"
 #include "UserSettings/EnhancedInputUserSettings.h"
+#include "Widgets/SWidget.h"
 #include "GameFeatures/GameFeatureAction_AddInputContextMapping.h"
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AsceObserverComponent)
 const FName UAsceObserverComponent::NAME_BindInputsNow("ObserverBindInputsNow");
 const FName UAsceObserverComponent::NAME_ActorFeatureName("Observer");
+
+namespace
+{
+	/** 指针是否落在 UI 上（不是 3D 视口）；等价于旧版 `APlayerController::IsPointerOverGameObject`。 */
+	bool IsPointerOverUI()
+	{
+		if (!FSlateApplication::IsInitialized())
+		{
+			return false;
+		}
+		FSlateApplication& SlateApp = FSlateApplication::Get();
+		const FVector2D CursorPos = SlateApp.GetCursorPos();
+		const FWidgetPath WidgetPath = SlateApp.LocateWindowUnderMouse(CursorPos, SlateApp.GetInteractiveTopLevelWindows());
+		if (!WidgetPath.IsValid())
+		{
+			return false;
+		}
+		// 命中叶子是 SViewport ⇒ 指针在世界里；命中叶子是 UMG/Slate 控件 ⇒ 在 UI 上
+		const TSharedRef<SWidget>& Leaf = WidgetPath.GetLastWidget();
+		return !Leaf->GetType().IsEqual(TEXT("SViewport"));
+	}
+}
 
 UAsceObserverComponent::UAsceObserverComponent(const FObjectInitializer& ObjectInitializer) : Super(ObjectInitializer)
 {
@@ -474,6 +499,12 @@ void UAsceObserverComponent::Input_Select_Start(const FInputActionValue& InputAc
 		{
 			return;
 		}
+		// 指针在 UI（检视器/按钮等）上：不开始框选，避免选中框穿透到面板里
+		// （面板可见性为可命中时 Slate 命中叶子不是 SViewport）
+		if (IsPointerOverUI())
+		{
+			return;
+		}
 		PC->GetMousePosition(SelectionStartPosition.X, SelectionStartPosition.Y);
 		bCachedIsShifting = bIsShifting;
 		bCachedIsAlternating = bIsAlternating;
@@ -553,6 +584,11 @@ void UAsceObserverComponent::Input_Order_Move(const FInputActionValue& InputActi
 	{
 		APlayerController* PC = Pawn->GetController<APlayerController>();
 		if (!IsValid(PC))
+		{
+			return;
+		}
+		// 指针在 UI 上：不下发移动指令
+		if (IsPointerOverUI())
 		{
 			return;
 		}

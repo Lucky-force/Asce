@@ -11,6 +11,7 @@
 #include "MassEntitySubsystem.h"
 #include "MassCommonFragments.h"   // FTransformFragment（读建筑朝向）
 #include "AsceMass/Fragments/AsceFootprintFragment.h"
+#include "AsceMass/Data/AsceEntityDefLibrary.h"
 #include "DataTableSystem/AsceDataTableSubsystem.h"
 #include "AsceMass/Ether/AsceEtherCores.h"
 #include "AsceMass/Ether/AsceEtherPortTypeTable.h"
@@ -95,11 +96,11 @@ int32 UAsceEtherNetworkSubsystem::GetActiveShardNum() const
 void UAsceEtherNetworkSubsystem::Deinitialize()
 {
 	ClearGraph();
-	BuildingConfigRegistry.Reset();
 	GraphCommands.Reset();
 	Nodes.Reset();
 	FreeIds.Reset();
 	Ports.Reset();
+	PortSegId.Reset();
 	FreePortIds.Reset();
 	EntityToNode.Reset();
 	Super::Deinitialize();
@@ -140,24 +141,6 @@ void UAsceEtherNetworkSubsystem::Tick(float DeltaTime)
 	// 自 tick 已停用：本 tick 体已挪成阶段函数，由 `UAsceSimulationSubsystem` 按固定顺序连续调用
 	// （RunCommandDrainStage → RunSimulationStage），避免依赖 UE 的 tick 顺序。
 	Super::Tick(DeltaTime);
-}
-
-// ── 建筑配置注册表 ──
-
-void UAsceEtherNetworkSubsystem::RegisterBuildingConfig(FName BuildingId, TSubclassOf<UAsceEtherBuildingConfig> ConfigClass)
-{
-	if (BuildingId.IsNone() || !ConfigClass)
-	{
-		return;
-	}
-	// 存 CDO（注册表是 UPROPERTY ⇒ 属性系统保活，不需要额外的 keepalive 列表）
-	BuildingConfigRegistry.Add(BuildingId, ConfigClass.GetDefaultObject());
-}
-
-UAsceEtherBuildingConfig* UAsceEtherNetworkSubsystem::FindBuildingConfig(FName BuildingId) const
-{
-	const TObjectPtr<UAsceEtherBuildingConfig>* Found = BuildingConfigRegistry.Find(BuildingId);
-	return Found ? Found->Get() : nullptr;
 }
 
 // ── registry ──
@@ -678,12 +661,12 @@ void UAsceEtherNetworkSubsystem::BuildNodePorts(int32 NodeId, const FAsceTickCon
 	DetachNodeFromGraph(NodeId);
 
 	FNode& N = Nodes[NodeId];
-	const UAsceEtherBuildingConfig* Cfg = GetConfigCDO(NodeId);
+	const FAsceEtherBuildingDef* Cfg = GetNodeDef(NodeId);
 	if (!Cfg)
 	{
 		return; // 注册时已告警
 	}
-				N.bDevice = (Cfg->DeviceType == EAsceEtherDeviceType::Sequential);
+	N.bDevice = (Cfg->DeviceType == EAsceEtherDeviceType::Sequential);
 
 	// 摆放来自建筑系统的 footprint（Ether 只读）
 	const FMassEntityManager* EM = Ctx.EntityManager;
@@ -738,7 +721,7 @@ void UAsceEtherNetworkSubsystem::BuildNodePorts(int32 NodeId, const FAsceTickCon
 			// 2) 新端口：取 slot 的默认值
 			PortId = AllocPortId();
 			FAsceEtherPortData& NewPort = Ports[PortId];
-			NewPort.PortTypeId = Slot.PortTypeId;
+			NewPort.PortTypeId = Slot.PortType;
 			NewPort.SplitMode = Slot.SplitMode;
 			NewPort.Dimension = Slot.Dimension;
 			NewPort.SlotDirection = Slot.Direction;
@@ -806,8 +789,8 @@ void UAsceEtherNetworkSubsystem::EnsureNodeCore(int32 NodeId)
 	{
 		return;
 	}
-	const UAsceEtherBuildingConfig* Cfg = GetConfigCDO(NodeId);
-	UClass* CoreClass = (Cfg && Cfg->ProcessCoreClass) ? Cfg->ProcessCoreClass.Get() : nullptr;
+	const FAsceEtherBuildingDef* Cfg = GetNodeDef(NodeId);
+	UClass* CoreClass = Cfg ? Cfg->ProcessCoreClass.LoadSynchronous() : nullptr;
 	if (!CoreClass)
 	{
 		NodeCores[NodeId] = nullptr;
@@ -1269,7 +1252,8 @@ void UAsceEtherNetworkSubsystem::ApplyGraphCommands(const FAsceTickContext& Ctx)
 				N.Entity = Entity;
 				N.BuildingId = Add->BuildingId;
 				N.bAlive = true;
-				N.Config = FindBuildingConfig(Add->BuildingId);
+				N.DefData = FAsceEtherBuildingDef();
+				N.bHasDefData = UAsceEntityDefLibrary::GetEtherBuildingDefByName(Add->BuildingId, N.DefData);
 				N.InternalLinks.Reset();
 				N.bHasCachedFootprint = false;   // 新节点：清掉可能残留的 footprint 缓存
 				if (NodeCores.IsValidIndex(NodeId))
@@ -1277,9 +1261,9 @@ void UAsceEtherNetworkSubsystem::ApplyGraphCommands(const FAsceTickContext& Ctx)
 					NodeCores[NodeId] = nullptr;
 				}
 				EntityToNode.Add(Entity, NodeId);
-				if (!N.Config)
+				if (!N.bHasDefData)
 				{
-					UE_LOG(LogTemp, Warning, TEXT("[Ether] 建筑配置未登记：%s（检查 Trait / 调试器是否登记了 BuildingConfig）"),
+					UE_LOG(LogTemp, Warning, TEXT("[Ether] 建筑类型定义缺失：%s（实体定义表里没有该行 / 不是 Ether 建筑）"),
 						*Add->BuildingId.ToString());
 				}
 
@@ -1382,7 +1366,8 @@ void UAsceEtherNetworkSubsystem::ApplyGraphCommands(const FAsceTickContext& Ctx)
 				if (PatchNode->Patch.Mask & FAsceEtherNodePatch::MaskBuildingId)
 				{
 					N.BuildingId = PatchNode->Patch.BuildingId;
-					N.Config = FindBuildingConfig(N.BuildingId);
+					N.DefData = FAsceEtherBuildingDef();
+					N.bHasDefData = UAsceEntityDefLibrary::GetEtherBuildingDefByName(N.BuildingId, N.DefData);
 					N.bLinksInitialized = false;   // 换建筑类型：重新套用新类型的默认内布线
 					bNeedRebuild = true; // 整组端口换掉（不搬在制品）
 				}
@@ -1555,7 +1540,8 @@ void UAsceEtherNetworkSubsystem::RemoveNodeInternal(int32 NodeId)
 	Nodes[NodeId].SlotPortIds.Reset();
 	Nodes[NodeId].bAlive = false;
 	Nodes[NodeId].Entity = FMassEntityHandle();
-	Nodes[NodeId].Config = nullptr;
+	Nodes[NodeId].DefData = FAsceEtherBuildingDef();
+	Nodes[NodeId].bHasDefData = false;
 	Nodes[NodeId].bLinksInitialized = false;
 	Nodes[NodeId].InternalLinks.Reset();
 	if (NodeCores.IsValidIndex(NodeId))
@@ -1632,7 +1618,9 @@ int32 UAsceEtherNetworkSubsystem::AllocPortId()
 	else
 	{
 		PortId = Ports.AddDefaulted();
+		PortSegId.Add(INDEX_NONE);   // 并行数组随端口池增长（不变量：PortSegId.Num() == Ports.Num()）
 	}
+	PortSegId[PortId] = INDEX_NONE;
 	Ports[PortId] = FAsceEtherPortData();  // 重置（运行态清零）
 	Ports[PortId].bActive = true;
 	return PortId;
@@ -1679,9 +1667,9 @@ UAsceEtherProcessCore* UAsceEtherNetworkSubsystem::GetProcessCore(int32 NodeId) 
 	return NodeCores.IsValidIndex(NodeId) ? NodeCores[NodeId].Get() : nullptr;
 }
 
-const UAsceEtherBuildingConfig* UAsceEtherNetworkSubsystem::GetConfigCDO(int32 NodeId) const
+const FAsceEtherBuildingDef* UAsceEtherNetworkSubsystem::GetNodeDef(int32 NodeId) const
 {
-	return IsNodeAlive(NodeId) ? Nodes[NodeId].Config : nullptr;
+	return (IsNodeAlive(NodeId) && Nodes[NodeId].bHasDefData) ? &Nodes[NodeId].DefData : nullptr;
 }
 
 // ── 端口访问 ──
@@ -1831,7 +1819,7 @@ void UAsceEtherNetworkSubsystem::ClearGraph()
 			FreeSegId(SegId);
 		}
 	}
-	PortSegId.Reset();
+	PortSegId.Init(INDEX_NONE, Ports.Num());   // 与端口池等长（端口持久化；增量路径依赖这个不变量）
 	DeviceAdjSegs.Reset();
 	DeviceNodes.Reset();
 	ActiveList.Reset();
@@ -1847,7 +1835,8 @@ void UAsceEtherNetworkSubsystem::ClearGraph()
 		{
 			N.SlotPortIds.Reset();
 			N.InternalLinks.Reset();
-			N.Config = nullptr;
+			N.DefData = FAsceEtherBuildingDef();
+			N.bHasDefData = false;
 			if (NodeCores.IsValidIndex(NodeId))
 			{
 				NodeCores[NodeId] = nullptr;

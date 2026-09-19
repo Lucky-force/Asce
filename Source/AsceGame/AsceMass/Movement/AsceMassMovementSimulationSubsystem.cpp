@@ -15,7 +15,6 @@
 #include "AsceMass/Movement/AsceTerrainHeightProcessor.h"
 #include "Movement/MassMovementProcessors.h"
 #include "GameFramework/GameStateBase.h"
-// #include "GameModes/AsceExperienceManagerComponent.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AsceMassMovementSimulationSubsystem)
 
@@ -83,7 +82,8 @@ void UAsceMassMovementSimulationSubsystem::Tick(float DeltaTime)
 
 void UAsceMassMovementSimulationSubsystem::RunMovementStage(const FAsceTickContext& Ctx)
 {
-	// loading 门控：Experience 加载完成前不跑管线（此时地图/墙簇初始化可能还在进行中）
+	// 门控：GameState 未就绪先不跑（loading 门控已上移到 `UAsceSimulationSubsystem`：
+	// loading 结束前整条阶段链都不跑，这里不再重复判断 Experience）。
 	if (!CheckSimulationReady())
 	{
 		return;
@@ -132,15 +132,6 @@ bool UAsceMassMovementSimulationSubsystem::CheckSimulationReady()
 	{
 		return false;   // GameState 还没就绪：再等一帧
 	}
-
-	// loading 期间（Experience 未加载完成）不跑管线。没有这个组件的普通测试地图视为已就绪。
-	// if (const UAsceExperienceManagerComponent* ExperienceManager = GameState->FindComponentByClass<UAsceExperienceManagerComponent>())
-	// {
-	// 	if (!ExperienceManager->IsExperienceLoaded())
-	// 	{
-	// 		return false;
-	// 	}
-	// }
 
 	bSimulationReady = true;
 	return true;

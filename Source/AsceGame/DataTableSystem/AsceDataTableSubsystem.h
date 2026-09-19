@@ -3,31 +3,32 @@
 
 #include "CoreMinimal.h"
 #include "Engine/DataTable.h"
-#include "Subsystems/GameInstanceSubsystem.h"
+#include "Subsystems/EngineSubsystem.h"
 #include "AsceDataTableSubsystem.generated.h"
 
 class UDataTable;
 
 /**
- * 项目查表系统（全局；**只查 MDT**）。
+ * 项目查表系统（**引擎子系统 = 进程级全局，编辑器和运行时都存在**；只查 MDT）。
  *
  * - **MDT**（`UCompositeDataTable`）= 一个逻辑表的唯一入口（本体为空，行来自各 **SDT**）；
  * - **SDT** 由 `UGameFeatureAction_AddDataTableSources` 在 GameFeature 激活/卸载时挂/卸（运行时合并，内建"后添加覆盖"）；
  * - **注册时按"行结构类型 → MDT"建映射**（扫 `UAsceDataTableSettings` 里登记的 MDT）⇒ 查表只传**行结构类型**，不用管表在哪；
  * - C++ 用模板：`FindRow<FAsceEtherPortTypeRow>(RowName, OutRow)`；
  *   蓝图用 `BP_GetMasterTable(RowStruct)` 拿表，再用引擎的 `Get Data Table Row` 节点读行；
+ * - **配置里的外键**用 `FAsceRowNameWrapper`（只存行名 + 属性 meta 指定表别名，编辑器里出下拉）；
  * - **查询失败一律 `return false`、不动 out 引用**（调用方自己准备默认值）；行结构不匹配会告警。
  */
 UCLASS()
-class UAsceDataTableSubsystem : public UGameInstanceSubsystem
+class UAsceDataTableSubsystem : public UEngineSubsystem
 {
 	GENERATED_BODY()
 
 public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 
-	/** 取子系统（没有 GameInstance 时返回 nullptr；静态模板查询内部用它）。 */
-	static UAsceDataTableSubsystem* Get(const UObject* WorldContextObject = nullptr);
+	/** 取引擎子系统（编辑器/运行时都存在；静态模板查询内部用它）。 */
+	ASCEGAME_API static UAsceDataTableSubsystem* Get();
 
 	// ── 静态模板查询（**推荐入口**：只传行结构类型，内部自己取子系统） ──
 
@@ -65,6 +66,12 @@ public:
 	/** 按**行结构类型**取 MDT（表指针的唯一来源）。 */
 	UDataTable* GetMasterTable(const UScriptStruct* RowStruct) const;
 
+	/** 按**别名**（= `UAsceDataTableSettings` 变量名）取 MDT（编辑器下拉/工具用）；没登记/别名不存在 ⇒ nullptr。 */
+	ASCEGAME_API UDataTable* GetMasterTableByAlias(FName Alias) const;
+
+	/** 取某行结构的 MDT 全部行名（按名排序；**覆盖** OutRowNames）；没有表 ⇒ false。 */
+	ASCEGAME_API bool GetRowNames(const UScriptStruct* RowStruct, TArray<FName>& OutRowNames) const;
+
 	/** 蓝图入口：按行结构取 MDT（拿到后用引擎的 `Get Data Table Row` 节点读行）。 */
 	UFUNCTION(BlueprintCallable, Category = "Asce|DataTable", meta = (DisplayName = "Get Master Data Table"))
 	static UDataTable* BP_GetMasterTable(const UScriptStruct* RowStruct);
@@ -90,6 +97,13 @@ public:
 
 	/** 调试：dump 已登记的表与已挂载的来源。 */
 	void DumpTables() const;
+
+	/**
+	 * **重扫 `UAsceDataTableSettings` 并登记/更新映射**（别名 → MDT、行结构 → MDT）。
+	 * 触发点：子系统初始化、编辑器改设置（`PostEditChangeProperty`）、GameFeature 激活、
+	 * 控制台 `Asce.DataTables.Refresh`。重复调用安全（覆盖式更新）。
+	 */
+	ASCEGAME_API void RefreshTablesFromSettings();
 
 	// ── 类型化查询（**只传行结构类型**；宏与业务代码都用这套） ──
 
@@ -120,11 +134,11 @@ private:
 	/** 行结构校验（不匹配时告警）。 */
 	bool CheckRowStruct(const UDataTable* Table, const UScriptStruct* RowStruct) const;
 
-	/** 扫描 `UAsceDataTableSettings` 里登记的 MDT 并登记。 */
-	void RegisterTablesFromSettings();
-
 	/** 行结构 -> MDT（弱引用，GC 安全；结构或表被销毁后自动失效）。 */
 	TMap<TWeakObjectPtr<const UScriptStruct>, TWeakObjectPtr<UDataTable>> RowStructToMaster;
+
+	/** 别名（= `UAsceDataTableSettings` 变量名）-> MDT（弱引用）；编辑器下拉/工具按别名解析用。 */
+	TMap<FName, TWeakObjectPtr<UDataTable>> AliasToMaster;
 
 	/** MDT -> 已挂上的来源表（统计 / 调试 / 整体卸载用）。 */
 	TMap<TWeakObjectPtr<UDataTable>, TArray<TWeakObjectPtr<UDataTable>>> MountedSources;

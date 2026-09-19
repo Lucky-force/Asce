@@ -45,11 +45,13 @@ public:
 	
 	void FindEntities(const FVector2D& CenterWorldLocation, const float Radius, TArray<FMassEntityHandle>& OutResult);
 	
-	//传入屏幕空间的矩形两个顶点的坐标，查询被框选的实体
-	void FindEntitiesScreen(const FVector2D& StartScreenLocation, const FVector2D& EndScreenLocation, const APlayerController* Controller, TArray<FMassEntityHandle>& OutResult);
+	//传入屏幕空间的矩形两个顶点的坐标，查询被框选的实体（**单位 + 建筑**，按需开关）
+	void FindEntitiesScreen(const FVector2D& StartScreenLocation, const FVector2D& EndScreenLocation, const APlayerController* Controller, TArray<FMassEntityHandle>& OutResult,
+		bool bIncludeUnits = true, bool bIncludeBuildings = true);
 
-	//传入屏幕空间的点坐标，使用这个点作为起点进行射线检测来选中实体
-	FMassEntityHandle FindEntitiesAtScreenPoint(const FVector2D ScreenLocation, float MaxDistance, APlayerController* Controller);
+	//传入屏幕空间的点坐标，使用这个点作为起点进行射线检测来选中实体（单位 + 建筑取离相机最近，按需开关）
+	FMassEntityHandle FindEntitiesAtScreenPoint(const FVector2D ScreenLocation, float MaxDistance, APlayerController* Controller,
+		bool bIncludeUnits = true, bool bIncludeBuildings = true);
 	
 	static UAsceSpatialGridSubsystem* Get(const UObject* WorldContextObject);
 	/**
@@ -194,8 +196,18 @@ protected:
 	void GetConvexHullAABB2D(const TArray<FVector2D>& Hull, FVector2D& OutMin, FVector2D& OutMax);
 	//使用视锥对所有entity进行相交测试筛选
 	void FindEntitiesInFrustum(const FConvexVolume& Frustum, const FVector2D& AABBMin, const FVector2D& AABBMax, TArray<FMassEntityHandle>& OutHandles) const;
+
+	/** 射线命中的**最近单位**（世界射线；`OutT` 返回命中 t；未命中返回无效 handle）。 */
+	FMassEntityHandle FindUnitHitOnRay(const FVector& Origin, const FVector& Dir, float MaxDistance, float& OutT);
+
+	/** 射线命中的**最近建筑**（逻辑格 DDA + 粗格候选；命中盒 = footprint × HeightCm）。 */
+	FMassEntityHandle FindBuildingHitOnRay(const FVector& Origin, const FVector& Dir, float MaxDistance, float& OutT) const;
+
+	/** 框选：屏幕凸包 AABB 覆盖的建筑，盒 vs 视锥（按 Entity 去重追加）。 */
+	void FindBuildingsInFrustum(const FConvexVolume& Frustum, const FVector2D& HullMin, const FVector2D& HullMax, TArray<FMassEntityHandle>& Out) const;
+
 	//对AABB进行射线相交测试，返回首次交点的t值
-	float RayAABBHit(const FVector& Origin, const FVector& Dir, const FVector& BoxCenter, const FVector& BoxExtent);
+	float RayAABBHit(const FVector& Origin, const FVector& Dir, const FVector& BoxCenter, const FVector& BoxExtent) const;
 	
 	//刷新格子的基础配置数据
 	FORCEINLINE void RefreshBaseGridConfig()

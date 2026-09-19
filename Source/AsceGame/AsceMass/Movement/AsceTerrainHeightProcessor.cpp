@@ -13,6 +13,9 @@
 UAsceTerrainHeightProcessor::UAsceTerrainHeightProcessor()
 	: EntityQuery(*this)
 {
+	// 动态处理器：由 UAsceMassMovementSimulationSubsystem 手动按序跑（调度器是唯一时钟）；
+	// 默认 true 会被 MassSimulation 自动链再跑一份，且绕过 world init/loading 门控。
+	bAutoRegisterWithProcessingPhases = false;
 	// Server和Client都要做：两端各自采样同一份静态高度场（确定性一致），Z 随位置一起复制
 	ExecutionFlags = static_cast<int32>(EProcessorExecutionFlags::AllNetModes);
 	// 不设ExecuteInGroup：由 SimulationSubsystem 手动按序编排（CollisionSolver 之后、Orientation 之前）

@@ -21,6 +21,9 @@ struct FAsceEtherPortTypeRow : public FTableRowBase
 {
 	GENERATED_BODY()
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Ether")
+	FText Name;
+	
 	/** 组合 op（Wire / Not / And / Or）。 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ether")
 	EAsceEtherPortOp Op = EAsceEtherPortOp::Wire;

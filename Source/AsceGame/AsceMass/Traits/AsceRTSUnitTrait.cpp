@@ -3,7 +3,6 @@
 #include "MassEntityTemplateRegistry.h"
 #include "MassCommonFragments.h"
 #include "MassMovementFragments.h"
-#include "MassReplicationFragments.h"
 #include "../Fragments/AsceCoreFragments.h"
 #include "../Fragments/AsceOrderFragments.h"
 #include "../Fragments/AsceInteractionFragments.h"
@@ -14,35 +13,22 @@
 
 void UAsceRTSUnitTrait::BuildTemplate(FMassEntityTemplateBuildContext& BuildContext, const UWorld& World) const
 {
-	// 内置 Fragment：变换、速度
-	BuildContext.AddFragment<FTransformFragment>();
+	// 移动 fragment（结构）：速度/力/期望速度 + 代码驱动标记
 	BuildContext.AddFragment<FMassVelocityFragment>();
 	BuildContext.AddFragment<FMassForceFragment>();
 	BuildContext.AddFragment<FMassDesiredMovementFragment>();
-	
-	// 内置 Tag：启用代码驱动移动（DesiredVelocity → Velocity）
 	BuildContext.AddTag<FMassCodeDrivenMovementTag>();
 
-	// 内置共享参数：移动速度/加速度
-	FMassMovementParameters MovementParams;
-	MovementParams.MaxSpeed = MaxSpeed;
-	MovementParams.MaxAcceleration = MaxAcceleration;
-	MovementParams.DefaultDesiredSpeed = DefaultDesiredSpeed;
-	BuildContext.AddConstSharedFragment(FConstSharedStruct::Make(MovementParams));
+	// 移动调参（per-entity）；这里的值是默认值，生成时会被实体定义表覆盖
+	FAsceMovementTuningFragment& Tuning = BuildContext.AddFragment_GetRef<FAsceMovementTuningFragment>();
+	Tuning.MaxSpeed = MaxSpeed;
+	Tuning.MaxAcceleration = MaxAcceleration;
+	Tuning.DefaultDesiredSpeed = DefaultDesiredSpeed;
 
 	FAgentRadiusFragment& RadiusFragment = BuildContext.AddFragment_GetRef<FAgentRadiusFragment>();
 	RadiusFragment.Radius = Radius;
 	FAsceHeightFragment& HeightFragment = BuildContext.AddFragment_GetRef<FAsceHeightFragment>();
 	HeightFragment.Height = Height;
-
-	// 通用属性：血量、阵营
-	FAsceHealthFragment& HealthFragment = BuildContext.AddFragment_GetRef<FAsceHealthFragment>();
-	HealthFragment.MaxHealth = MaxHealth;
-	HealthFragment.CurrentHealth = MaxHealth;
-	BuildContext.AddFragment_GetRef<FAsceTeamFragment>().TeamKey = TeamConfigKey;
-
-	// 联机同步用的NetID（服务器权威分配，见AsceNetIDRegistrySubsystem）
-	BuildContext.AddFragment<FMassNetworkIDFragment>();
 
 	// 按开关挂命令类Fragment
 	if (bCanMove)
@@ -81,8 +67,6 @@ void UAsceRTSUnitTrait::BuildTemplate(FMassEntityTemplateBuildContext& BuildCont
 		}
 	}
 
-	// 自定义 Tag：初始存活
-	BuildContext.AddTag<FAsceAliveTag>();
 	// 自定义 Tag：可移动单位（SpatialGrid "单位层"按它收录，避免以后子弹/投射物等被误收）
 	BuildContext.AddTag<FAsceMovableUnitTag>();
 }

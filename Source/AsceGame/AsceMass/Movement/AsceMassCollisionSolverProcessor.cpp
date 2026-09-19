@@ -20,6 +20,10 @@
 UAsceMassCollisionSolverProcessor::UAsceMassCollisionSolverProcessor()
 	: EntityQuery(*this)
 {
+	// 动态处理器：由 UAsceMassMovementSimulationSubsystem 手动按序跑（调度器是唯一时钟）。
+	// 默认 true 会被 MassSimulation 自动链再跑一份，且在 world init/loading 门控之外
+	// （开局墙簇表未就绪时的断言就是这个自动份造成的）。
+	bAutoRegisterWithProcessingPhases = false;
 	// Server和Client都要做：双方独立模拟单位位置（Client本地预测），碰撞修正要在两端一致生效
 	ExecutionFlags = static_cast<int32>(EProcessorExecutionFlags::AllNetModes);
 	ExecutionOrder.ExecuteAfter.Add(UE::Mass::ProcessorGroupNames::Movement);

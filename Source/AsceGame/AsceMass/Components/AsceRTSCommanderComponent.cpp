@@ -7,12 +7,17 @@
 #include "Components/GameFrameworkComponentManager.h"
 #include "MassCommonFragments.h"
 #include "MassEntityManager.h"
+#include "MassEntityView.h"
 #include "AsceMass/Fragments/AsceOrderFragments.h"
 #include "AsceMass/FlowField/AscePathFindingSubsystem.h"
 #include "AsceMass/Movement/AsceMoveOrderExecutor.h"
 #include "AsceMass/Networking/AsceOrderChannelComponent.h"
 #include "AsceMass/ScriptBridge/AsceMassScriptBridge.h"
 #include "AsceMass/SpatialGrid/AsceSpatialGridSubsystem.h"
+#include "AsceMass/Fragments/AsceCoreFragments.h"
+#include "AsceGameplayTags.h"
+#include "GameFramework/GameplayMessageSubsystem.h"
+#include "UI/Inspector/AsceInspectorTypes.h"
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AsceRTSCommanderComponent)
 const FName UAsceRTSCommanderComponent::NAME_ActorFeatureName("RTSCommander");
 
@@ -112,6 +117,25 @@ void UAsceRTSCommanderComponent::BroadcastSelectionChanged()
 {
     PrintSelectedEntities();
     OnSelectionChanged.Broadcast();
+
+    // UI 解耦通知：选择集合变化（含主单位 = 第一个的信息）
+    FAsceSelectionChangedMessage Message;
+    Message.Count = SelectedEntities.Num();
+    if (SelectedEntities.Num() > 0)
+    {
+        Message.PrimaryEntityNumber = SelectedEntities[0].AsNumber();
+        if (EntityManager.IsValid())
+        {
+            if (const FAsceUnitDefFragment* Def = EntityManager->GetFragmentDataPtr<FAsceUnitDefFragment>(SelectedEntities[0]))
+            {
+                Message.PrimaryTypeId = Def->UniqueTypeId;
+            }
+        }
+    }
+    if (UGameplayMessageSubsystem::HasInstance(this))
+    {
+        UGameplayMessageSubsystem::Get(this).BroadcastMessage(AsceGameplayTags::UI_SelectionChanged, Message);
+    }
 }
 
 UAsceRTSCommanderComponent::UAsceRTSCommanderComponent(const FObjectInitializer& ObjectInitializer) : Super(ObjectInitializer)
@@ -358,6 +382,21 @@ void UAsceRTSCommanderComponent::IssueMoveOrder(const FVector& TargetLocation, c
 		return;
 	}
 
+	// 只对**可移动单位**下达移动令（框选可能混入建筑等静态实体）
+	TArray<FMassEntityHandle> MovableEntities;
+	MovableEntities.Reserve(SelectedEntities.Num());
+	for (const FMassEntityHandle Handle : SelectedEntities)
+	{
+		if (EntityManager->IsEntityValid(Handle) && FMassEntityView(*EntityManager, Handle).HasTag<FAsceMovableUnitTag>())
+		{
+			MovableEntities.Add(Handle);
+		}
+	}
+	if (MovableEntities.Num() == 0)
+	{
+		return;
+	}
+
 	// 到达半径转平方（Fragment存的是平方值，见AsceOrderFragments.h说明）
 	const float AcceptanceRadiusSquared = AcceptanceRadius * AcceptanceRadius;
 
@@ -368,7 +407,7 @@ void UAsceRTSCommanderComponent::IssueMoveOrder(const FVector& TargetLocation, c
 	{
 		if (UAsceOrderChannelComponent* OrderChannel = Pawn->FindComponentByClass<UAsceOrderChannelComponent>())
 		{
-			OrderChannel->RequestMoveOrder(SelectedEntities, FVector2D(TargetLocation.X, TargetLocation.Y), AcceptanceRadiusSquared);
+			OrderChannel->RequestMoveOrder(MovableEntities, FVector2D(TargetLocation.X, TargetLocation.Y), AcceptanceRadiusSquared);
 			return;
 		}
 	}
@@ -376,10 +415,10 @@ void UAsceRTSCommanderComponent::IssueMoveOrder(const FVector& TargetLocation, c
 	// ── 本地直写（无OrderChannel的Standalone路径）──
 	TArray<FMassEntityHandle> ValidHandles;
 	TArray<FVector2D> EntityWorldLocations2D;
-	ValidHandles.Reserve(SelectedEntities.Num());
-	EntityWorldLocations2D.Reserve(SelectedEntities.Num());
+	ValidHandles.Reserve(MovableEntities.Num());
+	EntityWorldLocations2D.Reserve(MovableEntities.Num());
 
-	for (FMassEntityHandle Handle : SelectedEntities)
+	for (FMassEntityHandle Handle : MovableEntities)
 	{
 		if (!EntityManager->IsEntityValid(Handle))
 		{

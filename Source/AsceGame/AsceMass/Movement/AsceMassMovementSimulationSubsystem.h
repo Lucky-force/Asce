@@ -40,7 +40,7 @@ class UMassApplyMovementProcessor;
  * - ExecutionFlags在手动Run时不会被自动过滤，这里在加入执行列表时主动按当前网络模式筛选
  *   (同时保留processor自带的EProcessorExecutionFlags判断，双保险)。
  */
-UCLASS(Abstract)
+UCLASS()
 class UAsceMassMovementSimulationSubsystem : public UTickableWorldSubsystem
 {
 	GENERATED_BODY()
@@ -55,7 +55,7 @@ public:
 	//~End UTickableWorldSubsystem Interface
 
 	/** **阶段入口**（由 `UAsceSimulationSubsystem` 调用；本系统已关闭自 tick）：
-	 *  按固定顺序 Run 移动管线的 7 个 processor（loading 门控 + netmode 过滤都在函数内）。 */
+	 *  按固定顺序 Run 移动管线的 7 个 processor（就绪门控 + netmode 过滤都在函数内）。 */
 	void RunMovementStage(const FAsceTickContext& Ctx);
 
 protected:
@@ -66,9 +66,8 @@ private:
 	// 手动模式要自己调用ShouldExecute）。
 	void ExecuteProcessorIfAllowed(UMassProcessor& Processor, EProcessorExecutionFlags CurrentNetModeFlags, FMassProcessingContext& InContext);
 
-	// loading 门控：Experience 未加载完成前不跑移动管线。
-	// 地图初始化（含墙簇表构建）在 loading 阶段完成，避免处理器与初始化/重建交叉；
-	// 加载完成后只查一个 bool，无逐帧开销。
+	// 就绪门控：等 GameState 出现（loading 门控在 `UAsceSimulationSubsystem`：loading 结束前整条阶段链都不跑）。
+	// 地图初始化（含墙簇表构建）在 loading 阶段完成，避免处理器与初始化/重建交叉。
 	bool CheckSimulationReady();
 
 	// World->GetNetMode()的ENetMode枚举值≠EProcessorExecutionFlags位掩码，需要手动映射。
@@ -96,6 +95,6 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UMassProcessor> CorrectionProcessor;
 
-	/** 见 CheckSimulationReady：一旦确认可跑（loading完成/无loading系统）就置位，之后零开销 */
+	/** 见 CheckSimulationReady：确认 GameState 就绪后置位，之后零开销 */
 	bool bSimulationReady = false;
 };

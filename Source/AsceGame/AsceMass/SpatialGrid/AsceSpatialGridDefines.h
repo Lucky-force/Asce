@@ -75,6 +75,9 @@ struct FAsceGridBuildingPart
 	/** 逻辑格（与 footprint 同一口径：**旋转后的最终 AABB**；costfield/视野层也按这个矩形遍历）。 */
 	FIntPoint Origin = FIntPoint::ZeroValue;
 	FIntPoint Size = FIntPoint(1, 1);
+
+	/** 选择/命中盒高度（cm；来自 footprint 的 `OcclusionHeightCm`，至少 100 保证盒非退化）。 */
+	int32 HeightCm = 100;
 };
 
 /** 建筑网格的一格：一格可能覆盖多个（小）建筑。 */

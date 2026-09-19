@@ -2,7 +2,8 @@
 #include "AsceBuildingDebugger.h"
 
 #include "AsceBuildingSubsystem.h"
-#include "AsceMass/Ether/AsceEtherBuildingConfig.h"
+#include "AsceMass/Building/AsceBuildingDef.h"
+#include "AsceMass/Data/AsceEntityDefLibrary.h"
 #include "AsceMass/SpatialGrid/AsceSpatialGridSubsystem.h"
 #include "DrawDebugHelpers.h"
 #include "Engine/World.h"
@@ -76,7 +77,7 @@ void AAsceBuildingDebugger::Tick(float DeltaTime)
 		for (int32 i = 0; i < List.Num(); ++i)
 		{
 			const FAsceBuildingPlacement& Placement = List[i].Placement;
-			if (!Placement.BuildingConfig)
+			if (Placement.BuildingDefId.IsNone())
 			{
 				continue;
 			}
@@ -185,20 +186,32 @@ void AAsceBuildingDebugger::BuildingDebugPlaceCell(int32 CellX, int32 CellY, int
 		UE_LOG(LogTemp, Warning, TEXT("[BuildingDebug] 没有 UAsceBuildingSubsystem"));
 		return;
 	}
-	if (!TestConfig)
+	if (TestConfig.IsNone())
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[BuildingDebug] 没设 TestConfig（建筑配置）"));
+		UE_LOG(LogTemp, Warning, TEXT("[BuildingDebug] 没设 TestConfig（建筑类型行名）"));
 		return;
 	}
 
-	const FAsceBuildingPlacement Placement =
-		FAsceBuildingPlacement::MakeFromConfigCenter(TestConfig, FIntPoint(CellX, CellY), Rotation, TestTeamKey);
+	FAsceBuildingDefBase Def;
+	if (!UAsceEntityDefLibrary::GetBuildingDefByName(TestConfig.RowName, Def))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[BuildingDebug] TestConfig=%s 在实体定义表里找不到（或不是建筑类型）"),
+			*TestConfig.RowName.ToString());
+		return;
+	}
+
+	const FAsceBuildingPlacement Placement = FAsceBuildingPlacement::MakeFromDefCenter(
+		TestConfig.RowName,
+		FIntPoint(FMath::Max(1, Def.SizeX), FMath::Max(1, Def.SizeY)),
+		FIntPoint(CellX, CellY),
+		Rotation,
+		TestTeamKey);
 
 	FString Error;
 	if (Buildings->PlaceBuilding(Placement, &Error))
 	{
-		UE_LOG(LogTemp, Log, TEXT("[BuildingDebug] 建造成功：cell=(%d,%d) rot=%d cfg=%s"),
-			CellX, CellY, Placement.Rotation, *TestConfig->GetName());
+		UE_LOG(LogTemp, Log, TEXT("[BuildingDebug] 建造成功：cell=(%d,%d) rot=%d def=%s"),
+			CellX, CellY, Placement.Rotation, *TestConfig.RowName.ToString());
 	}
 	else
 	{

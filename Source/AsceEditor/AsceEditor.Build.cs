@@ -49,7 +49,8 @@ public class AsceEditor : ModuleRules
 				"DeveloperToolSettings",
 				"CollectionManager",
 				"SourceControl",
-				"Chaos"
+				"Chaos",
+				"PropertyEditor"
 			}
         );
 

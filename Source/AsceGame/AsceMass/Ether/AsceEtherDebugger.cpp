@@ -1,7 +1,8 @@
 // AsceEtherDebugger.cpp
 #include "AsceEtherDebugger.h"
 
-#include "AsceMass/Ether/AsceEtherBuildingConfig.h"
+#include "AsceMass/Data/AsceEntityDefLibrary.h"
+#include "AsceMass/Ether/AsceEtherBuildingDef.h"
 #include "AsceMass/Ether/AsceEtherFragments.h"
 #include "AsceMass/Ether/AsceEtherNetworkSubsystem.h"
 #include "AsceMass/Ether/AsceEtherProcessCore.h"
@@ -45,8 +46,7 @@ void AAsceEtherDebugger::SpawnAndRegister()
 {
 	UWorld* World = GetWorld();
 	UMassEntitySubsystem* EntitySubsystem = World ? World->GetSubsystem<UMassEntitySubsystem>() : nullptr;
-	UAsceEtherNetworkSubsystem* Net = UAsceEtherNetworkSubsystem::Get(this);
-	if (!EntitySubsystem || !Net || Placements.Num() == 0)
+	if (!EntitySubsystem || Placements.Num() == 0)
 	{
 		return;
 	}
@@ -55,22 +55,23 @@ void AAsceEtherDebugger::SpawnAndRegister()
 
 	for (const FAsceEtherDebugPlacement& Placement : Placements)
 	{
-		if (!Placement.ConfigClass)
+		if (Placement.BuildingDef.IsNone())
 		{
 			continue;
 		}
-		const UAsceEtherBuildingConfig* Cfg = Placement.ConfigClass->GetDefaultObject<UAsceEtherBuildingConfig>();
-		if (!Cfg)
+		FAsceEtherBuildingDef Def;
+		if (!UAsceEntityDefLibrary::GetEtherBuildingDefByName(Placement.BuildingDef.RowName, Def))
 		{
+			UE_LOG(LogTemp, Warning, TEXT("[EtherDebug] 建筑类型 %s 不在实体定义表（或不是 Ether 建筑）"), *Placement.BuildingDef.RowName.ToString());
 			continue;
 		}
 
-		// 建筑配置登记（正式流程由 UAsceEtherBuildingTrait::BuildTemplate 做）
-		const FName DefId = Placement.ConfigClass->GetFName();
-		Net->RegisterBuildingConfig(DefId, Placement.ConfigClass);
+		const FName DefId = Placement.BuildingDef.RowName;
+		uint16 DefNumericId = 0;
+		UAsceEntityDefLibrary::ParseEntityDefId(DefId, DefNumericId);
 
 		// 用"带初始值的 CreateEntity"建实体：Mass 的 Add 观察者在创建时立刻执行，
-		// 走裸 Archetype（默认构造 fragment）会让观察者读到 BuildingDefId=None；
+		// 走裸 Archetype（默认构造 fragment）会让观察者读到空的类型 id / footprint；
 		// 这里和 Trait/模板路径一样，创建时就把 fragment 值填好。
 		const FVector2D Center(
 			(static_cast<float>(Placement.Cell.X) + 0.5f) * GRID_SIZE,
@@ -86,15 +87,18 @@ void AAsceEtherDebugger::SpawnAndRegister()
 			FAsceGridFootprintFragment& Foot = FragmentList.Add_GetRef(FInstancedStruct::Make<FAsceGridFootprintFragment>())
 				.GetMutable<FAsceGridFootprintFragment>();
 			Foot.OriginGridLocation = Placement.Cell;
-			Foot.SizeX = FMath::Max(1, Cfg->SizeX);
-			Foot.SizeY = FMath::Max(1, Cfg->SizeY);
+			Foot.SizeX = FMath::Max(1, Def.SizeX);
+			Foot.SizeY = FMath::Max(1, Def.SizeY);
 			Foot.OcclusionHeightCm = 0;   // 调试建筑不参与视野遮挡
 		}
 		{
-			// 标记 fragment：Add 观察者会 RegisterBuilding（下一次命令 drain 阶段统一重建图）
-			FEtherBuildingFragment& Ether = FragmentList.Add_GetRef(FInstancedStruct::Make<FEtherBuildingFragment>())
-				.GetMutable<FEtherBuildingFragment>();
-			Ether.BuildingDefId = DefId;
+			// 标记：Ether 建筑（身份见 FAsceUnitDefFragment；Add 观察者会 push AddNode）
+			FragmentList.Add(FInstancedStruct::Make<FEtherBuildingFragment>());
+		}
+		{
+			FAsceUnitDefFragment& UnitDef = FragmentList.Add_GetRef(FInstancedStruct::Make<FAsceUnitDefFragment>())
+				.GetMutable<FAsceUnitDefFragment>();
+			UnitDef.UniqueTypeId = DefNumericId;
 		}
 
 		const FMassEntityHandle Entity = EM.CreateEntity(FragmentList);

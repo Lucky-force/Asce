@@ -8,6 +8,7 @@
 #include "MassEntityTypes.h"
 #include "MassExecutionContext.h"
 #include "Engine/World.h"
+#include "AsceMass/Data/AsceEntityFactory.h"
 #include "AsceMass/SpatialGrid/AsceSpatialGridSubsystem.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AsceMassScriptBridge)
@@ -46,6 +47,8 @@ UAsceMassScriptBridge* UAsceMassScriptBridge::Get(UObject* ContextObject)
 
 TArray<int64> UAsceMassScriptBridge::SpawnEntities(UMassEntityConfigAsset* Config, const TArray<FTransform>& Transforms)
 {
+	UE_LOG(LogTemp, Warning, TEXT("[MassBridge] SpawnEntities(Config, ...) 已弃用：它不查实体定义表，fragment 全是 trait 默认值（半径/速度/血量等不会按表覆盖）。请改用 SpawnEntitiesByDef(DefRowName, Transforms, TeamKey)"));
+
 	TArray<int64> Result;
 	if (!Config || !IsValid(SpawnerSubsystem) || Transforms.Num() == 0 || !IsValid(SpatialGridSubsystem) || !IsValid(EntitySubsystem))
 	{
@@ -88,8 +91,12 @@ TArray<int64> UAsceMassScriptBridge::SpawnEntities(UMassEntityConfigAsset* Confi
 	return Result;
 }
 
-void UAsceMassScriptBridge::DestroyEntities(const TArray<int32>& EntityHandles)
+TArray<int64> UAsceMassScriptBridge::SpawnEntitiesByDef(FName DefRowName, const TArray<FTransform>& Transforms, int32 TeamKey)
 {
+	return UAsceEntityFactory::SpawnEntitiesByDef(this, DefRowName, Transforms, TeamKey);
+}
+
+void UAsceMassScriptBridge::DestroyEntities(const TArray<int32>& EntityHandles){
 	if (!IsValid(EntitySubsystem))
 	{
 		return;

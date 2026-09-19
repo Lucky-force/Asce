@@ -13,6 +13,9 @@
 UAsceMovementOrientationProcessor::UAsceMovementOrientationProcessor()
 	: EntityQuery(*this)
 {
+	// 动态处理器：由 UAsceMassMovementSimulationSubsystem 手动按序跑（调度器是唯一时钟）；
+	// 默认 true 会被 MassSimulation 自动链再跑一份，且绕过 world init/loading 门控。
+	bAutoRegisterWithProcessingPhases = false;
 	ExecutionFlags = static_cast<int32>(EProcessorExecutionFlags::AllNetModes);
 	// 不设ExecuteInGroup（留在默认的顶层），只声明"必须等Movement组全部跑完再执行"——
 	// 跟引擎自带UMassApplyForceProcessor用ExecuteAfter引用Avoidance组名是同一种写法。

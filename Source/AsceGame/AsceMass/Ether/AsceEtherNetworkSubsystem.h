@@ -6,7 +6,7 @@
 #include "MassEntityHandle.h"
 #include "MassEntityTypes.h"
 #include "AsceMass/Ether/AsceEtherTypes.h"
-#include "AsceMass/Ether/AsceEtherBuildingConfig.h"
+#include "AsceMass/Ether/AsceEtherBuildingDef.h"
 #include "AsceMass/Ether/AsceEtherGraphCommand.h"
 #include "AsceMass/Simulation/AsceTickContext.h"
 #include "AsceMass/Fragments/AsceFootprintFragment.h"   // FNode::CachedFootprint
@@ -70,9 +70,9 @@ struct FAsceEtherPortData
 };
 
 /**
- * ether 网络中枢（服务器权威）。**配置（共享）/ 实例（每建筑）/ 行为（ProcessCore）三层分离**：
- *  - 建筑配置注册表：`BuildingId -> TSubclassOf<UAsceEtherBuildingConfig>`（Trait 建模板时登记）；
- *  - 实例：`FNode`（建筑）+ `TArray<FAsceEtherPortData>`（全局扁平，按 node 分段）+ 内部布线；
+ * ether 网络中枢（服务器权威）。**配置（实体定义表）/ 实例（每建筑）/ 行为（ProcessCore）三层分离**：
+ *  - 建筑配置：实体定义表（`AsceEntityDefRow.Def = FAsceEtherBuildingDef`，`UAsceEntityDefLibrary` 查）；
+ *  - 实例：`FNode`（建筑，含定义数据拷贝）+ `TArray<FAsceEtherPortData>`（全局扁平，按 node 分段）+ 内部布线；
  *  - 行为：每个建筑一个 `UAsceEtherProcessCore`（CDO 或实例，见 `bInstance`）；
  *  - 建图：slot → 端口实例 → `Core->OnInit`（定端口角色）→ 用 `TransportType` 定向外部边 → 端口级组合段；
  *  - 每 tick：`Core->Tick`（时序）→ 器件端口推出 → 组合段传播（端口只沿后继推，不看类型）。
@@ -106,12 +106,6 @@ public:
 	virtual TStatId GetStatId() const override;
 
 	static UAsceEtherNetworkSubsystem* Get(const UObject* WorldContextObject);
-
-	// ── 建筑配置注册表（Trait / 调试器登记） ──
-
-	void RegisterBuildingConfig(FName BuildingId, TSubclassOf<UAsceEtherBuildingConfig> ConfigClass);
-	/** 取建筑配置（CDO；由 `UPROPERTY` 注册表保活）。 */
-	UAsceEtherBuildingConfig* FindBuildingConfig(FName BuildingId) const;
 
 	// ── registry（node = 建筑） ──
 
@@ -190,14 +184,16 @@ public:
 	const FAsceEtherPortIdList* GetPortLinkTargets(int32 PortId) const;
 
 private:
-	/** 建筑实例（静态配置在 `RebuildGraphInternal` 里按 `ConfigClass` 解析）。 */
+	/** 建筑实例（静态配置 = 创建时从实体定义表解析的 `DefData` 拷贝）。 */
 	struct FNode
 	{
 		FMassEntityHandle Entity;
 		FName BuildingId;
 		bool bAlive = false;
 
-		UAsceEtherBuildingConfig* Config = nullptr;  // CDO（注册表保活；RebuildGraphInternal 直接用，不再查）
+		/** 建筑定义（从 `AsceEntityDefRow.Def` 拷一份；SDT 挂卸会重建行表，不能存行指针）。 */
+		FAsceEtherBuildingDef DefData;
+		bool bHasDefData = false;
 		bool bDevice = false;                    // DeviceType == Sequential
 		bool bLinksInitialized = false;          // 内布线是否已初始化过（玩家清空后不允许默认值回填）
 		uint8 CachedDirection = 0;               // 建筑朝向（绕中心顺时针 90° 次数；实体 Transform 上读，`BuildNodePorts` 刷新）
@@ -315,11 +311,7 @@ private:
 	void PullAndEvaluate(int32 PortId);
 	uint16 MoveUnits(int32 FromPort, int32 ToPort, uint16 Amount, int16 Type);
 
-	const UAsceEtherBuildingConfig* GetConfigCDO(int32 NodeId) const;
-
-	// —— 建筑配置注册表（UPROPERTY ⇒ 属性系统保活，不需要额外 keepalive）——
-	UPROPERTY(Transient)
-	TMap<FName, TObjectPtr<UAsceEtherBuildingConfig>> BuildingConfigRegistry;
+	const FAsceEtherBuildingDef* GetNodeDef(int32 NodeId) const;
 
 	// —— 命令队列（结构性修改的唯一入口；每帧 tick 开头 drain）——
 	TArray<FInstancedStruct> GraphCommands;
@@ -339,7 +331,7 @@ private:
 	// —— 段 / 顺序 / 映射 ——
 	TArray<FAsceEtherSegment> Segments;   // 段池（bActive 标记在用；Order 自带拓扑序）
 	TArray<int32> FreeSegIds;
-	TArray<int32> PortSegId;              // portId -> segId（-1 = 器件端口/无）
+	TArray<int32> PortSegId;              // portId -> segId（-1 = 器件端口/无）。**与 Ports 等长**：Alloc/FreePortId 维护（ClearGraph 整体重置）
 	TArray<TArray<int32>> DeviceAdjSegs;  // 器件 nodeId -> 相邻段
 	TArray<int32> DeviceNodes;            // 器件（时序）nodeId，**升序**（RebuildGraphInternal 缓存；Pass 1/2 只遍历它）
 

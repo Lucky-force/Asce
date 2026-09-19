@@ -25,9 +25,20 @@ class UAsceDataTableSettings : public UDeveloperSettings
 public:
 	UAsceDataTableSettings();
 
+#if WITH_EDITOR
+	/** 改设置（如新加/改指向的 MDT）后立即重扫，不用重启编辑器。 */
+	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
+
 	// ── Ether ──
 
 	/** Ether：端口类型表（MDT）。行结构：`FAsceEtherPortTypeRow`。 */
 	UPROPERTY(EditAnywhere, config, Category = "Ether")
 	TSoftObjectPtr<UDataTable> AsceEtherPortTypeRow;
+
+	// ── 实体 ──
+
+	/** 实体类型定义表（MDT）。行结构：`FAsceEntityDefRow`（行名 = 数字 ID 字符串）。 */
+	UPROPERTY(EditAnywhere, config, Category = "Entity")
+	TSoftObjectPtr<UDataTable> AsceEntityDefRow;
 };

@@ -4,6 +4,7 @@
 
 #include "AbilitySystemGlobals.h"
 #include "AssetToolsModule.h"
+#include "DataTableSystem/AsceRowNameWrapper.h"
 #include "DataValidationModule.h"
 #include "Development/AsceDeveloperSettings.h"
 #include "Editor/UnrealEdEngine.h"
@@ -18,7 +19,9 @@
 #include "GameplayCueNotify_BurstLatent.h"
 #include "GameplayCueNotify_Looping.h"
 #include "IAssetTools.h"
+#include "Private/AsceRowNameWrapperCustomization.h"
 #include "Private/AssetTypeActions_AsceContextEffectsLibrary.h"
+#include "PropertyEditorModule.h"
 #include "ToolMenu.h"
 #include "ToolMenus.h"
 #include "UObject/UObjectIterator.h"
@@ -233,6 +236,14 @@ class FAsceEditorModule : public FDefaultGameModuleImpl
 			LyraContextEffectsLibraryAssetAction = AssetAction;
 			AssetTools.RegisterAssetTypeActions(AssetAction);
 		}
+
+		// 数据表行名包装（FAsceRowNameWrapper）：按属性 meta 渲染行名下拉
+		{
+			FPropertyEditorModule& PropertyEditorModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
+			PropertyEditorModule.RegisterCustomPropertyTypeLayout(
+				FAsceRowNameWrapper::StaticStruct()->GetFName(),
+				FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FAsceRowNameWrapperCustomization::MakeInstance));
+		}
 	}
 
 	void OnBeginPIE(bool bIsSimulating)
@@ -248,6 +259,15 @@ class FAsceEditorModule : public FDefaultGameModuleImpl
 
 	virtual void ShutdownModule() override
 	{
+		// Unregister the DataTable row-name wrapper property dropdown.
+		{
+			if (FPropertyEditorModule* PropertyEditorModule = FModuleManager::GetModulePtr<FPropertyEditorModule>("PropertyEditor"))
+			{
+				PropertyEditorModule->UnregisterCustomPropertyTypeLayout(
+					FAsceRowNameWrapper::StaticStruct()->GetFName());
+			}
+		}
+
 		// Unregister the Context Effects Library asset type actions.
 		{
 			FAssetToolsModule* AssetToolsModule = FModuleManager::GetModulePtr<FAssetToolsModule>("AssetTools");

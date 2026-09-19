@@ -1,10 +1,11 @@
-// AsceEtherBuildingConfig.h
+// AsceEtherBuildingDef.h
 #pragma once
 
 #include "CoreMinimal.h"
-#include "UObject/Object.h"
+#include "AsceMass/Building/AsceBuildingDef.h"
 #include "AsceMass/Ether/AsceEtherTypes.h"
-#include "AsceEtherBuildingConfig.generated.h"
+#include "DataTableSystem/AsceRowNameWrapper.h"
+#include "AsceEtherBuildingDef.generated.h"
 
 class UAsceEtherProcessCore;
 
@@ -39,9 +40,9 @@ struct FAsceEtherPortSlot
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ether")
 	uint8 Dimension = 0;
 
-	/** 端口类型 id：**端口类型表（MDT）的行名**（玩家运行时可改；改完标脏重建）。 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ether")
-	FName PortTypeId;
+	/** 端口类型：**端口类型表（MDT）的行名**（编辑器下拉选行）。 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ether", meta = (DataTableBinding = "AsceEtherPortTypeRow"))
+	FAsceRowNameWrapper PortType;
 
 	/** 分流策略默认值（玩家运行时可改）。 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ether")
@@ -49,34 +50,23 @@ struct FAsceEtherPortSlot
 };
 
 /**
- * 建筑**配置**（共享数据：蓝图子类 CDO，不实例化）。
- * - 只有"布局 + 挂载槽位 + 用哪个 ProcessCore"，**不含**任何实例数据；
- * - 器件 / 传输器之分看 `DeviceType` + `ProcessCoreClass`（传输器的 core 只需把所有端口设成 Any）。
+ * **Ether 建筑**的类型定义（`FAsceEntityDefRow::Def` 的一种；来自实体定义表）。
+ *
+ * - 建筑通用字段（占地/遮挡/CoreClass）在基类 `FAsceBuildingDefBase`；
+ * - 本结构只放 Ether 专属：器件/传输器、行为 process core、端口槽位、默认内布线。
  */
-UCLASS(BlueprintType, Blueprintable, Abstract)
-class UAsceEtherBuildingConfig : public UObject
+USTRUCT(BlueprintType)
+struct FAsceEtherBuildingDef : public FAsceBuildingDefBase
 {
 	GENERATED_BODY()
 
-public:
 	/** 组合（传输器）还是时序（器件）。 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ether")
 	EAsceEtherDeviceType DeviceType = EAsceEtherDeviceType::Combinational;
 
 	/** 行为类：时序器件每 tick 调用它的 Tick；组合建筑只调用 OnInit（传输器 = UAsceEtherTransporterCore）。 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ether")
-	TSubclassOf<UAsceEtherProcessCore> ProcessCoreClass;
-
-	/** 建筑占格（与 footprint 一致），端口槽位基于建筑原点格。 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ether")
-	int32 SizeX = 1;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ether")
-	int32 SizeY = 1;
-
-	/** 视野遮挡高度（cm；写进 footprint 的 `OcclusionHeightCm`；0 = 不参与视野遮挡）。 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ether")
-	int32 OcclusionHeightCm = 0;
+	TSoftClassPtr<UAsceEtherProcessCore> ProcessCoreClass;
 
 	/** 支持挂载端口的维度数量（端口 Dimension 须 < 它）。 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ether", meta = (ClampMin = "1", ClampMax = "8"))

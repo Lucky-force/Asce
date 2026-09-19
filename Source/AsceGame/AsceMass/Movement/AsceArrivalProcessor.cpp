@@ -19,6 +19,9 @@
 UAsceArrivalProcessor::UAsceArrivalProcessor()
 	: EntityQuery(*this)
 {
+	// 动态处理器：由 UAsceMassMovementSimulationSubsystem 手动按序跑（调度器是唯一时钟）；
+	// 默认 true 会被 MassSimulation 自动链再跑一份，且绕过 world init/loading 门控。
+	bAutoRegisterWithProcessingPhases = false;
 	// 两端都跑：Client本地预测也要标记到达（和移动/碰撞解算一样，两端各自独立模拟，
 	// 纯几何规则保证两端结果一致；没有时间量所以不会随时间漂移）。
 	ExecutionFlags = static_cast<int32>(EProcessorExecutionFlags::AllNetModes);

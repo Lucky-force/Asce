@@ -53,8 +53,9 @@ public:
 	/** 世界数据初始化是否完成（loading 系统据此决定能不能结束 loading / 收 loading 界面）。 */
 	bool IsWorldInitialized() const { return bWorldInitialized; }
 
-	/** loading（Experience）结束：之后才允许跑 sim 阶段。共享代码默认已结束（Test / 无 Experience 的地图）。
-	 *  完整工程（AsceGame）在 `UAsceExperienceManagerComponent` 走到 Loaded 时调这一句。 */
+	/** loading（Experience）结束：之后才允许跑 sim 阶段。完整工程（AsceGame）在
+	 *  `UAsceExperienceManagerComponent` 走到 Loaded 时调这一句；没有这条通知也可靠 Tick 里的
+	 *  每帧复查放行（无 Experience 组件的测试地图直接视为已加载）。 */
 	void NotifyLoadingFinished();
 
 private:
@@ -65,7 +66,8 @@ private:
 
 	TWeakObjectPtr<AAsceWorldMapReplicatorActor> WorldDataSource;
 	bool bWorldInitialized = false;
-	bool bLoadingFinished = true;
+	/** loading 门控：默认**关**，Experience Loaded 后（`NotifyLoadingFinished` 或 Tick 复查）才开。 */
+	bool bLoadingFinished = false;
 	bool bWarnedNoDataSource = false;
 
 	FAsceTickContext TickContext;

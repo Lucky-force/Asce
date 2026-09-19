@@ -27,6 +27,9 @@ struct FAsceDataTableSourceEntry
 /**
  * 把若干 SDT 挂到对应 MDT 上（GameFeature 激活时挂、卸载时摘）。
  * 查询方永远只查 MDT（见 `UAsceDataTableSubsystem`）。
+ *
+ * 编辑器里激活也生效：子系统是 `UEngineSubsystem`（编辑器/运行时都存在），
+ * 所以编辑器工具（不进 PIE）也能查到 GameFeature 提供的行。
  */
 UCLASS(MinimalAPI, meta = (DisplayName = "Add Data Table Sources"))
 class UGameFeatureAction_AddDataTableSources final : public UGameFeatureAction

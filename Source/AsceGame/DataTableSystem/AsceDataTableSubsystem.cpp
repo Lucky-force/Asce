@@ -4,6 +4,7 @@
 #include "Engine/CompositeDataTable.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
+#include "HAL/IConsoleManager.h"
 #include "DataTableSystem/AsceDataTableSettings.h"
 #include "UObject/UnrealType.h"
 #include "UObject/Stack.h"
@@ -13,19 +14,20 @@
 void UAsceDataTableSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
-	RegisterTablesFromSettings();
+	RefreshTablesFromSettings();
 }
 
-void UAsceDataTableSubsystem::RegisterTablesFromSettings()
+void UAsceDataTableSubsystem::RefreshTablesFromSettings()
 {
 	const UAsceDataTableSettings* Settings = GetDefault<UAsceDataTableSettings>();
 	if (!Settings)
 	{
 		return;
 	}
-	// Settings 上每个 `TSoftObjectPtr<UDataTable>` 变量都是"一张逻辑表（MDT）"
+	// Settings 上每个 `TSoftObjectPtr<UDataTable>` 变量都是"一张逻辑表（MDT）"；变量名 = 别名
 	for (TFieldIterator<FSoftObjectProperty> It(UAsceDataTableSettings::StaticClass()); It; ++It)
 	{
+		const FName Alias = It->GetFName();
 		const FSoftObjectPtr Soft = It->GetPropertyValue_InContainer(Settings);
 		if (Soft.IsNull())
 		{
@@ -39,6 +41,7 @@ void UAsceDataTableSubsystem::RegisterTablesFromSettings()
 		if (Table)
 		{
 			RegisterTable(Table);
+			AliasToMaster.Add(Alias, Table);
 		}
 	}
 }
@@ -91,6 +94,28 @@ UDataTable* UAsceDataTableSubsystem::GetMasterTable(const UScriptStruct* RowStru
 		UE_LOG(LogTemp, Warning, TEXT("[DataTable] 已登记的表已被 GC：RowStruct=%s"), *RowStruct->GetName());
 	}
 	return Table;
+}
+
+UDataTable* UAsceDataTableSubsystem::GetMasterTableByAlias(FName Alias) const
+{
+	if (Alias.IsNone())
+	{
+		return nullptr;
+	}
+	const TWeakObjectPtr<UDataTable>* Found = AliasToMaster.Find(Alias);
+	return Found ? Found->Get() : nullptr;
+}
+
+bool UAsceDataTableSubsystem::GetRowNames(const UScriptStruct* RowStruct, TArray<FName>& OutRowNames) const
+{
+	const UDataTable* Table = GetMasterTable(RowStruct);
+	if (!Table)
+	{
+		return false;
+	}
+	Table->GetRowMap().GenerateKeyArray(OutRowNames);
+	OutRowNames.Sort([](const FName& A, const FName& B) { return A.LexicalLess(B); });
+	return true;
 }
 
 UDataTable* UAsceDataTableSubsystem::BP_GetMasterTable(const UScriptStruct* RowStruct)
@@ -149,28 +174,10 @@ DEFINE_FUNCTION(UAsceDataTableSubsystem::execGetDefinitionByStruct)
 	*(bool*)RESULT_PARAM = bSuccess;
 }
 
-UAsceDataTableSubsystem* UAsceDataTableSubsystem::Get(const UObject* WorldContextObject)
+UAsceDataTableSubsystem* UAsceDataTableSubsystem::Get()
 {
-	if (WorldContextObject)
-	{
-		UWorld* World = GEngine ? GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull) : nullptr;
-		UGameInstance* GameInstance = World ? World->GetGameInstance() : nullptr;
-		return GameInstance ? GameInstance->GetSubsystem<UAsceDataTableSubsystem>() : nullptr;
-	}
-	// 没有上下文（工具/CDO 代码）：退回第一个有 GameInstance 的世界
-	if (GEngine)
-	{
-		for (const FWorldContext& Ctx : GEngine->GetWorldContexts())
-		{
-			UWorld* World = Ctx.World();
-			UGameInstance* GameInstance = World ? World->GetGameInstance() : nullptr;
-			if (UAsceDataTableSubsystem* Sub = GameInstance ? GameInstance->GetSubsystem<UAsceDataTableSubsystem>() : nullptr)
-			{
-				return Sub;
-			}
-		}
-	}
-	return nullptr;
+	// 引擎子系统：编辑器（无 GameInstance）与运行时都存在 ⇒ 编辑器工具/GameFeature 编辑器激活也能查表
+	return GEngine ? GEngine->GetEngineSubsystem<UAsceDataTableSubsystem>() : nullptr;
 }
 
 bool UAsceDataTableSubsystem::CheckRowStruct(const UDataTable* Table, const UScriptStruct* RowStruct) const
@@ -209,6 +216,8 @@ bool UAsceDataTableSubsystem::AddSourceTable(UDataTable* MasterTable, UDataTable
 		return false;
 	}
 
+	// 防重：编辑器激活挂过之后资产若被保存，`ParentTables` 里可能已经有它 ⇒ 先摘再挂，保证只挂一份
+	Composite->RemoveParentTable(SourceTable);
 	Composite->AddParentTable(SourceTable);   // 运行时挂载（内建"后添加覆盖"）
 
 	TArray<TWeakObjectPtr<UDataTable>>& Sources = MountedSources.FindOrAdd(MasterTable);
@@ -263,3 +272,15 @@ void UAsceDataTableSubsystem::DumpTables() const
 		}
 	}
 }
+
+static FAutoConsoleCommand GRefreshDataTablesCmd(
+	TEXT("Asce.DataTables.Refresh"),
+	TEXT("重扫 UAsceDataTableSettings，重建 别名/行结构 → MDT 映射（并 dump）"),
+	FConsoleCommandDelegate::CreateLambda([]()
+	{
+		if (UAsceDataTableSubsystem* Sub = UAsceDataTableSubsystem::Get())
+		{
+			Sub->RefreshTablesFromSettings();
+			Sub->DumpTables();
+		}
+	}));

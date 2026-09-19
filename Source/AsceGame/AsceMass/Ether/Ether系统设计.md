@@ -4,7 +4,7 @@
 > 借鉴数字电路（组合/时序、时钟沿）与红石（tick、反馈）。
 >
 > **v3 变更（架构）**：把数据拆成**三层** ——
-> ① **配置（共享）**：端口类型走**数据表**（`FAsceEtherPortTypeRow`），建筑布局仍是蓝图类 CDO（`UAsceEtherBuildingConfig`）；
+> ① **配置（共享）**：端口类型走**数据表**（`FAsceEtherPortTypeRow`），建筑布局走**实体定义表**（`FAsceEntityDefRow.Def = FAsceEtherBuildingDef`，`UAsceEntityDefLibrary` 查）；
 > ② **实例（每建筑）**：Subsystem 里的 `FNode` + 端口实例数组 + 内部布线（玩家可改）；
 > ③ **行为（可继承）**：`UAsceEtherProcessCore` 子类（`bInstance` 决定是否带状态；`OnInit/Tick` 自己处理自己的端口）。
 > 建筑用 **slot（`FAsceEtherPortSlot`）** 声明"能挂端口的位置"，运行时 slot → 端口实例。
@@ -14,7 +14,7 @@
 > **v3.1 变更（数据表）**：**端口类型改成数据表** —— 全局查表系统（`UAsceDataTableSubsystem` + `UAsceDataTableSettings`）只查 **MDT**（`UCompositeDataTable`），
 > 内容由各 GameFeature 用 `UGameFeatureAction_AddDataTableSources` 把 **SDT** 挂上去；端口类型表行结构 = `FAsceEtherPortTypeRow`
 > （`Op` / `ThroughputPerTick` / `LinkRangeCells`，行名 = 端口类型 id）。于是 `UAsceEtherPortConfig`（蓝图类）被删除，
-> slot / 端口实例里改成 `FName PortTypeId`（行名），建图时查表解析并缓存 `Op/Throughput/LinkRange`（运行时零查表）。
+> slot / 端口实例里改成行名引用（slot 用 `FAsceRowNameWrapper PortType`：只存行名、编辑器按 meta 出下拉；端口实例内部仍用 `FName PortTypeId` 存行名），建图时查表解析并缓存 `Op/Throughput/LinkRange`（运行时零查表）。
 >
 > 语义沿革：`SignalType` 为 **`int16`**（最高位 = 互补标志）；**Empty ≠ 逻辑 0**；`0 号 ether = 能量`；
 > 合流 = 同族异号**湮灭** / 异族**堵死**（单入边普通节点为**符号直接翻转**）；分流 `SplitMode{Ordered,Balanced}` + **相对扫描序**。
@@ -34,11 +34,11 @@
 | 维度 Dimension | 端口占用的逻辑层；线身份 = `(格, 方向, 维度)` ⇒ 同一格同一方向最多 8 条线。 |
 | 方向 Direction | `Left / Up / Right / Down`；**扫描序** = 以源端口为基准、从它**左手边**起顺时针（§2.9）。 |
 | **端口类型 PortType** | 端口类型表的**行名**（行结构 `FAsceEtherPortTypeRow`：`Op` / `ThroughputPerTick` / `LinkRangeCells`）。**玩家可换**（换行名 = 换端口行为）。 |
-| **槽位 Slot** | `FAsceEtherPortSlot`：`Direction / Offset / Dimension / PortTypeId / SplitMode`（建筑的**默认端口**声明）。 |
+| **槽位 Slot** | `FAsceEtherPortSlot`：`Direction / Offset / Dimension / PortType`（`FAsceRowNameWrapper`，编辑器下拉选行）/ `SplitMode`（建筑的**默认端口**声明）。 |
 | **端口实例 PortData** | 运行时端口：型号引用 + 实例配置（维度/方向/偏移/分流/**传输角色**）+ 缓冲 + 后继。 |
 | **传输角色 TransportType** | `Input / Output / Any`。由 **core 在 `OnInit` 设定**（玩家不可改）；**只在建图定向用一次**（§2.4）。 |
 | **行为 Core** | `UAsceEtherProcessCore` 子类：`bInstance / OnInit / Tick`；器件功能都写在 core 里。 |
-| **建筑配置 BuildingConfig** | `UAsceEtherBuildingConfig` 蓝图子类：`DeviceType / ProcessCoreClass / 尺寸 / 支持维度 / PortSlots / 默认内布线`。 |
+| **建筑类型定义 BuildingDef** | 实体定义表行 `FAsceEntityDefRow.Def`：`FAsceEtherBuildingDef`（`DeviceType / ProcessCoreClass / 尺寸·遮挡 / 支持维度 / PortSlots / 默认内布线 / CoreClass`）。 |
 
 ---
 
@@ -71,9 +71,9 @@
   - `Annihilator`（湮灭发电机）：`+X` + `−X` ⇒ `abs(X)` 份 `0 号`（能量的唯一来源）。
 
 ### 1.3 建筑（容器）
-- **配置** `UAsceEtherBuildingConfig`（共享）：`DeviceType`（组合/时序）、`ProcessCoreClass`、`SizeX/SizeY`、`SupportedDimCount`、`PortSlots`、`DefaultInternalLinks`。
-- **实例**（Subsystem）：`FNode`（身份/配置引用/端口区间/内部布线/`CachedDirection`）+ 端口实例数组。
-- 标记 fragment `FEtherBuildingFragment { FName BuildingDefId; }`（注册/注销锚点 + 身份）；配置由 `BuildingDefId -> TSubclassOf<UAsceEtherBuildingConfig>` 注册表反查。
+- **类型定义**（共享；实体定义表）：`FAsceEtherBuildingDef`（`DeviceType`（组合/时序）、`ProcessCoreClass`、`SizeX/SizeY`/`OcclusionHeightCm`（基类）、`SupportedDimCount`、`PortSlots`、`DefaultInternalLinks`）。
+- **实例**（Subsystem）：`FNode`（身份/`DefData`（表行拷贝）/端口区间/内部布线/`CachedDirection`）+ 端口实例数组。
+- 标记 fragment `FEtherBuildingFragment { FName BuildingDefId; }`（注册/注销锚点 + 身份；= 定义表行名）+ `FAsceUnitDefFragment{ uint16 UniqueTypeId }`（= 行名数字）。
 
 ---
 
@@ -151,15 +151,17 @@ struct FAsceEtherPortSlot                             // 建筑的"默认端口"
 USTRUCT(BlueprintType)
 struct FAsceEtherLinkDef { int32 FromPort = 0; int32 ToPort = 0; };   // 内部布线（建筑内端口下标；不允许自连）
 
-UCLASS(Abstract, BlueprintType, Blueprintable)
-class UAsceEtherBuildingConfig : public UObject       // 建筑布局
+// 实体定义表行（`AsceEntityDefRow`；行名 = 数字 ID）：UI 列 + 类型专属配置
+USTRUCT(BlueprintType)
+struct FAsceEtherBuildingDef : public FAsceEntityDefBase      // 建筑类型定义（表行 Def）
 {
     EAsceEtherDeviceType DeviceType = Combinational;  // 组合（传输器）/ 时序（器件）
-    TSubclassOf<UAsceEtherProcessCore> ProcessCoreClass;
-    int32 SizeX = 1, SizeY = 1;
+    TSoftClassPtr<UAsceEtherProcessCore> ProcessCoreClass;
     uint8 SupportedDimCount = 1;
     TArray<FAsceEtherPortSlot> PortSlots;             // 端口槽位（数量不写死 = 端口数）
     TArray<FAsceEtherLinkDef> DefaultInternalLinks;   // 内部布线默认值（实例可改）
+    TSoftClassPtr<UAsceBuildingCore> CoreClass;       // 建筑行为 core（UI/功能入口）
+    // SizeX/SizeY/OcclusionHeightCm 在本结构（建筑专有）
 };
 ```
 
@@ -203,7 +205,8 @@ struct FNode
     FMassEntityHandle Entity;
     FName BuildingId;
     bool  bAlive;
-    UAsceEtherBuildingConfig* Config;       // CDO（注册表 UPROPERTY 保活）
+    FAsceEtherBuildingDef DefData;          // 表行拷贝（SDT 挂卸会重建行表，不存行指针）
+    bool  bHasDefData;
     bool  bDevice;                          // DeviceType == Sequential
     uint8 CachedDirection;                  // 建筑朝向（绕中心顺时针 90° 次数；从实体 Transform 读）
     FAsceGridFootprintFragment CachedFootprint;  // 上次建端口时的 footprint（搬家/拆除时"旧位置"重扫要用；实体销毁后取不到 fragment）
@@ -230,7 +233,6 @@ struct FAsceEtherPortData
 struct FAsceEtherSegment { TArray<int32> Order; uint32 Stamp; bool bActive; };
 
 // Subsystem 其它成员
-UPROPERTY(Transient) TMap<FName, TObjectPtr<UAsceEtherBuildingConfig>> BuildingConfigRegistry;  // 保活
 TArray<FAsceEtherPortData> Ports; TArray<int32> FreePortIds;          // 端口池
 TArray<FAsceEtherSegment> Segments; TArray<int32> FreeSegIds;         // 段池
 TArray<int32> PortSegId;                       // portId -> segId
@@ -346,7 +348,7 @@ USTRUCT() struct FEtherBuildingFragment : public FMassFragment { FName BuildingD
 | 项 | v2 | v3 |
 |---|---|---|
 | 端口"类型" | `UAsceEtherPortType`（DataAsset，只有吞吐） | 数据表行 `FAsceEtherPortTypeRow`（`Op` + 吞吐 + 发射距离） |
-| 建筑配置 | `UAsceEtherBuildingData`（DataAsset） | `UAsceEtherBuildingConfig`（蓝图类：布局 + slots） |
+| 建筑类型定义 | `UAsceEtherBuildingData`（DataAsset） | 实体定义表行 `FAsceEntityDefRow.Def = FAsceEtherBuildingDef`（`UAsceEntityDefLibrary` 查） |
 | 端口摆放 | `FAsceEtherPortDef`（格偏移 + 方向 + 维度） | `FAsceEtherPortSlot`（方向 + 边上第几格 + 维度 + 型号） |
 | 器件行为 | `EAsceEtherDeviceOp` + Subsystem 里的 switch | `UAsceEtherProcessCore` 子类（`OnInit/Tick`） |
 | 器件状态 | `FEtherDeviceStateFragment` | **core 实例成员**（`bInstance = true`） |
@@ -361,9 +363,9 @@ USTRUCT() struct FEtherBuildingFragment : public FMassFragment { FName BuildingD
 2. ✅ **步骤⑥（本次，v3 架构）**：Config（共享蓝图类）/ Runtime（Subsystem 实例）/ Core（行为 + 状态）三层拆分；
    建筑用 **slot** 声明端口；`TransportType` 取代 `bIsInput` 与角色表；8 个 core 取代 `DeviceOp` switch；
    删除 `UAsceEtherBuildingData / UAsceEtherPortType / FAsceEtherPortDef / EAsceEtherDeviceOp / FEtherDeviceStateFragment`。
-   - ⚠️ **资产侧需要重建**：`UAsceEtherBuildingConfig` 的蓝图子类（`ProcessCoreClass` 选对应 core、按 §3.2 摆 slot）；**端口类型改成数据表**（建 `DT_EtherPortTypes` MDT + 各 GameFeature 的 SDT，见步骤⑦）。
-3. ✅ **步骤⑦（本次）**：**全局查表系统**（`AsceMass/Data/`）—— `UAsceDataTableSettings`（别名 = 变量名 → MDT）+ `UAsceDataTableSubsystem`（GameInstance 子系统；按**行结构类型**建 `RowStruct → MDT` 映射；`GetDefinition<T>/GetDefinitions<T>/GetDefinitionMap<T>` 静态模板；蓝图 `BP_GetMasterTable` + `CustomThunk` 泛型 `GetDefinitionByStruct`；`AddSourceTable/RemoveSourceTable` 挂卸 SDT）+ `UGameFeatureAction_AddDataTableSources`（GameFeature 激活挂、卸载摘；`AssetBundles=Server`；`IsDataValid` 校验）。
-   **端口类型表** `FAsceEtherPortTypeRow` 是第一个使用者；`UAsceEtherPortConfig` 蓝图类已删除，slot/端口实例改用 `FName PortTypeId`。
+   - ⚠️ **资产侧需要重建**：建筑类型改**实体定义表**（`AsceEntityDefRow`：`Def = FAsceEtherBuildingDef`，`ProcessCoreClass` 选对应 core、按 §3.2 摆 slot）；**端口类型改成数据表**（建 `DT_EtherPortTypes` MDT + 各 GameFeature 的 SDT，见步骤⑦）。
+3. ✅ **步骤⑦（本次）**：**全局查表系统**（现位于 `DataTableSystem/`）—— `UAsceDataTableSettings`（别名 = 变量名 → MDT）+ `UAsceDataTableSubsystem`（**`UEngineSubsystem`**：编辑器/运行时都存在，编辑器工具也能查表；按**行结构类型**建 `RowStruct → MDT` 映射；`GetDefinition<T>/GetDefinitions<T>/GetDefinitionMap<T>` 静态模板；蓝图 `BP_GetMasterTable` + `CustomThunk` 泛型 `GetDefinitionByStruct`；`AddSourceTable/RemoveSourceTable` 挂卸 SDT）+ `UGameFeatureAction_AddDataTableSources`（GameFeature 激活挂、卸载摘；**编辑器激活同样生效**；`AssetBundles=Server`；`IsDataValid` 校验）。
+   **端口类型表** `FAsceEtherPortTypeRow` 是第一个使用者；`UAsceEtherPortConfig` 蓝图类已删除，slot 改用 `FAsceRowNameWrapper PortType`（编辑器 `FAsceRowNameWrapperCustomization` 按 `meta=(DataTableBinding="AsceEtherPortTypeRow:字段...")` 出行名下拉），端口实例内部仍用 `FName PortTypeId`。
    - ⏳ 待做：**脚本层(AS)接入**（模板/`CustomThunk` 脚本都用不了 ⇒ 需要每表手写的具体类型 `UFUNCTION`，等环境完整再做）；表内容热更后不主动重建图（任何结构变化会自愈）。
 4. ✅ **步骤⑧（本次）**：**三个 pass 并行**（`ParallelFor`；数量 < 8 退回串行）—— 基础设施：段 `Stamp` 原子交换去重 + 活跃段**线程本地分片**（主线程 `MergeActiveShards` 合并）+ `DeviceNodes` 缓存（Pass 1/2 只遍历器件）+ 建图期并行前提断言（外部入边 ≤1 / 内布线同建筑）+ core 并行契约（§5 已同步）。
 5. ✅ **步骤⑨（本次）**：**结构性修改改走命令队列**（`AsceEtherGraphCommand.h`：7 条设施无关命令，`FInstancedStruct` 队列），tick 开头 drain 应用；注册表改 `UPROPERTY TObjectPtr`（删掉 keepalive）、实例快照 key 改成**端口相对几何身份**、`LinkTargets` 只在 >1 时排序。未局部化的命令（`PatchNode` 摆放、`PatchPort` 部分字段）暂落 `FullRebuild` 兜底。
@@ -414,10 +416,16 @@ USTRUCT() struct FEtherBuildingFragment : public FMassFragment { FName BuildingD
 13. ✅ **步骤⑰（本次，世界初始化 / loading 依赖）**：
     - 世界数据初始化从 `AAsceWorldMapReplicatorActor::BeginPlay` 收到 `UAsceSimulationSubsystem`：Actor 只 `RegisterWorldDataSource(this)`（**注册即初始化**，不依赖 Tick —— loading 期间世界可能不 tick）；
     - 顺序固定为一次 `Source->InitializeMapDimensions()`：世界数据（尺寸/代价场/烘焙阻挡/墙簇）→ 路径地图注册 → 视野高度场 → `ConstructGrid` → `ConstructBuildingsGrid`；调度器只管"什么时候调"，Actor 仍是实现者；
-    - 调度器两道门控（`Tick` 开头，先于任何阶段）：① `!bWorldInitialized` ⇒ 直接 `TryRunWorldInit()` 后返回（fail-closed：关卡里没有 `AAsceWorldMapReplicatorActor` 就永远不启动，>2s 报一次 Error；顺带 loading 界面也不会消失）；② `!bLoadingFinished` ⇒ 返回（默认 true；完整工程在 `UAsceExperienceManagerComponent` 走到 `Loaded` 时调 `NotifyLoadingFinished()`）；
+    - 调度器两道门控（`Tick` 开头，先于任何阶段）：① `!bWorldInitialized` ⇒ 直接 `TryRunWorldInit()` 后返回（fail-closed：关卡里没有 `AAsceWorldMapReplicatorActor` 就永远不启动，>2s 报一次 Error；顺带 loading 界面也不会消失）；② `!bLoadingFinished` ⇒ 返回（默认 false；`Tick` 每帧复查 GameState 上的 `UAsceExperienceManagerComponent`：无组件的测试地图直接放行，组件存在则等 `IsExperienceLoaded()`；完整工程另在 `UAsceExperienceManagerComponent` 走到 `Loaded` 时调 `NotifyLoadingFinished()` 显式放行）；
     - loading 侧（只在 AsceGame）：`ShouldShowLoadingScreen()` 追加 `!Sim->IsWorldInitialized()` ⇒ **世界数据初始化完成之前 loading 界面不消失**；
     - 客户端：地图 Actor 也在关卡里（本地维度照旧 init ✔）；costfield **内容**随后由 FastArray 复制，墙簇在复制回调里重建，不影响 init 完成判定。
-14. ⏳ **待做**：`RefreshData` 仍是整表刷新走全量；局部更新的单元/回归测试。
+14. ✅ **步骤⑱（本次，建筑类型改实体定义表）**：
+    - 新表 `AsceEntityDefRow`（`FAsceEntityDefRow`：`FInstancedStruct Def` + UI 列 DisplayName/Description/HeadIcon；行名 = 数字 ID 0..65535）；基类 `FAsceEntityDefBase`，Ether 专属 `FAsceEtherBuildingDef`（原 `UAsceEtherBuildingConfig` 字段全迁入，`ProcessCoreClass` 改 `TSoftClassPtr`）；
+    - 查询/校验统一入口 `UAsceEntityDefLibrary`（`GetEntityDefRow` / `GetEtherBuildingDef` / `ValidateEntityDefTable` + `ParseEntityDefId`）；控制台 `Asce.ValidateEntityDef`；
+    - 实体身份：`FAsceUnitDefFragment{ uint16 UniqueTypeId }`（= 行名数字；trait/建筑创建时写入，零查表）；配置（trait/摆放 Actor/调试器）改用 `FAsceRowNameWrapper`（编辑器按 `meta=(DataTableBinding=...)` 出行名下拉）；
+    - Ether：删 `RegisterBuildingConfig`/`BuildingConfigRegistry`/`FindBuildingConfig`/`GetConfigCDO`；`FNode` 缓存 `FAsceEtherBuildingDef DefData`（表行拷贝）；Add/PatchNode 时按 `BuildingId` 查表；
+    - 删除 `UAsceEtherBuildingConfig`；`FAsceEtherPortSlot`/`FAsceEtherLinkDef` 移到 `AsceMass/Ether/AsceEtherBuildingDef.h`。
+15. ⏳ **待做**：`RefreshData` 仍是整表刷新走全量；局部更新的单元/回归测试。
 
 ---
 

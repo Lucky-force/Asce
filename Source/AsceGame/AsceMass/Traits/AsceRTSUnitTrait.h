@@ -4,12 +4,13 @@
 #include "AsceRTSUnitTrait.generated.h"
 
 /**
- * "单位"类Entity（会动、会打、可能会死）的Fragment组装Trait。
+ * "单位"专有 Trait（会动 / 会打 / 有视野；**建筑不要挂这个**）。
  *
- * 按"是否会动"分Fragment组合，不用继承——通用属性(血量/阵营)始终挂，
- * 移动/攻击/交互能力通过下面的bCanXxx开关按需勾选，避免每个Entity都塞满不需要的Fragment。
- * 建筑类Entity（不会动，只挂FAsceGridFootprintFragment）不用这个Trait，另建
- * UAsceRTSBuildingTrait（下一轮再做）。
+ * - 公共身份/阵营/血量/NetID 在 `UAsceRTSEntityTrait`（同一个 MassEntityConfig 里两个一起挂）；
+ * - 本 Trait 只负责单位专有结构：移动 fragment + 每实体调参 / 视野 / 订单 / 攻击·交互能力开关；
+ * - 下面的数值只是**默认值**，生成时由 `UAsceEntityFactory` 按实体定义表（`FAsceRTSUnitDef`）覆盖。
+ *
+ * 移动/攻击/交互能力通过开关决定是否挂对应 fragment（结构差异），避免每个单位塞满不需要的 fragment。
  */
 UCLASS(BlueprintType, meta = (DisplayName = "Asce RTS Unit"))
 class UAsceRTSUnitTrait : public UMassEntityTraitBase
@@ -17,7 +18,7 @@ class UAsceRTSUnitTrait : public UMassEntityTraitBase
 	GENERATED_BODY()
 
 public:
-	// ── 移动 ──
+	// ── 移动默认值 ──
 	UPROPERTY(EditAnywhere, Category = "Movement")
 	float MaxSpeed = 300.f;
 
@@ -32,17 +33,10 @@ public:
 
 	UPROPERTY(EditAnywhere, Category = "Movement")
 	float Height = 150.f;
-	
+
+	// ── 视野默认值 ──
 	UPROPERTY(EditAnywhere, Category = "Vision")
 	int32 SightRadius = 20;
-
-	// ── 通用属性 ──
-	UPROPERTY(EditAnywhere, Category = "Attributes")
-	float MaxHealth = 100.f;
-
-	// 打包的阵营键 (index<<16 | id)，写入 FAsceTeamFragment.TeamKey；默认 0 = 单队伍冒烟
-	UPROPERTY(EditAnywhere, Category = "Attributes")
-	int32 TeamConfigKey = 0;
 
 	// ── 能力开关：按需勾选，决定这个单位挂哪些命令类Fragment ──
 	UPROPERTY(EditAnywhere, Category = "Capabilities")

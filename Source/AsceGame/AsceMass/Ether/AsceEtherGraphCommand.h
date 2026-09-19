@@ -4,7 +4,7 @@
 #include "CoreMinimal.h"
 #include "MassEntityHandle.h"
 #include "AsceMass/Ether/AsceEtherTypes.h"
-#include "AsceMass/Ether/AsceEtherBuildingConfig.h"
+#include "AsceMass/Ether/AsceEtherBuildingDef.h"
 #include "AsceEtherGraphCommand.generated.h"
 
 /**

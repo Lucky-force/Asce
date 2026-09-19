@@ -4,18 +4,18 @@
 #include "GameFramework/Actor.h"
 #include "MassArchetypeTypes.h"
 #include "MassEntityHandle.h"
+#include "DataTableSystem/AsceRowNameWrapper.h"
 #include "AsceEtherDebugger.generated.h"
 
-class UAsceEtherBuildingConfig;
-
-/** 调试放置：建筑配置类 + 逻辑格坐标（与 footprint/流场同一格网，GRID_SIZE=100cm） */
+/** 调试放置：建筑类型（`AsceEntityDefRow` 行名 = 数字 ID）+ 逻辑格坐标（与 footprint/流场同一格网，GRID_SIZE=100cm） */
 USTRUCT()
 struct FAsceEtherDebugPlacement
 {
 	GENERATED_BODY()
 
-	UPROPERTY(EditAnywhere, Category = "Ether")
-	TSubclassOf<UAsceEtherBuildingConfig> ConfigClass;
+	UPROPERTY(EditAnywhere, Category = "Ether",
+		meta = (DataTableBinding = "AsceEntityDefRow:DisplayName,SizeX,SizeY"))
+	FAsceRowNameWrapper BuildingDef;
 
 	UPROPERTY(EditAnywhere, Category = "Ether")
 	FIntPoint Cell = FIntPoint(0, 0);

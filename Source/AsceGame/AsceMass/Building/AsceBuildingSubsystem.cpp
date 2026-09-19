@@ -2,7 +2,9 @@
 #include "AsceBuildingSubsystem.h"
 
 #include "AsceBuildingPlacementActor.h"
-#include "AsceMass/Ether/AsceEtherBuildingConfig.h"
+#include "AsceMass/Building/AsceBuildingDef.h"
+#include "AsceMass/Data/AsceEntityDefLibrary.h"
+#include "AsceMass/Ether/AsceEtherBuildingDef.h"
 #include "AsceMass/Ether/AsceEtherFragments.h"
 #include "AsceMass/Ether/AsceEtherNetworkSubsystem.h"
 #include "AsceMass/FlowField/AsceFlowFieldCores.h"
@@ -12,8 +14,12 @@
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "MassCommonFragments.h"
+#include "MassEntityConfigAsset.h"
 #include "MassEntityManager.h"
 #include "MassEntitySubsystem.h"
+#include "MassEntityTemplate.h"
+#include "MassEntityView.h"
+#include "MassSpawnerSubsystem.h"
 #include "StructUtils/InstancedStruct.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AsceBuildingSubsystem)
@@ -54,6 +60,14 @@ bool UAsceBuildingSubsystem::ShouldCreateSubsystem(UObject* Outer) const
 
 void UAsceBuildingSubsystem::Deinitialize()
 {
+	for (FAsceBuiltBuilding& Record : Buildings)
+	{
+		if (Record.Core)
+		{
+			Record.Core->Deinitialize();
+			Record.Core = nullptr;
+		}
+	}
 	Buildings.Reset();
 	PendingPlacements.Reset();
 	bBootstrapped = false;
@@ -225,23 +239,66 @@ bool UAsceBuildingSubsystem::DemolishBuilding(FMassEntityHandle Building, FStrin
 		return false;
 	}
 	MassSub->GetMutableEntityManager().DestroyEntity(Building);
+	if (Buildings[Index].Core)
+	{
+		Buildings[Index].Core->Deinitialize();
+		Buildings[Index].Core = nullptr;
+	}
 	Buildings.RemoveAt(Index);
 	return true;
+}
+
+// ── 建筑行为 core ──
+
+UAsceBuildingCore* UAsceBuildingSubsystem::GetBuildingCore(FMassEntityHandle Building) const
+{
+	const int32 Index = Buildings.IndexOfByPredicate(
+		[Building](const FAsceBuiltBuilding& Record) { return Record.Entity == Building; });
+	return (Index != INDEX_NONE) ? Buildings[Index].Core : nullptr;
+}
+
+void UAsceBuildingSubsystem::CollectBuildingActions(FMassEntityHandle Building, TArray<FAsceBuildingAction>& OutActions) const
+{
+	if (const UAsceBuildingCore* Core = GetBuildingCore(Building))
+	{
+		Core->CollectActions(OutActions);
+	}
+}
+
+bool UAsceBuildingSubsystem::ExecuteBuildingAction(FMassEntityHandle Building, FName ActionId, FString* OutError)
+{
+	UAsceBuildingCore* Core = GetBuildingCore(Building);
+	if (!Core)
+	{
+		SetError(OutError, TEXT("该建筑没有行为 core"));
+		return false;
+	}
+	Core->ExecuteAction(ActionId);
+	return true;
+}
+
+void UAsceBuildingSubsystem::SetBuildingSelected(FMassEntityHandle Building, bool bSelected)
+{
+	if (UAsceBuildingCore* Core = GetBuildingCore(Building))
+	{
+		Core->SetSelected(bSelected);
+	}
 }
 
 // ── 校验 / 创建 ──
 
 bool UAsceBuildingSubsystem::ValidatePlacement(const FAsceBuildingPlacement& Placement, FString* OutError, const FAsceTickContext* Ctx) const
 {
-	if (!Placement.BuildingConfig)
+	if (Placement.BuildingDefId.IsNone())
 	{
-		SetError(OutError, TEXT("未指定 BuildingConfig"));
+		SetError(OutError, TEXT("未指定建筑类型 id（BuildingDefId）"));
 		return false;
 	}
-	const UAsceEtherBuildingConfig* Cfg = Placement.BuildingConfig.GetDefaultObject();
-	if (!Cfg)
+	FAsceBuildingDefBase Def;
+	if (!UAsceEntityDefLibrary::GetBuildingDefByName(Placement.BuildingDefId, Def))
 	{
-		SetError(OutError, TEXT("BuildingConfig 的 CDO 取不到"));
+		SetError(OutError, FString::Printf(TEXT("建筑类型 id '%s' 无效（不在实体定义表 / 不是建筑类型）"),
+			*Placement.BuildingDefId.ToString()));
 		return false;
 	}
 
@@ -279,68 +336,111 @@ FMassEntityHandle UAsceBuildingSubsystem::CreateBuildingEntity(const FAsceBuildi
 	UMassEntitySubsystem* MassSub = (Ctx && Ctx->Mass)
 		? Ctx->Mass
 		: (World ? World->GetSubsystem<UMassEntitySubsystem>() : nullptr);
-	const UAsceEtherBuildingConfig* Cfg = Placement.BuildingConfig ? Placement.BuildingConfig.GetDefaultObject() : nullptr;
-	if (!MassSub || !Cfg)
+	if (!MassSub || !World)
 	{
 		return FMassEntityHandle();
 	}
 
-	// Ether 登记（Trait 路径由 Trait 自己登记；本路径是"实例表创建"，必须手动登记）
-	const FName DefId = Placement.BuildingDefId.IsNone()
-		? Placement.BuildingConfig->GetFName()
-		: Placement.BuildingDefId;
-	if (UAsceEtherNetworkSubsystem* Net = UAsceEtherNetworkSubsystem::Get(this))
+	// 定义行 = 建筑类型数据（建筑通用 + 可能的种类专属）+ 生成模板（EntityTemplate）
+	FAsceEntityDefRow DefRow;
+	if (!UAsceEntityDefLibrary::GetEntityDefRowByName(Placement.BuildingDefId, DefRow))
 	{
-		Net->RegisterBuildingConfig(DefId, Placement.BuildingConfig);
+		return FMassEntityHandle();
+	}
+	const FAsceBuildingDefBase* Def = DefRow.Def.GetPtr<FAsceBuildingDefBase>();
+	if (!Def)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Building] 行 %s 的 Def 不是建筑类型（FAsceBuildingDefBase 子类）"), *Placement.BuildingDefId.ToString());
+		return FMassEntityHandle();
+	}
+	// 只有 Ether 建筑才挂 FEtherBuildingFragment（以后加别的建筑种类不用改这里）
+	const bool bEtherBuilding = (DefRow.Def.GetPtr<FAsceEtherBuildingDef>() != nullptr);
+
+	UMassEntityConfigAsset* Config = DefRow.EntityTemplate.LoadSynchronous();
+	UMassSpawnerSubsystem* SpawnerSubsystem = World->GetSubsystem<UMassSpawnerSubsystem>();
+	if (!Config || !SpawnerSubsystem)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Building] 行 %s 没配 EntityTemplate（或 MassSpawnerSubsystem 不可用）"),
+			*Placement.BuildingDefId.ToString());
+		return FMassEntityHandle();
 	}
 
-	// 实体位置 = footprint 几何中心（Z 暂为 0；需要贴地时再接高度场）；朝向 = Rotation（供后续表现/Ether 定向用）
+	const FMassEntityTemplate& EntityTemplate = Config->GetOrCreateEntityTemplate(*World);
+	if (!EntityTemplate.IsValid())
+	{
+		return FMassEntityHandle();
+	}
+
+	// **走模板生成**（和单位同一条路）：结构（fragment 组合 / 表现 trait）由模板决定
+	TArray<FMassEntityHandle> SpawnedHandles;
+	SpawnerSubsystem->SpawnEntities(EntityTemplate, 1, SpawnedHandles);
+	if (SpawnedHandles.Num() == 0 || !SpawnedHandles[0].IsValid())
+	{
+		return FMassEntityHandle();
+	}
+	const FMassEntityHandle Entity = SpawnedHandles[0];
+	FMassEntityManager& EntityManager = MassSub->GetMutableEntityManager();
+
+	// 位置 = footprint 几何中心；朝向 = Rotation（Ether 定向/表现都用）
 	const FVector2D CenterCell = Placement.GetCenterCell();
 	const FVector CenterWorld((CenterCell.X + 0.5) * GRID_SIZE, (CenterCell.Y + 0.5) * GRID_SIZE, 0.f);
+	if (FTransformFragment* Transform = EntityManager.GetFragmentDataPtr<FTransformFragment>(Entity))
+	{
+		Transform->SetTransform(FTransform(FQuat(FRotator(0.f, Placement.Rotation * 90.f, 0.f)), CenterWorld));
+	}
 
-	// footprint 写**旋转后的最终 AABB**（与 costfield/视野/建筑层同一口径）
+	// 类型 id（覆盖模板里 trait 的默认值；**必须在 Ether 标记添加前写**，observer 靠它推 AddNode）
+	const FName DefId = Placement.BuildingDefId;
+	uint16 DefNumericId = 0;
+	UAsceEntityDefLibrary::ParseEntityDefId(DefId, DefNumericId);
+	if (FAsceUnitDefFragment* UnitDef = EntityManager.GetFragmentDataPtr<FAsceUnitDefFragment>(Entity))
+	{
+		UnitDef->UniqueTypeId = DefNumericId;
+	}
+
+	// 阵营（归属由摆放数据决定）
+	if (FAsceTeamFragment* Team = EntityManager.GetFragmentDataPtr<FAsceTeamFragment>(Entity))
+	{
+		Team->TeamKey = Placement.TeamKey;
+	}
+
+	// footprint（+ Ether 标记）：**带真实值后加** ⇒ Add observer 在正确值上触发
+	// （costfield/视野按真实占格写；Ether AddNode 用上面写好的类型 id）
 	FIntPoint FootMin, FootMax;
 	Placement.GetOccupiedBounds(FootMin, FootMax);
-
-	// 初值一次给全：Mass 的 Add 观察者在创建时立即执行，走裸 Archetype 会让观察者读到空值
-	TArray<FInstancedStruct> Fragments;
+	TArray<FInstancedStruct> AddFragments;
 	{
-		FTransformFragment& Transform = Fragments.Add_GetRef(FInstancedStruct::Make<FTransformFragment>())
-			.GetMutable<FTransformFragment>();
-		Transform.GetMutableTransform().SetTranslation(CenterWorld);
-		Transform.GetMutableTransform().SetRotation(FQuat(FRotator(0.f, Placement.Rotation * 90.f, 0.f)));
-	}
-	{
-		FAsceGridFootprintFragment& Foot = Fragments.Add_GetRef(FInstancedStruct::Make<FAsceGridFootprintFragment>())
+		FAsceGridFootprintFragment& Foot = AddFragments.Add_GetRef(FInstancedStruct::Make<FAsceGridFootprintFragment>())
 			.GetMutable<FAsceGridFootprintFragment>();
 		Foot.OriginGridLocation = FootMin;
 		Foot.SizeX = FootMax.X - FootMin.X + 1;
 		Foot.SizeY = FootMax.Y - FootMin.Y + 1;
-		Foot.OcclusionHeightCm = Cfg->OcclusionHeightCm;
+		Foot.OcclusionHeightCm = Def->OcclusionHeightCm;
 	}
+	if (bEtherBuilding)
 	{
-		FEtherBuildingFragment& Ether = Fragments.Add_GetRef(FInstancedStruct::Make<FEtherBuildingFragment>())
-			.GetMutable<FEtherBuildingFragment>();
-		Ether.BuildingDefId = DefId;
+		AddFragments.Add(FInstancedStruct::Make<FEtherBuildingFragment>());
 	}
-	{
-		FAsceTeamFragment& Team = Fragments.Add_GetRef(FInstancedStruct::Make<FAsceTeamFragment>())
-			.GetMutable<FAsceTeamFragment>();
-		Team.TeamKey = Placement.TeamKey;
-	}
+	EntityManager.AddFragmentInstanceListToEntity(Entity, AddFragments);
 
-	FMassEntityManager& EntityManager = MassSub->GetMutableEntityManager();
-	const FMassEntityHandle Entity = EntityManager.CreateEntity(Fragments);
-	if (!Entity.IsValid())
+	// 保险：模板没挂 `UAsceRTSBuildingTrait` 时补 tag（正常建筑模板应包含）
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[Building] CreateEntity 失败（cfg=%s）"), *DefId.ToString());
-		return Entity;
+		const FMassEntityView View(EntityManager, Entity);
+		if (!View.HasTag<FAsceBuildingTag>())
+		{
+			EntityManager.AddTagToEntity(Entity, FAsceBuildingTag::StaticStruct());
+		}
 	}
-	// tag 不能在"实例表创建"路径上一次带上（那段 API 只吃 fragment）
-	EntityManager.AddTagToEntity(Entity, FAsceBuildingTag::StaticStruct());
 
 	FAsceBuiltBuilding& Record = Buildings.AddDefaulted_GetRef();
 	Record.Entity = Entity;
 	Record.Placement = Placement;
+
+	// 建筑行为 core（可选；子系统持有，随建筑生灭）
+	if (UClass* CoreClass = Def->CoreClass.LoadSynchronous())
+	{
+		Record.Core = NewObject<UAsceBuildingCore>(this, CoreClass);
+		Record.Core->Initialize(Entity);
+	}
 	return Entity;
 }

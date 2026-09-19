@@ -5,8 +5,8 @@
 #include "MassEntityHandle.h"   // FMassEntityHandle（5.7 起 MassEntityTypes.h 不再带它）
 #include "AsceBuildingTypes.generated.h"
 
-class UAsceEtherBuildingConfig;
 class AAsceBuildingPlacementActor;
+class UAsceBuildingCore;
 
 /**
  * 一次"放置"的完整描述：摆放 Actor / 玩家建造请求 / 存档 都用它。
@@ -29,11 +29,7 @@ struct FAsceBuildingPlacement
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Building", meta = (ClampMin = "0", ClampMax = "3"))
 	int32 Rotation = 0;
 
-	/** 建筑配置（蓝图子类 CDO）。 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Building")
-	TSubclassOf<UAsceEtherBuildingConfig> BuildingConfig;
-
-	/** 登记用建筑 id（None ⇒ 取配置类名，与 `UAsceEtherBuildingTrait` 一致）。 */
+	/** 建筑类型定义 id（= `AsceEntityDefRow` 数字行名；`UAsceEntityDefLibrary` 查表）。 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Building")
 	FName BuildingDefId;
 
@@ -41,13 +37,13 @@ struct FAsceBuildingPlacement
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Building")
 	int32 TeamKey = 0;
 
-	/** 由"配置 + 中心格 + 朝向"生成摆放（摆放 Actor / 调试器共用；`Size` 取自配置的 SizeX/SizeY）。 */
-	static FAsceBuildingPlacement MakeFromConfigCenter(
-		TSubclassOf<UAsceEtherBuildingConfig> InConfig,
+	/** 由"类型定义 id + 尺寸 + 中心格 + 朝向"生成摆放（摆放 Actor / 调试器共用）。 */
+	static FAsceBuildingPlacement MakeFromDefCenter(
+		FName InBuildingDefId,
+		const FIntPoint& InSize,
 		const FIntPoint& CenterCell,
 		int32 InRotation = 0,
-		int32 InTeamKey = 0,
-		FName InBuildingDefId = NAME_None);
+		int32 InTeamKey = 0);
 
 	/** footprint 中心（逻辑格坐标，可为半格）。 */
 	FORCEINLINE FVector2D GetCenterCell() const
@@ -97,4 +93,8 @@ struct FAsceBuiltBuilding
 
 	UPROPERTY(Transient)
 	FAsceBuildingPlacement Placement;
+
+	/** 建筑行为 core（由子系统生灭；定义里没配 CoreClass 则为空）。 */
+	UPROPERTY(Transient)
+	TObjectPtr<UAsceBuildingCore> Core;
 };

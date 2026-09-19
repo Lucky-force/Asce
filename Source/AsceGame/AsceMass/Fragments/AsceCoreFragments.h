@@ -81,3 +81,13 @@ struct FAsceMovableUnitTag : public FMassTag
 {
 	GENERATED_BODY()
 };
+
+/** 实体类型定义 id（= `FAsceEntityDefRow` 的数字行名，0..65535；`UAsceEntityDefLibrary` 查表）。
+ *  只存 uint16：跨 session/两端一致，改名不改数（编号只增不复用）。 */
+USTRUCT()
+struct FAsceUnitDefFragment : public FMassFragment
+{
+	GENERATED_BODY()
+
+	uint16 UniqueTypeId = 0;
+};

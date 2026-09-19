@@ -26,9 +26,12 @@ void UGameFeatureAction_AddDataTableSources::OnGameFeatureActivating(FGameFeatur
 	UAsceDataTableSubsystem* Sub = UAsceDataTableSubsystem::Get();
 	if (!Sub)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[DataTable] %s：激活时没有数据表子系统（GameInstance 不存在？）"), *GetName());
+		UE_LOG(LogTemp, Warning, TEXT("[DataTable] %s：激活时取不到数据表子系统（引擎子系统未创建？）"), *GetName());
 		return;
 	}
+
+	// 重扫 Settings（编辑器里新建/改过表路径后不重启也能生效）
+	Sub->RefreshTablesFromSettings();
 
 	TArray<FMountedEntry>& Mounted = MountedByContext.FindOrAdd(Context);
 	for (const FAsceDataTableSourceEntry& Entry : Sources)

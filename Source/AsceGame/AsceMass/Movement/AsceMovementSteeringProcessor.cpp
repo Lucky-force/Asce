@@ -16,6 +16,9 @@
 UAsceMovementSteeringProcessor::UAsceMovementSteeringProcessor()
 	: EntityQuery(*this)
 {
+	// 动态处理器：由 UAsceMassMovementSimulationSubsystem 手动按序跑（调度器是唯一时钟）。
+	// 默认 true 会被 MassSimulation 自动链再跑一份，且绕过世界初始化/loading 门控。
+	bAutoRegisterWithProcessingPhases = false;
 	ExecutionFlags = static_cast<int32>(EProcessorExecutionFlags::AllNetModes);
 	// 挂在Avoidance组：引擎自带的UMassApplyForceProcessor(ApplyForces组)/UMassApplyMovementProcessor
 	// (Movement组)分别声明了ExecuteAfter(Avoidance)/ExecuteAfter(ApplyForces)，
@@ -28,9 +31,9 @@ void UAsceMovementSteeringProcessor::ConfigureQueries(const TSharedRef<FMassEnti
 	EntityQuery.RegisterWithProcessor(*this);
 	EntityQuery.AddRequirement<FAsceMovementSimStateFragment>(EMassFragmentAccess::ReadOnly);
 	EntityQuery.AddRequirement<FAsceMoveOrderFragment>(EMassFragmentAccess::ReadWrite);
+	EntityQuery.AddRequirement<FAsceMovementTuningFragment>(EMassFragmentAccess::ReadOnly);
 	EntityQuery.AddRequirement<FTransformFragment>(EMassFragmentAccess::ReadOnly);
 	EntityQuery.AddRequirement<FMassDesiredMovementFragment>(EMassFragmentAccess::ReadWrite);
-	EntityQuery.AddConstSharedRequirement<FMassMovementParameters>(EMassFragmentPresence::All);
 	EntityQuery.AddSubsystemRequirement<UAscePathFindingSubsystem>(EMassFragmentAccess::ReadWrite);
 }
 
@@ -41,9 +44,9 @@ void UAsceMovementSteeringProcessor::Execute(FMassEntityManager& EntityManager, 
 	{
 		const TConstArrayView<FAsceMovementSimStateFragment> SimStates = Ctx.GetFragmentView<FAsceMovementSimStateFragment>();
 		const TArrayView<FAsceMoveOrderFragment> Orders = Ctx.GetMutableFragmentView<FAsceMoveOrderFragment>();
+		const TConstArrayView<FAsceMovementTuningFragment> Tunings = Ctx.GetFragmentView<FAsceMovementTuningFragment>();
 		const TConstArrayView<FTransformFragment> Transforms = Ctx.GetFragmentView<FTransformFragment>();
 		const TArrayView<FMassDesiredMovementFragment> DesiredMovements = Ctx.GetMutableFragmentView<FMassDesiredMovementFragment>();
-		const FMassMovementParameters& MovementParams = Ctx.GetConstSharedFragment<FMassMovementParameters>();
 
 		UAscePathFindingSubsystem& PathFindingSubsystem = Ctx.GetMutableSubsystemChecked<UAscePathFindingSubsystem>();
 		UPathFinder* PathFinder = PathFindingSubsystem.GetPathFinder();
@@ -107,7 +110,7 @@ void UAsceMovementSteeringProcessor::Execute(FMassEntityManager& EntityManager, 
 				SteeringDirection2D.Normalize();
 			}
 
-			const float DesiredSpeed = FMath::Min(MovementParams.DefaultDesiredSpeed, MovementParams.MaxSpeed);
+			const float DesiredSpeed = FMath::Min(Tunings[i].DefaultDesiredSpeed, Tunings[i].MaxSpeed);
 			DesiredMovement.DesiredVelocity = FVector(SteeringDirection2D.X, SteeringDirection2D.Y, 0.f) * DesiredSpeed;
 		}
 	});

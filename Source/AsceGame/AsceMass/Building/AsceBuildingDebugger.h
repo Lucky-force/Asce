@@ -3,9 +3,8 @@
 
 #include "GameFramework/Actor.h"
 #include "AsceMass/Building/AsceBuildingTypes.h"
+#include "DataTableSystem/AsceRowNameWrapper.h"
 #include "AsceBuildingDebugger.generated.h"
-
-class UAsceEtherBuildingConfig;
 
 /**
  * 建筑系统调试器（开发期用；关卡里摆一个即可，两端都能画，操作只在权威端生效）：
@@ -28,9 +27,10 @@ public:
 
 	// ── 配置 ──
 
-	/** 测试建造用的建筑配置（`BuildingDebugPlaceCell` 用它）。 */
-	UPROPERTY(EditAnywhere, Category = "BuildingDebug")
-	TSubclassOf<UAsceEtherBuildingConfig> TestConfig;
+	/** 测试建造用的建筑类型（`AsceEntityDefRow` 行名；`BuildingDebugPlaceCell` 用它）。 */
+	UPROPERTY(EditAnywhere, Category = "BuildingDebug",
+		meta = (DataTableBinding = "AsceEntityDefRow:DisplayName,SizeX,SizeY"))
+	FAsceRowNameWrapper TestConfig;
 
 	UPROPERTY(EditAnywhere, Category = "BuildingDebug")
 	int32 TestTeamKey = 0;

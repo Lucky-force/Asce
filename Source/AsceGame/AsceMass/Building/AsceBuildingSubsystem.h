@@ -3,6 +3,7 @@
 
 #include "Subsystems/WorldSubsystem.h"
 #include "AsceMass/Building/AsceBuildingTypes.h"
+#include "AsceMass/Building/AsceBuildingCore.h"
 #include "AsceMass/Simulation/AsceTickContext.h"
 #include "AsceBuildingSubsystem.generated.h"
 
@@ -51,6 +52,20 @@ public:
 	int32 GetBuildingCount() const { return Buildings.Num(); }
 	bool IsBootstrapped() const { return bBootstrapped; }
 	const TArray<FAsceBuiltBuilding>& GetBuildings() const { return Buildings; }
+
+	// ── 建筑行为 core（UI/功能入口） ──
+
+	/** 建筑行为 core（定义里没配 CoreClass 则为空）。 */
+	UAsceBuildingCore* GetBuildingCore(FMassEntityHandle Building) const;
+
+	/** 收集建筑功能面板按键（选中检视器用；内部转发给 core）。 */
+	void CollectBuildingActions(FMassEntityHandle Building, TArray<FAsceBuildingAction>& OutActions) const;
+
+	/** 执行建筑功能按键（UI 点击 → 对应 core 的 `ExecuteAction`）。 */
+	bool ExecuteBuildingAction(FMassEntityHandle Building, FName ActionId, FString* OutError = nullptr);
+
+	/** 选中状态变化（转发给 core，供其开始/停止收集数据）。 */
+	void SetBuildingSelected(FMassEntityHandle Building, bool bSelected);
 
 private:
 	/** 创建建筑实体（初值一次给全：Transform + footprint + Ether 标记 + 阵营；tag 创建后补）。 */

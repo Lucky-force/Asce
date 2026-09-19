@@ -33,6 +33,8 @@ namespace AsceGameplayTags
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(InputTag_Select, "InputTag.Select", "Trying to Select something")
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(InputTag_Order_Move, "InputTag.Order.Move", "Right click to issue a move order")
 
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(UI_SelectionChanged, "Asce.UI.SelectionChanged", "RTS 选择集合变化（UI 检视器等监听）")
+
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(InitState_Spawned, "InitState.Spawned", "1: Actor/component has initially spawned and can be extended");
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(InitState_DataAvailable, "InitState.DataAvailable", "2: All required data has been loaded/replicated and is ready for initialization");
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(InitState_DataInitialized, "InitState.DataInitialized", "3: The available data has been initialized for this actor/component, but it is not ready for full gameplay");

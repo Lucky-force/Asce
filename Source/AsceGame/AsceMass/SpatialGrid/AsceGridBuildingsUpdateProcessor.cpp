@@ -42,6 +42,8 @@ void UAsceGridBuildingsUpdateProcessor::Execute(FMassEntityManager& EntityManage
 			// footprint 已经是"旋转后的最终 AABB"（与 costfield/视野同一口径），直接登记
 			Part.Origin = Foot.OriginGridLocation;
 			Part.Size = FIntPoint(FMath::Max(1, Foot.SizeX), FMath::Max(1, Foot.SizeY));
+			// 命中盒高度：用视野遮挡高度；0 会给一个最小值，避免选择盒退化成平面
+			Part.HeightCm = FMath::Max(100, static_cast<int32>(Foot.OcclusionHeightCm));
 			Grid.AddBuildingPart(Part);
 		}
 	});

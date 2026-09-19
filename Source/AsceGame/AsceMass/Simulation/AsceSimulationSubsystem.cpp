@@ -4,8 +4,10 @@
 #include "AsceTickContext.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
+#include "GameFramework/GameStateBase.h"
 #include "MassEntitySubsystem.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
+#include "GameModes/AsceExperienceManagerComponent.h"
 #include "AsceMass/SpatialGrid/AsceSpatialGridSubsystem.h"
 #include "AsceMass/Building/AsceBuildingSubsystem.h"
 #include "AsceMass/Ether/AsceEtherNetworkSubsystem.h"
@@ -120,9 +122,20 @@ void UAsceSimulationSubsystem::Tick(float DeltaTime)
 		TryRunWorldInit();
 		return;
 	}
+	// loading 门控：Experience（如果这个地图有）Loaded 之前不跑阶段链；无组件的测试地图直接放行。
+	// 每帧复查是为了兜住"先 Tick 后 Loaded"的时序（Experience 组件是 GameState 的默认子对象，GameState 一到就查得到）；
+	// 放行后上面那个 `bLoadingFinished` 短路，只剩一次 bool 判断。
 	if (!bLoadingFinished)
 	{
-		return;
+		const AGameStateBase* GameState = World->GetGameState();
+		const UAsceExperienceManagerComponent* Experience = GameState
+			? GameState->FindComponentByClass<UAsceExperienceManagerComponent>()
+			: nullptr;
+		if (Experience && !Experience->IsExperienceLoaded())
+		{
+			return;
+		}
+		bLoadingFinished = true;
 	}
 
 	// ── 每帧刷新上下文（各阶段都从这里取"跨系统数据"，不再各自查子系统表/存指针）──
