@@ -40,7 +40,7 @@ public:
 	/** **调度器阶段 0b**：推进"建造中"建筑（工期到期 ⇒ 补 footprint/Ether 标记，观察者随之生效）。 */
 	void RunConstructionStage(const FAsceTickContext& Ctx);
 
-	/** 建造中占位释放：由 `UAsceBuildingPendingObserverProcessor`（footprint Add 观察者）在 costfield 写完之后调用。
+	/** 建造中占位释放：由 `UAsceBuildingFootprintObserverProcessor`（footprint Add 观察者）在 costfield 写完之后调用。
 	 *  **不要**在完工那一刻自己清 —— 否则会出现"占位已清、costfield 还没写"的空窗（同帧后续校验会钻过去）。 */
 	void ConsumePendingBuild(FMassEntityHandle Building);
 

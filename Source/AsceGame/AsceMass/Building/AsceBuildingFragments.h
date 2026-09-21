@@ -12,7 +12,7 @@
  *  1. 放置成功 ⇒ 创建实体，实体只有本 fragment（**没有** footprint ⇒ costfield/视野/Ether 的观察者都不会触发）；
  *  2. 完工（`BuildTimeSeconds` 到期，0 = 立即）⇒ 建筑系统给实体补 `FAsceGridFootprintFragment`（+ Ether 建筑标记）、
  *     删掉本 fragment ⇒ 观察者此时才真正生效；
- *  3. footprint 的 observer 跑过之后（`UAsceBuildingPendingObserverProcessor`）才释放"建造中占位"
+ *  3. footprint 的 observer 跑过之后（`UAsceBuildingFootprintObserverProcessor`）才释放"建造中占位"
  *     （`UAsceBuildingSubsystem` 的 pending 列表）—— 中间没有任何"两者都不挡"的空窗。
  *
  * 建造期**不挡路**（不写 costfield），只参与放置校验（不允许和建造中的工地重叠）。

@@ -599,10 +599,12 @@ void UAsceBuildingSubsystem::RunConstructionStage(const FAsceTickContext& Ctx)
 			continue;   // 还在建
 		}
 
+		// 先存工期：`CompleteConstruction` 会删掉建造 fragment，之后不能再解引用 `Constructing`
+		const float BuildTimeSeconds = Constructing->BuildTimeSeconds;
 		if (CompleteConstruction(Entity, &Ctx))
 		{
 			UE_LOG(LogTemp, Log, TEXT("[Building] 完工：entity=(%d,%d) 工期=%.1fs（占位等 footprint 观察者释放）"),
-				Entity.Index, Entity.SerialNumber, Constructing->BuildTimeSeconds);
+				Entity.Index, Entity.SerialNumber, BuildTimeSeconds);
 		}
 		else
 		{

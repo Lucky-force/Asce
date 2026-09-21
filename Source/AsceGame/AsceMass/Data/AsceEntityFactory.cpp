@@ -118,13 +118,29 @@ TArray<int64> UAsceEntityFactory::SpawnEntitiesByDef(UObject* WorldContextObject
 			else
 			{
 				// 结构契约：Transform / 身份 / 阵营是"实体基础"（单位与建筑都要）⇒ 模板必须挂 `UAsceRTSEntityTrait`
-				ensureOnceMsgf(false, TEXT("[EntityFactory] 模板缺少 FTransformFragment（模板必须挂 UAsceRTSEntityTrait）"));
+				// （`ensureOnceMsgf` 是 5.8 才有的，5.7 用本地哨兵保证只报一次，避免每个实体刷一条）
+				static bool bWarnedMissingTransform = false;
+				if (!bWarnedMissingTransform)
+				{
+					bWarnedMissingTransform = true;
+					ensureMsgf(false, TEXT("[EntityFactory] 模板缺少 FTransformFragment（模板必须挂 UAsceRTSEntityTrait）"));
+				}
 			}
 		}
-		ensureOnceMsgf(EntityManager.GetFragmentDataPtr<FAsceUnitDefFragment>(Handle) != nullptr,
-			TEXT("[EntityFactory] 模板缺少 FAsceUnitDefFragment：模板必须挂 UAsceRTSEntityTrait（身份 id / 检视器 / Ether 注册都靠它）"));
-		ensureOnceMsgf(EntityManager.GetFragmentDataPtr<FAsceTeamFragment>(Handle) != nullptr,
-			TEXT("[EntityFactory] 模板缺少 FAsceTeamFragment：模板必须挂 UAsceRTSEntityTrait"));
+		static bool bWarnedMissingIdentity = false;
+		if (!bWarnedMissingIdentity
+			&& EntityManager.GetFragmentDataPtr<FAsceUnitDefFragment>(Handle) == nullptr)
+		{
+			bWarnedMissingIdentity = true;
+			ensureMsgf(false, TEXT("[EntityFactory] 模板缺少 FAsceUnitDefFragment：模板必须挂 UAsceRTSEntityTrait（身份 id / 检视器 / Ether 注册都靠它）"));
+		}
+		static bool bWarnedMissingTeam = false;
+		if (!bWarnedMissingTeam
+			&& EntityManager.GetFragmentDataPtr<FAsceTeamFragment>(Handle) == nullptr)
+		{
+			bWarnedMissingTeam = true;
+			ensureMsgf(false, TEXT("[EntityFactory] 模板缺少 FAsceTeamFragment：模板必须挂 UAsceRTSEntityTrait"));
+		}
 		if (UnitDef)
 		{
 			ApplyUnitDef(EntityManager, Handle, *UnitDef, TeamKey);

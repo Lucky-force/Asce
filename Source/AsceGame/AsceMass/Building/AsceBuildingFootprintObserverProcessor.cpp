@@ -3,6 +3,7 @@
 
 #include "AsceBuildingSubsystem.h"
 #include "AsceMass/Fragments/AsceFootprintFragment.h"
+#include "MassExecutionContext.h"   // FMassExecutionContext（单独编译时需要；unity 下被别人捎带才没暴露）
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AsceBuildingFootprintObserverProcessor)
 
@@ -23,9 +24,11 @@ void UAsceBuildingFootprintObserverProcessor::ConfigureQueries(const TSharedRef<
 
 void UAsceBuildingFootprintObserverProcessor::Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context)
 {
-	UAsceBuildingSubsystem& Buildings = Context.GetMutableSubsystemChecked<UAsceBuildingSubsystem>();
-	EntityQuery.ForEachEntityChunk(Context, [&Buildings](FMassExecutionContext& Ctx)
+	EntityQuery.ForEachEntityChunk(Context, [](FMassExecutionContext& Ctx)
 	{
+		// 子系统必须在 query 作用域内取：`ForEachEntityChunk` 会把 query 的子系统依赖缓存进 context，
+		// 在 lambda 外取时 bitset 还是空的 ⇒ 命中 Mass 的 "Missing TMassExternalSubsystemTraits" ensure
+		UAsceBuildingSubsystem& Buildings = Ctx.GetMutableSubsystemChecked<UAsceBuildingSubsystem>();
 		const TConstArrayView<FMassEntityHandle> Entities = Ctx.GetEntities();
 		for (const FMassEntityHandle Entity : Entities)
 		{
