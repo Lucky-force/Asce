@@ -6,15 +6,14 @@
 #include "AsceSpatialGridSubsystem.h"
 #include "AsceGridBuildingsUpdateProcessor.generated.h"
 
-#define UE_API //ASCEGAME_API
-
 class UAsceSpatialGridSubsystem;
 
 /**
  * 建筑层更新 processor：把"建筑"（带 `FAsceBuildingTag` + `FAsceGridFootprintFragment` 的实体）的 footprint
- * 增量登记到 `UAsceSpatialGridSubsystem` 的建筑粗格里（内容没变则不 bump 版本）。
+ * 登记到 `UAsceSpatialGridSubsystem` 的建筑粗格里（`Part.BaseZ` 从实体 Transform 读）。
  *
- * 由 `UAsceSpatialGridSubsystem::RebuildBuildingsData` 每帧串行调用（建筑数量不大，不需要并行）。
+ * 由 `UAsceSpatialGridSubsystem::RebuildBuildingsData` 调用；该函数**每帧全清 + 并行重填**这一层
+ * （与单位层同一套：`ParallelForEachEntityChunk` + 每粗格自旋锁）。
  */
 UCLASS(MinimalAPI)
 class UAsceGridBuildingsUpdateProcessor : public UMassProcessor
@@ -33,5 +32,3 @@ protected:
 
 	friend class UAsceSpatialGridSubsystem;
 };
-
-#undef UE_API

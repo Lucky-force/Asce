@@ -124,7 +124,10 @@ public:
 	/** 入队"改端口实例字段"。 */
 	void PushPatchPort(FMassEntityHandle Entity, const FAsceEtherSlotKey& Slot, const FAsceEtherPortPatch& Patch);
 
-	/** 入队"表/数据内容变化"。 */
+	/** 入队"表/数据内容变化"：**只重解析端口类型行**（`ResolvePortTypeConfig`），走一次全量重建。
+	 *  ⚠️ 建筑 def（`FNode::DefData`）**不在运行期重解析**：契约是"实体定义表必须在实体创建之前挂载完成"，
+	 *  运行期改 def 行**不会生效**（AddNode/Patch 时查不到会 `ensure` 报错但按"空壳"继续）。
+	 *  以后要支持编辑器/热重载，需要在这里补"重解析全部节点的 def"。 */
 	void PushRefreshData(const UScriptStruct* RowStruct = nullptr);
 
 	/** 入队兜底全量重建。 */

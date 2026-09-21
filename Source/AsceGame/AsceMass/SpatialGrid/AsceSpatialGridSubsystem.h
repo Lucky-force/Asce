@@ -25,9 +25,19 @@ public:
 	UAsceSpatialGridSubsystem();
 
 	// ── 查询实体，如果是在异步线程中，调用safe版本以在网格构建完成后返回回调
+	//
+	// ⚠️ TODO(safe-query)：`safe` 的本意是"线程安全调用"（可在异步线程里发起，重建完成后回调），
+	//    但当前实现并不满足这个承诺，**在修好之前请只在游戏线程调用**：
+	//    - 半径版 `FindEntitiesSafe(Center, Radius, ...)` 的重建期请求入的是 `RadiusQueryCommands`，
+	//      而 `RunGridStages` 只消费 `PendingQueryCommands` ⇒ **半径版回调永远不会触发**，且队列只增不减（泄漏）；
+	//    - 两个队列（`PendingQueryCommands` / `RadiusQueryCommands`）都是裸 `TArray`，异步线程 Add 与
+	//      游戏线程 Reset/遍历并发未同步（`bIsRebuilding` 是 `TAtomic<bool>`，只有它没问题）；
+	//    - 待决策：① 半径版照盒版补齐同帧消费（最小）；② 或直接删掉半径 safe 版（目前无调用方）；
+	//      ③ 若确实要支持异步，队列换 `TQueue`/双缓冲交换 + 明确回调所在线程。
 	UFUNCTION(BlueprintCallable)
 	void BP_FindEntitiesSafe(const FVector2D& StartWorldLocation, const FVector2D& EndWorldLocation, FOnGridQueryReadyDynamic Callback);
 	
+	/** ⚠️ 见上方 TODO(safe-query)：**回调目前永远不会触发**（队列无消费者），且会持续泄漏。目前无调用方。 */
 	UFUNCTION(BlueprintCallable)
 	void BP_FindEntitiesInRadiusSafe(const FVector2D& CenterWorldLocation, const float Radius, FOnGridQueryReadyDynamic Callback);
 	
@@ -37,8 +47,10 @@ public:
 	UFUNCTION(BlueprintCallable)
 	void BP_FindEntitiesInRadius(const FVector2D& CenterWorldLocation, const float Radius, TArray<int64>& OutResult);
 	
+	/** 线段/盒版：重建期入队，**同一帧**重建结束后统一回调（`RunGridStages` 里消费）✔；线程安全待补（见 TODO）。 */
 	void FindEntitiesSafe(const FVector2D& StartWorldLocation, const FVector2D& EndWorldLocation, const FOnGridQueryReady& Callback);
 	
+	/** ⚠️ 半径版：**回调目前永远不会触发**（`RadiusQueryCommands` 无消费者）+ 队列只增不减。见 TODO(safe-query)。 */
 	void FindEntitiesSafe(const FVector2D& CenterWorldLocation, const float Radius, const FOnGridQueryReady& Callback);
 	
 	void FindEntities(const FVector2D& StartWorldLocation, const FVector2D& EndWorldLocation, TArray<FMassEntityHandle>& OutResult);
@@ -280,7 +292,9 @@ private:
 	};
 	
 	//查询队列回调
-	TArray<FQueryCommand> PendingQueryCommands;
+	TArray<FQueryCommand> PendingQueryCommands;         // 线段/盒：重建期入队，RunGridStages 里同帧消费 ✔
+	/** ⚠️ TODO(safe-query)：**没有任何地方消费这个队列**（入队在 `FindEntitiesSafe(Center, Radius, ...)`）⇒
+	 *  半径 safe 查询的回调永不触发、队列只增不减。目前无调用方，待决策：补消费 / 删 API / 做真线程安全。 */
 	TArray<FRadiusQueryCommand> RadiusQueryCommands;
 	
 	

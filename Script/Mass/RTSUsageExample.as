@@ -18,7 +18,7 @@ class ARTSManager : AActor
     USceneComponent RootComp;
 
     /** 要生成的单位类型（实体定义表行名；编辑器里下拉选行）。 */
-    UPROPERTY(EditAnywhere, meta = (DataTableBinding = "AsceEntityDefRow:DisplayName,SizeX,SizeY"))
+    UPROPERTY(EditAnywhere, meta = (DataTableBinding = "AsceEntityDefRow:DisplayName,Description"))
     FAsceRowNameWrapper SoldierDefRow;
 
     /** 归属阵营（由生成方决定；写进 FAsceTeamFragment）。 */

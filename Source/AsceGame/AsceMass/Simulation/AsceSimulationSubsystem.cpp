@@ -165,6 +165,13 @@ void UAsceSimulationSubsystem::Tick(float DeltaTime)
 		TickContext.Buildings->RunBootstrapStage(TickContext);
 	}
 
+	// 阶段 0b：建造推进（工期到期 ⇒ 补 footprint/Ether 标记 ⇒ 观察者随之生效）
+	if (TickContext.Buildings)
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(AsceSim_BuildingConstruction);
+		TickContext.Buildings->RunConstructionStage(TickContext);
+	}
+
 	// 阶段 1：流场/寻路（goal-LOS 重算预算；移动管线的 steering 要读流场）
 	if (TickContext.PathFinding)
 	{

@@ -3,11 +3,14 @@
 
 #include "AsceBuildingPlacementActor.h"
 #include "AsceMass/Building/AsceBuildingDef.h"
+#include "AsceMass/Building/AsceBuildingFragments.h"
 #include "AsceMass/Data/AsceEntityDefLibrary.h"
 #include "AsceMass/Ether/AsceEtherBuildingDef.h"
 #include "AsceMass/Ether/AsceEtherFragments.h"
 #include "AsceMass/Ether/AsceEtherNetworkSubsystem.h"
 #include "AsceMass/FlowField/AsceFlowFieldCores.h"
+#include "AsceMass/FlowField/AscePathFinder.h"
+#include "AsceMass/FlowField/AscePathFindingSubsystem.h"
 #include "AsceMass/Fragments/AsceCoreFragments.h"
 #include "AsceMass/Fragments/AsceFootprintFragment.h"
 #include "AsceMass/SpatialGrid/AsceSpatialGridSubsystem.h"
@@ -101,7 +104,7 @@ void UAsceBuildingSubsystem::RegisterPlacement(AAsceBuildingPlacementActor* Plac
 			}
 			else
 			{
-				CreateBuildingEntity(Pending.Placement);
+				CreateConstructingBuilding(Pending.Placement);
 			}
 		}
 		PlacementActor->Destroy();
@@ -161,7 +164,7 @@ void UAsceBuildingSubsystem::RunBootstrapStage(const FAsceTickContext& Ctx)
 					Pending.Placement.Rotation);
 				continue;
 			}
-			if (CreateBuildingEntity(Pending.Placement, &Ctx).IsValid())
+			if (CreateConstructingBuilding(Pending.Placement, &Ctx).IsValid())
 			{
 				++Created;
 			}
@@ -207,7 +210,7 @@ bool UAsceBuildingSubsystem::PlaceBuilding(const FAsceBuildingPlacement& Placeme
 		return false;
 	}
 
-	if (!CreateBuildingEntity(Placement).IsValid())
+	if (!CreateConstructingBuilding(Placement).IsValid())
 	{
 		SetError(OutError, TEXT("创建建筑实体失败"));
 		return false;
@@ -239,6 +242,8 @@ bool UAsceBuildingSubsystem::DemolishBuilding(FMassEntityHandle Building, FStrin
 		return false;
 	}
 	MassSub->GetMutableEntityManager().DestroyEntity(Building);
+	// 建造中的工地：销毁实体即可（没有 footprint ⇒ 观察者不会触发）；占位立刻释放
+	PendingBuilds.RemoveSingle(Building);
 	if (Buildings[Index].Core)
 	{
 		Buildings[Index].Core->Deinitialize();
@@ -302,35 +307,75 @@ bool UAsceBuildingSubsystem::ValidatePlacement(const FAsceBuildingPlacement& Pla
 		return false;
 	}
 
-	const UAsceSpatialGridSubsystem* Grid = (Ctx && Ctx->Grid) ? Ctx->Grid : UAsceSpatialGridSubsystem::Get(this);
-	if (!Grid || !Grid->IsBuildingsGridReady())
+	const UAscePathFindingSubsystem* PathFinding = UAscePathFindingSubsystem::Get(this);
+	const UPathFinder* Finder = PathFinding ? PathFinding->GetPathFinder() : nullptr;
+	const FWorldMapData* Map = Finder ? Finder->GetWorldMapData() : nullptr;
+	if (!Map)
 	{
-		SetError(OutError, TEXT("建筑网格未就绪（ConstructBuildingsGrid 没跑？）"));
+		SetError(OutError, TEXT("世界地图数据未就绪（AAsceWorldMapReplicatorActor / 世界初始化没跑？）"));
 		return false;
 	}
 
 	FIntPoint Min, Max;
 	Placement.GetOccupiedBounds(Min, Max);
-	const FIntPoint Dim = Grid->GetBuildingsLogicalDim();
-	if (Min.X < 0 || Min.Y < 0 || Max.X >= Dim.X || Max.Y >= Dim.Y)
+	const int32 DimX = Map->GetGridCountX();
+	const int32 DimY = Map->GetGridCountY();
+	if (Min.X < 0 || Min.Y < 0 || Max.X >= DimX || Max.Y >= DimY)
 	{
-		SetError(OutError, FString::Printf(TEXT("越界：占用格 (%d,%d)-(%d,%d) 超出建筑网格 %dx%d"),
-			Min.X, Min.Y, Max.X, Max.Y, Dim.X, Dim.Y));
+		SetError(OutError, FString::Printf(TEXT("越界：占用格 (%d,%d)-(%d,%d) 超出地图 %dx%d"),
+			Min.X, Min.Y, Max.X, Max.Y, DimX, DimY));
 		return false;
 	}
 
-	TArray<FMassEntityHandle> Hits;
-	Grid->FindBuildingsInLogicalRect(Min, Max, Hits);
-	if (Hits.Num() > 0)
+	// ① 目标格必须是"纯可通行"（cost == 1）：既排除地形墙/地形代价，也排除已建成建筑（建筑写阻挡值）
+	for (int32 y = Min.Y; y <= Max.Y; ++y)
 	{
-		SetError(OutError, FString::Printf(TEXT("重叠：占用格 (%d,%d)-(%d,%d) 内已有 %d 个建筑"),
-			Min.X, Min.Y, Max.X, Max.Y, Hits.Num()));
-		return false;
+		for (int32 x = Min.X; x <= Max.X; ++x)
+		{
+			if (Map->IsCellBlocked(x, y))
+			{
+				SetError(OutError, FString::Printf(TEXT("目标格 (%d,%d) 被阻挡（地形或已有建筑）"), x, y));
+				return false;
+			}
+			if (!Map->IsCellCleanPassable(x, y))
+			{
+				SetError(OutError, FString::Printf(TEXT("目标格 (%d,%d) 不是纯可通行格（地形代价/特殊占用），暂不可建"), x, y));
+				return false;
+			}
+		}
 	}
+
+	// ② 不与"建造中"的工地重叠（它们还没写 costfield，占位由 pending 列表兜）
+	if (const UMassEntitySubsystem* MassSub = GetWorld() ? GetWorld()->GetSubsystem<UMassEntitySubsystem>() : nullptr)
+	{
+		const FMassEntityManager& EntityManager = MassSub->GetEntityManager();
+		for (const FMassEntityHandle Pending : PendingBuilds)
+		{
+			const FAsceConstructingFragment* Constructing = EntityManager.GetFragmentDataPtr<FAsceConstructingFragment>(Pending);
+			if (!Constructing)
+			{
+				continue;
+			}
+			FAsceBuildingPlacement PendingPlacement;
+			PendingPlacement.OriginGridLocation = Constructing->OriginGridLocation;
+			PendingPlacement.Size = Constructing->Size;
+			PendingPlacement.Rotation = Constructing->Rotation;
+
+			FIntPoint PendingMin, PendingMax;
+			PendingPlacement.GetOccupiedBounds(PendingMin, PendingMax);
+			if (PendingMin.X <= Max.X && Min.X <= PendingMax.X && PendingMin.Y <= Max.Y && Min.Y <= PendingMax.Y)
+			{
+				SetError(OutError, FString::Printf(TEXT("与建造中的工地重叠（占用格 (%d,%d)-(%d,%d)）"),
+					PendingMin.X, PendingMin.Y, PendingMax.X, PendingMax.Y));
+				return false;
+			}
+		}
+	}
+
 	return true;
 }
 
-FMassEntityHandle UAsceBuildingSubsystem::CreateBuildingEntity(const FAsceBuildingPlacement& Placement, const FAsceTickContext* Ctx)
+FMassEntityHandle UAsceBuildingSubsystem::CreateConstructingBuilding(const FAsceBuildingPlacement& Placement, const FAsceTickContext* Ctx)
 {
 	UWorld* World = GetWorld();
 	UMassEntitySubsystem* MassSub = (Ctx && Ctx->Mass)
@@ -382,59 +427,66 @@ FMassEntityHandle UAsceBuildingSubsystem::CreateBuildingEntity(const FAsceBuildi
 	FMassEntityManager& EntityManager = MassSub->GetMutableEntityManager();
 
 	// 位置 = footprint 几何中心；朝向 = Rotation（Ether 定向/表现都用）
+	// **结构契约**：Transform / 身份 / 阵营都是"实体基础"（`UAsceRTSEntityTrait` 提供，单位与建筑都需要），
+	// 建筑 def 行的 `EntityTemplate` 必须挂它；缺了就是配置错误 ⇒ ensure 报错（缺 Transform 时位置会留在原点，
+	// 缺 `FAsceUnitDefFragment` 时 Ether 注册观察者根本不匹配 ⇒ 建筑对 Ether 完全不可见且毫无其它提示）。
+	const FName DefIdForLog = Placement.BuildingDefId;
 	const FVector2D CenterCell = Placement.GetCenterCell();
+
+	// 位置 = footprint 几何中心；**Z 由共享的 `UAsceTerrainHeightProcessor` 负责贴地**
+	// （它的查询只要 `FTransformFragment` ⇒ 单位与建筑都会被采样；见 `AsceTerrainHeightProcessor.cpp`）。
+	// 这里先给 0，同一帧的移动阶段就会把它贴到地形高度上。
 	const FVector CenterWorld((CenterCell.X + 0.5) * GRID_SIZE, (CenterCell.Y + 0.5) * GRID_SIZE, 0.f);
-	if (FTransformFragment* Transform = EntityManager.GetFragmentDataPtr<FTransformFragment>(Entity))
+	FTransformFragment* Transform = EntityManager.GetFragmentDataPtr<FTransformFragment>(Entity);
+	ensureMsgf(Transform, TEXT("[Building] EntityTemplate 缺 FTransformFragment：建筑 def '%s' 的模板必须包含 UAsceRTSEntityTrait"), *DefIdForLog.ToString());
+	if (Transform)
 	{
 		Transform->SetTransform(FTransform(FQuat(FRotator(0.f, Placement.Rotation * 90.f, 0.f)), CenterWorld));
 	}
 
 	// 类型 id（覆盖模板里 trait 的默认值；**必须在 Ether 标记添加前写**，observer 靠它推 AddNode）
-	const FName DefId = Placement.BuildingDefId;
-	uint16 DefNumericId = 0;
-	UAsceEntityDefLibrary::ParseEntityDefId(DefId, DefNumericId);
-	if (FAsceUnitDefFragment* UnitDef = EntityManager.GetFragmentDataPtr<FAsceUnitDefFragment>(Entity))
+	// 行名非法（非 1..65535 数字串）**直接崩**：纯数据错误，静默变 0 会让建筑在 Ether 里"没有端口"，极难排查
+	const uint16 DefNumericId = UAsceEntityDefLibrary::ParseEntityDefIdChecked(Placement.BuildingDefId);
+	FAsceUnitDefFragment* UnitDef = EntityManager.GetFragmentDataPtr<FAsceUnitDefFragment>(Entity);
+	ensureMsgf(UnitDef, TEXT("[Building] EntityTemplate 缺 FAsceUnitDefFragment：建筑 def '%s' 的模板必须包含 UAsceRTSEntityTrait（否则 Ether 注册观察者不匹配，建筑对 Ether 不可见）"), *DefIdForLog.ToString());
+	if (UnitDef)
 	{
 		UnitDef->UniqueTypeId = DefNumericId;
 	}
 
 	// 阵营（归属由摆放数据决定）
-	if (FAsceTeamFragment* Team = EntityManager.GetFragmentDataPtr<FAsceTeamFragment>(Entity))
+	FAsceTeamFragment* Team = EntityManager.GetFragmentDataPtr<FAsceTeamFragment>(Entity);
+	ensureMsgf(Team, TEXT("[Building] EntityTemplate 缺 FAsceTeamFragment：建筑 def '%s' 的模板必须包含 UAsceRTSEntityTrait"), *DefIdForLog.ToString());
+	if (Team)
 	{
 		Team->TeamKey = Placement.TeamKey;
 	}
 
-	// footprint（+ Ether 标记）：**带真实值后加** ⇒ Add observer 在正确值上触发
-	// （costfield/视野按真实占格写；Ether AddNode 用上面写好的类型 id）
-	FIntPoint FootMin, FootMax;
-	Placement.GetOccupiedBounds(FootMin, FootMax);
-	TArray<FInstancedStruct> AddFragments;
+	// **建造中**：实体只带 `FAsceConstructingFragment`（**不写 footprint**）⇒ costfield/视野/Ether 的观察者
+	// 这一帧都不会触发（建造期不挡路）。完工由调度器的施工阶段（`RunConstructionStage`）推进。
+	const double Now = World->GetTimeSeconds();
 	{
-		FAsceGridFootprintFragment& Foot = AddFragments.Add_GetRef(FInstancedStruct::Make<FAsceGridFootprintFragment>())
-			.GetMutable<FAsceGridFootprintFragment>();
-		Foot.OriginGridLocation = FootMin;
-		Foot.SizeX = FootMax.X - FootMin.X + 1;
-		Foot.SizeY = FootMax.Y - FootMin.Y + 1;
-		Foot.OcclusionHeightCm = Def->OcclusionHeightCm;
-	}
-	if (bEtherBuilding)
-	{
-		AddFragments.Add(FInstancedStruct::Make<FEtherBuildingFragment>());
-	}
-	EntityManager.AddFragmentInstanceListToEntity(Entity, AddFragments);
-
-	// 保险：模板没挂 `UAsceRTSBuildingTrait` 时补 tag（正常建筑模板应包含）
-	{
-		const FMassEntityView View(EntityManager, Entity);
-		if (!View.HasTag<FAsceBuildingTag>())
-		{
-			EntityManager.AddTagToEntity(Entity, FAsceBuildingTag::StaticStruct());
-		}
+		TArray<FInstancedStruct> AddFragments;
+		FAsceConstructingFragment& Constructing = AddFragments.Add_GetRef(FInstancedStruct::Make<FAsceConstructingFragment>())
+			.GetMutable<FAsceConstructingFragment>();
+		Constructing.BuildingDefId = Placement.BuildingDefId;
+		Constructing.OriginGridLocation = Placement.OriginGridLocation;
+		Constructing.Size = Placement.Size;
+		Constructing.Rotation = static_cast<uint8>(Placement.Rotation);
+		Constructing.OcclusionHeightCm = Def->OcclusionHeightCm;
+		Constructing.bEtherBuilding = bEtherBuilding;
+		Constructing.StartTimeSeconds = Now;
+		Constructing.BuildTimeSeconds = FMath::Max(0.f, Def->BuildTimeSeconds);
+		EntityManager.AddFragmentInstanceListToEntity(Entity, AddFragments);
 	}
 
 	FAsceBuiltBuilding& Record = Buildings.AddDefaulted_GetRef();
 	Record.Entity = Entity;
 	Record.Placement = Placement;
+	Record.bComplete = false;
+
+	// 建造中占位（放置校验用）：footprint 的 Add 观察者跑过之后由 `ConsumePendingBuild` 释放
+	PendingBuilds.Add(Entity);
 
 	// 建筑行为 core（可选；子系统持有，随建筑生灭）
 	if (UClass* CoreClass = Def->CoreClass.LoadSynchronous())
@@ -443,4 +495,123 @@ FMassEntityHandle UAsceBuildingSubsystem::CreateBuildingEntity(const FAsceBuildi
 		Record.Core->Initialize(Entity);
 	}
 	return Entity;
+}
+
+bool UAsceBuildingSubsystem::CompleteConstruction(FMassEntityHandle Building, const FAsceTickContext* Ctx)
+{
+	UMassEntitySubsystem* MassSub = (Ctx && Ctx->Mass)
+		? Ctx->Mass
+		: (GetWorld() ? GetWorld()->GetSubsystem<UMassEntitySubsystem>() : nullptr);
+	if (!MassSub)
+	{
+		return false;
+	}
+	FMassEntityManager& EntityManager = MassSub->GetMutableEntityManager();
+	const FAsceConstructingFragment* Constructing = EntityManager.GetFragmentDataPtr<FAsceConstructingFragment>(Building);
+	if (!Constructing)
+	{
+		return false;
+	}
+
+	// 建造 fragment 里存的是**未旋转**占位 ⇒ 按它换算最终 AABB 再写 footprint
+	FAsceBuildingPlacement Placement;
+	Placement.OriginGridLocation = Constructing->OriginGridLocation;
+	Placement.Size = Constructing->Size;
+	Placement.Rotation = Constructing->Rotation;
+	const int32 OcclusionHeightCm = Constructing->OcclusionHeightCm;
+	const bool bEtherBuilding = Constructing->bEtherBuilding;
+
+	FIntPoint FootMin, FootMax;
+	Placement.GetOccupiedBounds(FootMin, FootMax);
+
+	// footprint（+ Ether 标记）：**带真实值后加** ⇒ Add observer 在正确值上触发（costfield/视野/Ether AddNode）
+	TArray<FInstancedStruct> AddFragments;
+	{
+		FAsceGridFootprintFragment& Foot = AddFragments.Add_GetRef(FInstancedStruct::Make<FAsceGridFootprintFragment>())
+			.GetMutable<FAsceGridFootprintFragment>();
+		Foot.OriginGridLocation = FootMin;
+		Foot.SizeX = FootMax.X - FootMin.X + 1;
+		Foot.SizeY = FootMax.Y - FootMin.Y + 1;
+		Foot.OcclusionHeightCm = OcclusionHeightCm;
+	}
+	if (bEtherBuilding)
+	{
+		AddFragments.Add(FInstancedStruct::Make<FEtherBuildingFragment>());
+	}
+	EntityManager.AddFragmentInstanceListToEntity(Building, AddFragments);
+
+	// 保险：模板没挂 `UAsceRTSBuildingTrait` 时补 tag
+	{
+		const FMassEntityView View(EntityManager, Building);
+		if (!View.HasTag<FAsceBuildingTag>())
+		{
+			EntityManager.AddTagToEntity(Building, FAsceBuildingTag::StaticStruct());
+		}
+	}
+
+	// 删掉建造 fragment（结构变化 ⇒ 此后不要再持有它的指针）
+	EntityManager.RemoveFragmentFromEntity(Building, FAsceConstructingFragment::StaticStruct());
+
+	if (FAsceBuiltBuilding* Record = Buildings.FindByPredicate(
+		[Building](const FAsceBuiltBuilding& R) { return R.Entity == Building; }))
+	{
+		Record->bComplete = true;
+	}
+	return true;
+}
+
+void UAsceBuildingSubsystem::RunConstructionStage(const FAsceTickContext& Ctx)
+{
+	if (PendingBuilds.Num() == 0)
+	{
+		return;
+	}
+	UMassEntitySubsystem* MassSub = Ctx.Mass
+		? Ctx.Mass
+		: (GetWorld() ? GetWorld()->GetSubsystem<UMassEntitySubsystem>() : nullptr);
+	if (!MassSub)
+	{
+		return;
+	}
+	FMassEntityManager& EntityManager = MassSub->GetMutableEntityManager();
+	const UWorld* World = Ctx.World ? Ctx.World : GetWorld();
+	const double Now = World ? World->GetTimeSeconds() : 0.0;
+
+	// 倒序：只删"无效"项，不受完工导致的 archetype 变化影响
+	for (int32 i = PendingBuilds.Num() - 1; i >= 0; --i)
+	{
+		const FMassEntityHandle Entity = PendingBuilds[i];
+		if (!EntityManager.IsEntityValid(Entity))
+		{
+			PendingBuilds.RemoveAt(i);   // 实体没了（被销毁/异常）：占位直接丢掉
+			continue;
+		}
+
+		const FAsceConstructingFragment* Constructing = EntityManager.GetFragmentDataPtr<FAsceConstructingFragment>(Entity);
+		if (!Constructing)
+		{
+			// 没有建造 fragment：多半是已完工、正等 footprint 观察者消费（占位继续保留到那时）
+			continue;
+		}
+		if (Constructing->BuildTimeSeconds > 0.f
+			&& (Now - Constructing->StartTimeSeconds) < static_cast<double>(Constructing->BuildTimeSeconds))
+		{
+			continue;   // 还在建
+		}
+
+		if (CompleteConstruction(Entity, &Ctx))
+		{
+			UE_LOG(LogTemp, Log, TEXT("[Building] 完工：entity=(%d,%d) 工期=%.1fs（占位等 footprint 观察者释放）"),
+				Entity.Index, Entity.SerialNumber, Constructing->BuildTimeSeconds);
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[Building] 完工失败：entity=(%d,%d)"), Entity.Index, Entity.SerialNumber);
+		}
+	}
+}
+
+void UAsceBuildingSubsystem::ConsumePendingBuild(FMassEntityHandle Building)
+{
+	PendingBuilds.RemoveSingle(Building);
 }

@@ -94,6 +94,10 @@ struct FAsceBuiltBuilding
 	UPROPERTY(Transient)
 	FAsceBuildingPlacement Placement;
 
+	/** 是否已完工（false = 建造中：实体只有 `FAsceConstructingFragment`，没有 footprint；建造期不挡路）。 */
+	UPROPERTY(Transient)
+	bool bComplete = false;
+
 	/** 建筑行为 core（由子系统生灭；定义里没配 CoreClass 则为空）。 */
 	UPROPERTY(Transient)
 	TObjectPtr<UAsceBuildingCore> Core;

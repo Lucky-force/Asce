@@ -36,7 +36,10 @@ public:
 	TArray<int64> SpawnEntitiesByDef(FName DefRowName, const TArray<FTransform>& Transforms, int32 TeamKey = 0);
 
 	UFUNCTION(BlueprintCallable, Category = "Mass|RTS")
-	void DestroyEntities(const TArray<int32>& EntityHandles);
+	/** 销毁实体：参数是 `SpawnEntities*` 返回的 `int64` 句柄（`FMassEntityHandle::AsNumber()`）。
+	 *  ⚠️ 必须是 `int64`：`AsNumber()` 是 `[Index(low32) | SerialNumber(high32)]` 的原始 64 位，
+	 *  截成 int32 会丢掉 SerialNumber ⇒ `FromNumber` 得到的句柄 `IsEntityValid` 永远为假（拆不掉）。 */
+	void DestroyEntities(const TArray<int64>& EntityHandles);
 
 	// ── 命令 ────────────────────────────────────────
 

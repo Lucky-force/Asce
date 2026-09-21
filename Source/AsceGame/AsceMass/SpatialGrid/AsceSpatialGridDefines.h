@@ -78,6 +78,9 @@ struct FAsceGridBuildingPart
 
 	/** 选择/命中盒高度（cm；来自 footprint 的 `OcclusionHeightCm`，至少 100 保证盒非退化）。 */
 	int32 HeightCm = 100;
+
+	/** 基座 Z（cm；建筑贴地后 = 实体 Transform 的 Z；选择盒从这个高度起算）。 */
+	float BaseZ = 0.f;
 };
 
 /** 建筑网格的一格：一格可能覆盖多个（小）建筑。 */

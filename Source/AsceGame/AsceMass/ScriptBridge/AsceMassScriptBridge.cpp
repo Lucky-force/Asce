@@ -35,7 +35,9 @@ void UAsceMassScriptBridge::OnWorldBeginPlay(UWorld& InWorld)
 
 UAsceMassScriptBridge* UAsceMassScriptBridge::Get(UObject* ContextObject)
 {
-	UWorld* World = GetWorld();
+	// 给了 ContextObject 就用它的世界（脚本里常传 `this`/Actor ⇔ 原来被忽略，跨世界取错子系统）；
+	// 没给则退回本对象所在世界（保持原行为）。
+	UWorld* World = ContextObject ? ContextObject->GetWorld() : GetWorld();
 	if (IsValid(World))
 	{
 		return World->GetSubsystem<UAsceMassScriptBridge>();
@@ -96,16 +98,17 @@ TArray<int64> UAsceMassScriptBridge::SpawnEntitiesByDef(FName DefRowName, const 
 	return UAsceEntityFactory::SpawnEntitiesByDef(this, DefRowName, Transforms, TeamKey);
 }
 
-void UAsceMassScriptBridge::DestroyEntities(const TArray<int32>& EntityHandles){
+void UAsceMassScriptBridge::DestroyEntities(const TArray<int64>& EntityHandles){
 	if (!IsValid(EntitySubsystem))
 	{
 		return;
 	}
 	FMassEntityManager& EntityManager = EntitySubsystem->GetMutableEntityManager();
 
-	for (int32 Index : EntityHandles)
+	// 句柄是 `AsNumber()` 的原始 64 位（Index 低 32 + SerialNumber 高 32）⇒ 必须用 int64 还原
+	for (const int64 EntityNumber : EntityHandles)
 	{
-		FMassEntityHandle Handle = FMassEntityHandle::FromNumber(Index);
+		const FMassEntityHandle Handle = FMassEntityHandle::FromNumber(static_cast<uint64>(EntityNumber));
 		if (EntityManager.IsEntityValid(Handle))
 		{
 			EntityManager.DestroyEntity(Handle);
@@ -114,5 +117,9 @@ void UAsceMassScriptBridge::DestroyEntities(const TArray<int32>& EntityHandles){
 }
 
 void UAsceMassScriptBridge::MoveOrder(FVector TargetLocation, float AcceptanceRadius)
- {
- }
+{
+	// **未实现**（占位接口）：移动指令目前走 `UAsceRTSCommanderComponent::IssueMoveOrder`（
+	// `AsceOrderChannelComponent::RequestMoveOrder` → Server RPC）那条链路；这里要接的话就转发过去。
+	ensureMsgf(false, TEXT("[MassBridge] MoveOrder 尚未实现：请走 UAsceRTSCommanderComponent::IssueMoveOrder（Target=%s, Acceptance=%.0f）"),
+		*TargetLocation.ToString(), AcceptanceRadius);
+}

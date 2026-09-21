@@ -6,12 +6,10 @@
 #include "AsceSpatialGridSubsystem.h"
 #include "AsceGridEntitiesUpdateProcessor.generated.h"
 
-#define UE_API //ASCEGAME_API
-
 class UAsceSpatialGridSubsystem;
 struct FMassEntityQuery;
 
-// 不注册到 Mass Phase——由 UAsceSpatialGridSubsystem::Tick 按需调用，每帧开始更新所有Entity的网格位置信息
+// 不注册到 Mass Phase——由调度器的空间数据阶段（UAsceSpatialGridSubsystem::RunGridStages）按需调用
 UCLASS(MinimalAPI)
 class UAsceGridEntitiesUpdateProcessor : public UMassProcessor
 {
@@ -29,5 +27,3 @@ protected:
 	
 	friend class UAsceSpatialGridSubsystem;
 };
-
-#undef UE_API

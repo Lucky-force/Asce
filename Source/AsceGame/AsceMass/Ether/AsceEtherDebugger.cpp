@@ -67,8 +67,8 @@ void AAsceEtherDebugger::SpawnAndRegister()
 		}
 
 		const FName DefId = Placement.BuildingDef.RowName;
-		uint16 DefNumericId = 0;
-		UAsceEntityDefLibrary::ParseEntityDefId(DefId, DefNumericId);
+		// 行名非法直接崩（调试器也要保证身份正确；见 `ParseEntityDefIdChecked`）
+		const uint16 DefNumericId = UAsceEntityDefLibrary::ParseEntityDefIdChecked(DefId);
 
 		// 用"带初始值的 CreateEntity"建实体：Mass 的 Add 观察者在创建时立刻执行，
 		// 走裸 Archetype（默认构造 fragment）会让观察者读到空的类型 id / footprint；

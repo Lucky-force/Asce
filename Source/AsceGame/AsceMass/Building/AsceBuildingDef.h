@@ -31,6 +31,10 @@ struct FAsceBuildingDefBase : public FAsceEntityDefBase
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Building")
 	int32 OcclusionHeightCm = 0;
 
+	/** 建造工期（秒；0 = 立即完工。建造期间实体只有 `FAsceConstructingFragment`，不写 footprint）。 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Building")
+	float BuildTimeSeconds = 0.f;
+
 	/** 建筑行为 core（UI/功能入口；由 `UAsceBuildingSubsystem` 创建并持有）。 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Building")
 	TSoftClassPtr<UAsceBuildingCore> CoreClass;

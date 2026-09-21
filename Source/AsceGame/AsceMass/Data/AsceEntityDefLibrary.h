@@ -20,6 +20,11 @@ public:
 	/** 行名 → ID（必须全数字且在 0..65535）；失败返回 false。 */
 	static bool ParseEntityDefId(FName RowName, uint16& OutId);
 
+	/** 行名 → ID 的**强制版**：非法（非数字串 / 0 / >65535）**直接 check 崩**。
+	 *  用在"身份必须正确"的路径（建筑创建、trait 构建、调试器建实体）：静默变 0 会让实体在
+	 *  Ether 里"没有端口"（BuildingId="0" 查不到 def）或注册成错误的类型，极难排查 ⇒ 数据错误就崩。 */
+	static uint16 ParseEntityDefIdChecked(FName RowName);
+
 	/** 按 ID 取定义行（行名 = `FString::FromInt(Id)`）。失败不动 OutRow。 */
 	UFUNCTION(BlueprintCallable, Category = "Asce|EntityDef")
 	static bool GetEntityDefRow(int32 Id, FAsceEntityDefRow& OutRow);

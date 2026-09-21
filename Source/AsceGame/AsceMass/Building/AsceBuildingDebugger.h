@@ -29,7 +29,7 @@ public:
 
 	/** 测试建造用的建筑类型（`AsceEntityDefRow` 行名；`BuildingDebugPlaceCell` 用它）。 */
 	UPROPERTY(EditAnywhere, Category = "BuildingDebug",
-		meta = (DataTableBinding = "AsceEntityDefRow:DisplayName,SizeX,SizeY"))
+		meta = (DataTableBinding = "AsceEntityDefRow:DisplayName,Description"))
 	FAsceRowNameWrapper TestConfig;
 
 	UPROPERTY(EditAnywhere, Category = "BuildingDebug")

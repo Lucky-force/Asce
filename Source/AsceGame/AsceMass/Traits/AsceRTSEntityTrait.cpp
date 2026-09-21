@@ -13,17 +13,10 @@ void UAsceRTSEntityTrait::BuildTemplate(FMassEntityTemplateBuildContext& BuildCo
 {
 	BuildContext.AddFragment<FTransformFragment>();
 
-	// 身份 id：行名必须是 0..65535 的数字（不查表，构建期零外部依赖）
+	// 身份 id：行名必须是 1..65535 的数字（不查表，构建期零外部依赖）。
+	// 非法/未配置**直接崩**：静默按 0 处理会让实体在 Ether 里"没有端口"/注册成错误类型，排查成本极高。
 	FAsceUnitDefFragment& DefFragment = BuildContext.AddFragment_GetRef<FAsceUnitDefFragment>();
-	if (UniqueType.IsNone())
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[EntityDef] %s：UniqueType 未配置（实体类型 id = 0）"), *GetName());
-	}
-	else if (!UAsceEntityDefLibrary::ParseEntityDefId(UniqueType.RowName, DefFragment.UniqueTypeId))
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[EntityDef] %s：UniqueType=%s 不是 0..65535 的数字行名（按 0 处理）"),
-			*GetName(), *UniqueType.RowName.ToString());
-	}
+	DefFragment.UniqueTypeId = UAsceEntityDefLibrary::ParseEntityDefIdChecked(UniqueType.RowName);
 
 	// 阵营 fragment（结构）：值由生成方按归属写入（工厂 TeamKey 参数 / 建筑 placement），这里只给默认值
 	BuildContext.AddFragment<FAsceTeamFragment>();

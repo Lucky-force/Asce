@@ -21,7 +21,7 @@ class UAsceRTSEntityTrait : public UMassEntityTraitBase
 public:
 	/** 实体类型（`AsceEntityDefRow` 行名 = 数字 ID；下拉选行）。 */
 	UPROPERTY(EditAnywhere, Category = "Definition",
-		meta = (DataTableBinding = "AsceEntityDefRow:DisplayName,SizeX,SizeY"))
+		meta = (DataTableBinding = "AsceEntityDefRow:DisplayName,Description"))
 	FAsceRowNameWrapper UniqueType;
 
 	// 注意：**阵营不在这里配**——归属取决于谁生成/建造，由生成方在创建时写入

@@ -37,21 +37,33 @@ public:
 	/** **调度器阶段 0**：一切就绪后落地预摆建筑（权威端）+ 两端销毁摆放 Actor；一次性，之后零开销。 */
 	void RunBootstrapStage(const FAsceTickContext& Ctx);
 
+	/** **调度器阶段 0b**：推进"建造中"建筑（工期到期 ⇒ 补 footprint/Ether 标记，观察者随之生效）。 */
+	void RunConstructionStage(const FAsceTickContext& Ctx);
+
+	/** 建造中占位释放：由 `UAsceBuildingPendingObserverProcessor`（footprint Add 观察者）在 costfield 写完之后调用。
+	 *  **不要**在完工那一刻自己清 —— 否则会出现"占位已清、costfield 还没写"的空窗（同帧后续校验会钻过去）。 */
+	void ConsumePendingBuild(FMassEntityHandle Building);
+
+	/** 是否是"建造中"（还没 footprint）。 */
+	bool IsConstructing(FMassEntityHandle Building) const { return PendingBuilds.Contains(Building); }
+
 	// ── 运行期（服务器权威）──
 
-	/** 建一个建筑（校验 → 建实体；observer 链自动生效：costfield/遮挡/建筑层/Ether）。 */
+	/** 建一个建筑：创建"建造中实体"（只有 `FAsceConstructingFragment`，不挡路）；完工时由施工阶段补 footprint。 */
 	bool PlaceBuilding(const FAsceBuildingPlacement& Placement, FString* OutError = nullptr);
 
-	/** 拆一个建筑（销毁实体，全链自动复原）。 */
+	/** 拆一个建筑（建造中 = 直接取消；已完工 = 销毁实体，costfield/遮挡/建筑层/Ether 由观察者复原）。 */
 	bool DemolishBuilding(FMassEntityHandle Building, FString* OutError = nullptr);
 
-	/** 校验（**纯查询、无副作用**）：配置有效 / 不越界 / 不与已有建筑重叠。权威端创建前 + 客户端放置前都用它。
+	/** 校验（**纯查询、无副作用**）：类型有效 / 不越界 / 目标格是"纯可通行"（地形 + 已建成建筑都没占）/
+	 *  不与"建造中"的工地重叠。权威端创建前 + 客户端放置前都用它。
 	 *  `Ctx`（可空）= tick 阶段里的共享上下文；为空时（非 tick 的公开 API 调用）自行解析需要的子系统。 */
 	bool ValidatePlacement(const FAsceBuildingPlacement& Placement, FString* OutError = nullptr, const FAsceTickContext* Ctx = nullptr) const;
 
 	int32 GetBuildingCount() const { return Buildings.Num(); }
 	bool IsBootstrapped() const { return bBootstrapped; }
 	const TArray<FAsceBuiltBuilding>& GetBuildings() const { return Buildings; }
+	const TArray<FMassEntityHandle>& GetPendingBuilds() const { return PendingBuilds; }
 
 	// ── 建筑行为 core（UI/功能入口） ──
 
@@ -68,12 +80,19 @@ public:
 	void SetBuildingSelected(FMassEntityHandle Building, bool bSelected);
 
 private:
-	/** 创建建筑实体（初值一次给全：Transform + footprint + Ether 标记 + 阵营；tag 创建后补）。 */
-	FMassEntityHandle CreateBuildingEntity(const FAsceBuildingPlacement& Placement, const FAsceTickContext* Ctx = nullptr);
+	/** 创建"建造中实体"（模板生成 + Transform/身份/阵营初值 + `FAsceConstructingFragment`）。 */
+	FMassEntityHandle CreateConstructingBuilding(const FAsceBuildingPlacement& Placement, const FAsceTickContext* Ctx = nullptr);
 
-	/** 已建成建筑（Entity ↔ 摆放数据）。 */
+	/** 完工：按 `FAsceConstructingFragment` 补 footprint（+ Ether 标记 + tag），删掉建造 fragment。 */
+	bool CompleteConstruction(FMassEntityHandle Building, const FAsceTickContext* Ctx = nullptr);
+
+	/** 已登记建筑（Entity ↔ 摆放数据；含建造中）。 */
 	UPROPERTY(Transient)
 	TArray<FAsceBuiltBuilding> Buildings;
+
+	/** **建造中占位**（还没 footprint 的工地；放置校验用；由 footprint Add 观察者消费）。 */
+	UPROPERTY(Transient)
+	TArray<FMassEntityHandle> PendingBuilds;
 
 	/** 已报到、等引导的摆放项。 */
 	UPROPERTY(Transient)

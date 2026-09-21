@@ -67,6 +67,17 @@ bool UAsceEntityDefLibrary::ParseEntityDefId(FName RowName, uint16& OutId)
 	return true;
 }
 
+uint16 UAsceEntityDefLibrary::ParseEntityDefIdChecked(FName RowName)
+{
+	uint16 Id = 0;
+	const bool bParsed = ParseEntityDefId(RowName, Id);
+	// 0 保留给"未配置"（`FAsceUnitDefFragment::UniqueTypeId` 的默认值）⇒ 行名 "0" 也非法
+	checkf(bParsed && Id != 0,
+		TEXT("实体类型 id 非法：行名 '%s' 必须是 1..65535 的数字字符串（0 保留给'未配置'）"),
+		*RowName.ToString());
+	return Id;
+}
+
 bool UAsceEntityDefLibrary::GetEntityDefRow(int32 Id, FAsceEntityDefRow& OutRow)
 {
 	if (Id < 0 || Id > MAX_uint16)
@@ -118,14 +129,30 @@ int32 UAsceEntityDefLibrary::ValidateEntityDefTable(TArray<FString>& OutErrors)
 		return 1;
 	}
 
+	// 行名 → id：① 必须是 1..65535 的数字串（**0 保留**给"未配置"哨兵，禁止行名 "0"）；
+	//           ② 别名冲突（"1" / "01" / "001" 解析成同一个 id）也要报，否则两个类型会互相覆盖
+	TMap<uint16, FName> IdToRowName;
 	for (const TPair<FName, uint8*>& Pair : Table->GetRowMap())
 	{
 		uint16 Id = 0;
 		if (!ParseEntityDefId(Pair.Key, Id))
 		{
-			OutErrors.Add(FString::Printf(TEXT("行名 '%s' 不是 0..65535 的数字字符串"), *Pair.Key.ToString()));
+			OutErrors.Add(FString::Printf(TEXT("行名 '%s' 不是 1..65535 的数字字符串"), *Pair.Key.ToString()));
 			continue;
 		}
+		if (Id == 0)
+		{
+			OutErrors.Add(FString::Printf(TEXT("行名 '%s' 非法：id 0 保留给'未配置'（`UniqueTypeId` 默认值）"), *Pair.Key.ToString()));
+			continue;
+		}
+		if (const FName* Existing = IdToRowName.Find(Id))
+		{
+			OutErrors.Add(FString::Printf(TEXT("别名冲突：行名 '%s' 与 '%s' 都解析成 id %u"),
+				*Pair.Key.ToString(), *Existing->ToString(), static_cast<uint32>(Id)));
+			continue;
+		}
+		IdToRowName.Add(Id, Pair.Key);
+
 		if (!Pair.Value)
 		{
 			OutErrors.Add(FString::Printf(TEXT("行 '%s' 数据为空"), *Pair.Key.ToString()));
@@ -154,7 +181,7 @@ int32 UAsceEntityDefLibrary::ValidateEntityDefTable(TArray<FString>& OutErrors)
 
 static FAutoConsoleCommand GValidateEntityDefCmd(
 	TEXT("Asce.ValidateEntityDef"),
-	TEXT("校验实体定义表（行名数字 0..65535、Def 是 FAsceEntityDefBase 子类）"),
+	TEXT("校验实体定义表（行名必须是 1..65535 的数字串、0 保留、无别名冲突、Def 是 FAsceEntityDefBase 子类）"),
 	FConsoleCommandDelegate::CreateLambda([]()
 	{
 		TArray<FString> Errors;

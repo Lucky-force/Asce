@@ -14,7 +14,7 @@ struct FAsceEtherDebugPlacement
 	GENERATED_BODY()
 
 	UPROPERTY(EditAnywhere, Category = "Ether",
-		meta = (DataTableBinding = "AsceEntityDefRow:DisplayName,SizeX,SizeY"))
+		meta = (DataTableBinding = "AsceEntityDefRow:DisplayName,Description"))
 	FAsceRowNameWrapper BuildingDef;
 
 	UPROPERTY(EditAnywhere, Category = "Ether")

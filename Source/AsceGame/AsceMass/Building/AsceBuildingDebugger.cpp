@@ -294,16 +294,18 @@ void AAsceBuildingDebugger::BuildingDebugDump() const
 	}
 
 	const TArray<FAsceBuiltBuilding>& List = Buildings->GetBuildings();
-	UE_LOG(LogTemp, Log, TEXT("[BuildingDebug] 建筑清单（%d 个；已引导=%s）"),
-		List.Num(), Buildings->IsBootstrapped() ? TEXT("yes") : TEXT("no"));
+	UE_LOG(LogTemp, Log, TEXT("[BuildingDebug] 建筑清单（%d 个；已引导=%s；建造中占位=%d）"),
+		List.Num(), Buildings->IsBootstrapped() ? TEXT("yes") : TEXT("no"),
+		Buildings->GetPendingBuilds().Num());
 
 	for (int32 i = 0; i < List.Num(); ++i)
 	{
 		const FAsceBuiltBuilding& Record = List[i];
 		FIntPoint Min, Max;
 		Record.Placement.GetOccupiedBounds(Min, Max);
-		UE_LOG(LogTemp, Log, TEXT("  #%d entity=(%d,%d) def=%s origin=(%d,%d) size=(%d,%d) rot=%d team=%d occ=(%d,%d)-(%d,%d)"),
+		UE_LOG(LogTemp, Log, TEXT("  #%d %s entity=(%d,%d) def=%s origin=(%d,%d) size=(%d,%d) rot=%d team=%d occ=(%d,%d)-(%d,%d)"),
 			i,
+			Record.bComplete ? TEXT("完工") : TEXT("建造中"),
 			Record.Entity.Index, Record.Entity.SerialNumber,
 			*Record.Placement.BuildingDefId.ToString(),
 			Record.Placement.OriginGridLocation.X, Record.Placement.OriginGridLocation.Y,

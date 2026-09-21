@@ -25,8 +25,12 @@ UAsceTerrainHeightProcessor::UAsceTerrainHeightProcessor()
 void UAsceTerrainHeightProcessor::ConfigureQueries(const TSharedRef<FMassEntityManager>& EntityManager)
 {
 	EntityQuery.RegisterWithProcessor(*this);
+	// **查询只要 Transform** ⇒ 所有"需要贴地"的实体都走这一份实现：单位（移动管线里）与建筑（静态，
+	// 每帧被同一次遍历采样，幂等）共用；**创建方不要自己采样高度**，否则就是两套口径。
+	// TODO(贴地标记)：以后如果有"不该贴地"的实体（飞行单位/空中投射物），需要加一个标记 tag
+	// （例如由地面单位/建筑 trait 添加的 `FAsceTerrainSnapTag`）来排除它们。
 	EntityQuery.AddRequirement<FTransformFragment>(EMassFragmentAccess::ReadWrite);
-	// 只读高度场（trait GameThreadOnly=false，只读 StaticHeights 并行安全）
+	// 只读高度场（trait GameThreadOnly=false，只有 StaticHeights 并行安全）
 	EntityQuery.AddSubsystemRequirement<UAsceFogSubsystem>(EMassFragmentAccess::ReadOnly);
 }
 
@@ -42,51 +46,19 @@ void UAsceTerrainHeightProcessor::Execute(FMassEntityManager& EntityManager, FMa
 		}
 
 		const TArrayView<FTransformFragment> Transforms = Ctx.GetMutableFragmentView<FTransformFragment>();
-		const int32 GridW = HMap.GetGridW();
-		const int32 GridH = HMap.GetGridH();
-		const float CellCm = HMap.GetCellSizeCm();
-		if (GridW <= 0 || GridH <= 0 || CellCm <= 0.f)
-		{
-			return;
-		}
-
 		const int32 Num = Ctx.GetNumEntities();
 		for (int32 i = 0; i < Num; ++i)
 		{
 			FTransform& Transform = Transforms[i].GetMutableTransform();
 			const FVector Location = Transform.GetLocation();
 
-			// 世界 → 格中心网格坐标（格中心 = 整数）
-			const float GX = static_cast<float>(Location.X) / CellCm - 0.5f;
-			const float GY = static_cast<float>(Location.Y) / CellCm - 0.5f;
-
-			// 图外：不做贴地，保持原 Z
-			if (GX < -0.5f || GY < -0.5f || GX > GridW - 0.5f || GY > GridH - 0.5f)
+			// 双线性采样（与其它贴地消费者共用同一份实现；图外不贴地、保持原 Z）
+			float Height = 0.f;
+			if (HMap.SampleHeightWorld(FVector2D(Location.X, Location.Y), Height))
 			{
-				continue;
+				Transform.SetTranslation(FVector(Location.X, Location.Y, Height));
 			}
-
-			const int32 X0 = FMath::FloorToInt32(GX);
-			const int32 Y0 = FMath::FloorToInt32(GY);
-			const float FX = GX - static_cast<float>(X0);
-			const float FY = GY - static_cast<float>(Y0);
-
-			// 采样点 clamp 到图内（边缘安全；图内 2×2 采样）
-			const int32 X0C = FMath::Clamp(X0, 0, GridW - 1);
-			const int32 Y0C = FMath::Clamp(Y0, 0, GridH - 1);
-			const int32 X1C = FMath::Clamp(X0 + 1, 0, GridW - 1);
-			const int32 Y1C = FMath::Clamp(Y0 + 1, 0, GridH - 1);
-
-			// 双线性：先水平（两行各插值）后垂直
-			const float H00 = static_cast<float>(HMap.GetStaticHeight(X0C + Y0C * GridW));
-			const float H10 = static_cast<float>(HMap.GetStaticHeight(X1C + Y0C * GridW));
-			const float H01 = static_cast<float>(HMap.GetStaticHeight(X0C + Y1C * GridW));
-			const float H11 = static_cast<float>(HMap.GetStaticHeight(X1C + Y1C * GridW));
-			const float Bottom = FMath::Lerp(H00, H10, FX);
-			const float Top = FMath::Lerp(H01, H11, FX);
-			const float Height = FMath::Lerp(Bottom, Top, FY);
-
-			Transform.SetTranslation(FVector(Location.X, Location.Y, Height));
 		}
 	});
 }
+

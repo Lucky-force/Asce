@@ -326,6 +326,8 @@ namespace
 					if (State->RowNameHandle.IsValid())
 					{
 						State->RowNameHandle->SetValue(Option->RowName);
+						// 通知编辑器：标脏（保存不漏）+ 广播属性变更（细节面板/监听者/Undo 才走）
+						State->RowNameHandle->NotifyPostChange(EPropertyChangeType::ValueSet);
 					}
 					if (TSharedPtr<SComboButton> ComboButton = State->ComboButton.Pin())
 					{

@@ -117,9 +117,14 @@ TArray<int64> UAsceEntityFactory::SpawnEntitiesByDef(UObject* WorldContextObject
 			}
 			else
 			{
-				UE_LOG(LogTemp, Warning, TEXT("[EntityFactory] 模板缺少 FTransformFragment（模板要挂 UAsceRTSEntityTrait）"));
+				// 结构契约：Transform / 身份 / 阵营是"实体基础"（单位与建筑都要）⇒ 模板必须挂 `UAsceRTSEntityTrait`
+				ensureOnceMsgf(false, TEXT("[EntityFactory] 模板缺少 FTransformFragment（模板必须挂 UAsceRTSEntityTrait）"));
 			}
 		}
+		ensureOnceMsgf(EntityManager.GetFragmentDataPtr<FAsceUnitDefFragment>(Handle) != nullptr,
+			TEXT("[EntityFactory] 模板缺少 FAsceUnitDefFragment：模板必须挂 UAsceRTSEntityTrait（身份 id / 检视器 / Ether 注册都靠它）"));
+		ensureOnceMsgf(EntityManager.GetFragmentDataPtr<FAsceTeamFragment>(Handle) != nullptr,
+			TEXT("[EntityFactory] 模板缺少 FAsceTeamFragment：模板必须挂 UAsceRTSEntityTrait"));
 		if (UnitDef)
 		{
 			ApplyUnitDef(EntityManager, Handle, *UnitDef, TeamKey);

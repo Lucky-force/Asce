@@ -157,6 +157,9 @@ int32 UAsceEtherNetworkSubsystem::AllocNodeId()
 		NodeId = Nodes.AddDefaulted();
 	}
 	NodeCores.SetNum(Nodes.Num());
+	// 器件邻接表也要跟 `Nodes` 对齐：只有全量重建会 SetNum 的话，纯增量路径（AddNode）会让它一直是空的
+	// ⇒ Pass 1 读 DeviceAdjSegs[NodeId] 越界；且写侧（LinkDeviceSeg/RecomputeDeviceAdjSegsForNodes）带守卫会被静默跳过。
+	DeviceAdjSegs.SetNum(Nodes.Num());
 	return NodeId;
 }
 
@@ -664,7 +667,8 @@ void UAsceEtherNetworkSubsystem::BuildNodePorts(int32 NodeId, const FAsceTickCon
 	const FAsceEtherBuildingDef* Cfg = GetNodeDef(NodeId);
 	if (!Cfg)
 	{
-		return; // 注册时已告警
+		// def 缺失（AddNode/PatchNode 解析失败时已 ensure 报错）⇒ 该节点按"空壳"处理：没有端口/core
+		return;
 	}
 	N.bDevice = (Cfg->DeviceType == EAsceEtherDeviceType::Sequential);
 
@@ -1254,6 +1258,12 @@ void UAsceEtherNetworkSubsystem::ApplyGraphCommands(const FAsceTickContext& Ctx)
 				N.bAlive = true;
 				N.DefData = FAsceEtherBuildingDef();
 				N.bHasDefData = UAsceEntityDefLibrary::GetEtherBuildingDefByName(Add->BuildingId, N.DefData);
+				// 契约：实体定义表必须在实体创建**之前**挂载完成（不支持"表挂晚了"的补救）。
+				// 查不到就是数据/挂载顺序错误 ⇒ ensure 报错（击中断点 + 日志），但不做重试：
+				// 该节点会作为"空壳"存在（没有端口/core，对 Ether 不可见）。
+				ensureMsgf(N.bHasDefData,
+					TEXT("[Ether] 建筑类型定义缺失：%s（行不存在 / 不是 Ether 建筑 / 表没挂载）——节点将没有端口"),
+					*Add->BuildingId.ToString());
 				N.InternalLinks.Reset();
 				N.bHasCachedFootprint = false;   // 新节点：清掉可能残留的 footprint 缓存
 				if (NodeCores.IsValidIndex(NodeId))
@@ -1261,12 +1271,6 @@ void UAsceEtherNetworkSubsystem::ApplyGraphCommands(const FAsceTickContext& Ctx)
 					NodeCores[NodeId] = nullptr;
 				}
 				EntityToNode.Add(Entity, NodeId);
-				if (!N.bHasDefData)
-				{
-					UE_LOG(LogTemp, Warning, TEXT("[Ether] 建筑类型定义缺失：%s（实体定义表里没有该行 / 不是 Ether 建筑）"),
-						*Add->BuildingId.ToString());
-				}
-
 				// **局部**：端口 → core → 内布线 → 射线重扫 → 段/器件邻接
 				BuildNodePorts(NodeId, Ctx);
 				EnsureNodeCore(NodeId);
@@ -1368,6 +1372,10 @@ void UAsceEtherNetworkSubsystem::ApplyGraphCommands(const FAsceTickContext& Ctx)
 					N.BuildingId = PatchNode->Patch.BuildingId;
 					N.DefData = FAsceEtherBuildingDef();
 					N.bHasDefData = UAsceEntityDefLibrary::GetEtherBuildingDefByName(N.BuildingId, N.DefData);
+					// 同 AddNode 的契约：换建筑类型时行必须存在（ensure 报错，不做重试）
+					ensureMsgf(N.bHasDefData,
+						TEXT("[Ether] PatchNode 换建筑类型失败：%s（行不存在 / 不是 Ether 建筑 / 表没挂载）——节点将没有端口"),
+						*N.BuildingId.ToString());
 					N.bLinksInitialized = false;   // 换建筑类型：重新套用新类型的默认内布线
 					bNeedRebuild = true; // 整组端口换掉（不搬在制品）
 				}

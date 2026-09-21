@@ -60,6 +60,11 @@ public:
 		return FIntVector2(Index % GridW, Index / GridW);
 	}
 
+	/** **世界 XY 处的双线性高度**（cm；与 `UAsceTerrainHeightProcessor` 的采样口径一致：
+	 *  格中心 = 整数格坐标、边缘 clamp、图外返回 false 且不动 OutHeightCm）。
+	 *  单位贴地、建筑基座采样共用这一份实现。 */
+	bool SampleHeightWorld(const FVector2D& WorldXY, float& OutHeightCm) const;
+
 	// ── 静态高度场（地形 + 烘焙静态物，来源待接入，先全 0） ──
 
 	void ResetStaticToZero();

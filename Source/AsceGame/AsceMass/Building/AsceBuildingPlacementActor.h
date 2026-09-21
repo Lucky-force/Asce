@@ -24,7 +24,7 @@ public:
 
 	/** 建筑类型（`AsceEntityDefRow` 行名 = 数字 ID；下拉选行）。 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Building",
-		meta = (DataTableBinding = "AsceEntityDefRow:DisplayName,SizeX,SizeY"))
+		meta = (DataTableBinding = "AsceEntityDefRow:DisplayName,Description"))
 	FAsceRowNameWrapper BuildingDef;
 
 	/** 归属阵营（写进 `FAsceTeamFragment::TeamKey`）。 */

@@ -50,6 +50,16 @@ struct FCostField
 		return Cost & 0b01111111;
 	}
 };
+
+namespace AsceCostField
+{
+	/** "纯可通行"格的值（`SetGridPassable` 写的就是它）。放置校验要求目标格的 cost 必须等于它：
+	 *  既是"没被地形墙/地形代价占用"，也是"没有已建成建筑占用"（建筑写 `BlockedCost`）。 */
+	constexpr uint8 PlainPassableCost = 1;
+
+	/** 阻挡值（地形 bake 与建筑占用统一用它）。 */
+	constexpr uint8 BlockedCost = MAX_uint8;
+}
 	
 	
 struct FIntegrationField
@@ -969,6 +979,22 @@ public:
 	int32 GetSectorCountY() const { return SectorCountY; }
 	int32 GetGridCountX() const  { return static_cast<int32>(GridCountX); }
 	int32 GetGridCountY() const  { return static_cast<int32>(GridCountY); }
+
+	// ── 逐格查询（建筑放置校验等用；越界一律按"阻挡"处理）──
+
+	/** 逻辑格是否被阻挡（地形墙 / 已建成建筑）。 */
+	ASCE_INLINE bool IsCellBlocked(int32 X, int32 Y) const
+	{
+		const int32 Index = X + Y * static_cast<int32>(GridCountX);
+		return !CostFields.IsValidIndex(Index) || CostFields[Index].IsWall();
+	}
+
+	/** 逻辑格是否是"纯可通行"（cost == `AsceCostField::PlainPassableCost`）：放置要求它是。 */
+	ASCE_INLINE bool IsCellCleanPassable(int32 X, int32 Y) const
+	{
+		const int32 Index = X + Y * static_cast<int32>(GridCountX);
+		return CostFields.IsValidIndex(Index) && CostFields[Index].Cost == AsceCostField::PlainPassableCost;
+	}
 	int32 GetPortalCount() const { return Portals.Num(); }
 
 private:

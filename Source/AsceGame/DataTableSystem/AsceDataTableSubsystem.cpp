@@ -24,6 +24,13 @@ void UAsceDataTableSubsystem::RefreshTablesFromSettings()
 	{
 		return;
 	}
+
+	// **以 settings 为准重建**映射：先清再建。
+	// 这两个映射的唯一来源就是 settings 里登记的 MDT（SDT 是挂到 MDT 的父表上，不在这里登记）
+	// ⇒ 清空是安全的；否则改了配置/把别名清空后，旧映射会残留（PIE 里表现为"改了还是旧表"，重启才生效）。
+	AliasToMaster.Reset();
+	RowStructToMaster.Reset();
+
 	// Settings 上每个 `TSoftObjectPtr<UDataTable>` 变量都是"一张逻辑表（MDT）"；变量名 = 别名
 	for (TFieldIterator<FSoftObjectProperty> It(UAsceDataTableSettings::StaticClass()); It; ++It)
 	{
@@ -275,7 +282,7 @@ void UAsceDataTableSubsystem::DumpTables() const
 
 static FAutoConsoleCommand GRefreshDataTablesCmd(
 	TEXT("Asce.DataTables.Refresh"),
-	TEXT("重扫 UAsceDataTableSettings，重建 别名/行结构 → MDT 映射（并 dump）"),
+	TEXT("以 UAsceDataTableSettings 为准重建 别名/行结构→MDT 映射（先清后建）并 dump"),
 	FConsoleCommandDelegate::CreateLambda([]()
 	{
 		if (UAsceDataTableSubsystem* Sub = UAsceDataTableSubsystem::Get())

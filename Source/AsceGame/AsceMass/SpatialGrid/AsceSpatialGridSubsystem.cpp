@@ -35,7 +35,9 @@ void UAsceSpatialGridSubsystem::RunGridStages(const FAsceTickContext& Ctx)
     RebuildBuildingsData(Ctx);
     bIsRebuilding = false;
 
-    // 2. 消费所有回调
+    // 2. 消费所有回调（线段/盒版）
+    // ⚠️ TODO(safe-query)：半径版对应的 `RadiusQueryCommands` 这里**没有**消费（见头文件 TODO）⇒
+    // 半径 safe 查询回调永不触发 + 队列泄漏；目前无调用方，待决策修法。
     if (PendingQueryCommands.Num() > 0)
     {
         TArray<FMassEntityHandle> EntityHandles;
@@ -186,7 +188,9 @@ void UAsceSpatialGridSubsystem::FindEntitiesSafe(const FVector2D& CenterWorldLoc
 {
     if (bIsRebuilding)
     {
-        //缓存, 如果是在主线程查询，那么必定不会走到这里
+        // ⚠️ TODO(safe-query)：这个队列**没有消费者**（`RunGridStages` 只处理 `PendingQueryCommands`）⇒
+        // 走到这里意味着回调永远不会触发（调用方若在等回调会悬挂），而且队列只增不减（泄漏）。
+        // 现在没有任何调用方；修法见头文件 `TODO(safe-query)`（比对线段版的同帧消费补齐 / 删 API / 做真线程安全）。
         RadiusQueryCommands.Add({Callback, CenterWorldLocation, Radius});
     }
     else
@@ -305,7 +309,12 @@ FMassEntityHandle UAsceSpatialGridSubsystem::FindUnitHitOnRay(const FVector& Ori
     }
 #endif
     // 2. 遍历穿过的格子 (DDA)
-    for (int32 Steps = 0; Steps < 200; ++Steps)
+    // 步数按 MaxDistance 推（原来是写死 200 步 ⇒ 只覆盖 200*GridCellSize，默认 300cm 即 600m；
+    // 超过这个距离的单位点不中，而同距离的建筑能选中 ⇒ 两条路径射程不一致）
+    const int32 MaxSteps = (GridCellSize > 0.f)
+        ? FMath::Clamp(FMath::CeilToInt(MaxDistance / GridCellSize) + 8, 1, 4096)
+        : 200;
+    for (int32 Steps = 0; Steps < MaxSteps; ++Steps)
     {
         if (IsValidCoord(OriginCell))
         {
@@ -318,7 +327,9 @@ FMassEntityHandle UAsceSpatialGridSubsystem::FindUnitHitOnRay(const FVector& Ori
                 }
                 Visited.Add(E.EntityHandle);
 
-                float T = RayAABBHit(Origin, Dir, FVector(E.CacheEntityLocation.X, E.CacheEntityLocation.Y, E.CacheEntityLocation.Z + E.CachedEntityRadius / 2), FVector(E.CachedEntityRadius, E.CachedEntityRadius, E.CachedEntityRadius / 2));
+                // 命中盒：用实体的**真实 Z** + **高度片段**（和框选/debugger 同一口径；高度缺失时退回用半径）
+                const float PickHeight = (E.CachedEntityHeight > 0.f) ? E.CachedEntityHeight : E.CachedEntityRadius;
+                float T = RayAABBHit(Origin, Dir, FVector(E.CacheEntityLocation.X, E.CacheEntityLocation.Y, E.CacheEntityLocation.Z + PickHeight * 0.5f), FVector(E.CachedEntityRadius, E.CachedEntityRadius, PickHeight * 0.5f));
                 if (T > 0 && T < ClosestT)
                 {
                     ClosestT = T;
@@ -399,9 +410,10 @@ FMassEntityHandle UAsceSpatialGridSubsystem::FindEntitiesAtScreenPoint(const FVe
     return Best;
 }
 
-FMassEntityHandle UAsceSpatialGridSubsystem::FindBuildingHitOnRay(const FVector& Origin, const FVector& Dir, float MaxDistance, float& OutT) const
+    FMassEntityHandle UAsceSpatialGridSubsystem::FindBuildingHitOnRay(const FVector& Origin, const FVector& Dir, float MaxDistance, float& OutT) const
 {
-    OutT = TNumericLimits<float>::Max();
+    // OutT 用 MaxDistance 播种（与 `FindUnitHitOnRay` 的 `ClosestT` 同口径）：命中必须落在射程内
+    OutT = MaxDistance;
     if (BuildingCells.Num() == 0 || LogicalCellSize <= 0)
     {
         return FMassEntityHandle();
@@ -417,18 +429,18 @@ FMassEntityHandle UAsceSpatialGridSubsystem::FindBuildingHitOnRay(const FVector&
     const int32 StepX = (Dir.X > 0.f) ? 1 : ((Dir.X < 0.f) ? -1 : 0);
     const int32 StepY = (Dir.Y > 0.f) ? 1 : ((Dir.Y < 0.f) ? -1 : 0);
 
-    auto NextBoundary = [this](float OriginC, int32 CellC, int32 Step)
+    auto NextBoundary = [this](int32 CellC, int32 Step)
     {
         return (static_cast<float>(CellC) + (Step > 0 ? 1.f : 0.f)) * static_cast<float>(LogicalCellSize);
     };
-    float tMaxX = (StepX != 0) ? (NextBoundary(Origin.X, Cell.X, StepX) - Origin.X) / Dir.X : TNumericLimits<float>::Max();
-    float tMaxY = (StepY != 0) ? (NextBoundary(Origin.Y, Cell.Y, StepY) - Origin.Y) / Dir.Y : TNumericLimits<float>::Max();
+    float tMaxX = (StepX != 0) ? (NextBoundary(Cell.X, StepX) - Origin.X) / Dir.X : TNumericLimits<float>::Max();
+    float tMaxY = (StepY != 0) ? (NextBoundary(Cell.Y, StepY) - Origin.Y) / Dir.Y : TNumericLimits<float>::Max();
     const float tDeltaX = (StepX != 0) ? LogicalCellSize / FMath::Abs(Dir.X) : TNumericLimits<float>::Max();
     const float tDeltaY = (StepY != 0) ? LogicalCellSize / FMath::Abs(Dir.Y) : TNumericLimits<float>::Max();
 
     TSet<FMassEntityHandle> Tested;   // 同一建筑跨多个粗格：只测一次
     FMassEntityHandle Best;
-    const int32 MaxSteps = FMath::Max(64, FMath::CeilToInt(MaxDistance / LogicalCellSize) + 8);
+    const int32 MaxSteps = FMath::Clamp(FMath::CeilToInt(MaxDistance / LogicalCellSize) + 8, 64, 4096);
 
     for (int32 Step = 0; Step < MaxSteps; ++Step)
     {
@@ -443,12 +455,12 @@ FMassEntityHandle UAsceSpatialGridSubsystem::FindBuildingHitOnRay(const FVector&
                 }
                 Tested.Add(Part.Entity);
 
-                // 命中盒 = footprint（旋转后 AABB）× HeightCm
+                // 命中盒 = footprint（旋转后 AABB）× HeightCm，**基座贴地**（`BaseZ` = 实体 Z）
                 const int32 SizeX = FMath::Max(1, Part.Size.X);
                 const int32 SizeY = FMath::Max(1, Part.Size.Y);
                 const FVector2D Min2D(Part.Origin.X * (float)LogicalCellSize, Part.Origin.Y * (float)LogicalCellSize);
                 const FVector2D Max2D((Part.Origin.X + SizeX) * (float)LogicalCellSize, (Part.Origin.Y + SizeY) * (float)LogicalCellSize);
-                const FVector Center((Min2D.X + Max2D.X) * 0.5f, (Min2D.Y + Max2D.Y) * 0.5f, Part.HeightCm * 0.5f);
+                const FVector Center((Min2D.X + Max2D.X) * 0.5f, (Min2D.Y + Max2D.Y) * 0.5f, Part.BaseZ + Part.HeightCm * 0.5f);
                 const FVector Extent((Max2D.X - Min2D.X) * 0.5f, (Max2D.Y - Min2D.Y) * 0.5f, Part.HeightCm * 0.5f);
 
                 const float T = RayAABBHit(Origin, Dir, Center, Extent);
@@ -824,11 +836,12 @@ void UAsceSpatialGridSubsystem::FindBuildingsInFrustum(const FConvexVolume& Frus
 					continue;
 				}
 
-				const FVector Center((Min2D.X + Max2D.X) * 0.5f, (Min2D.Y + Max2D.Y) * 0.5f, Part.HeightCm * 0.5f);
+				// 命中盒 = footprint（旋转后 AABB）× HeightCm，**基座贴地**（与点选 `FindBuildingHitOnRay` 同口径）
+				const FVector Center((Min2D.X + Max2D.X) * 0.5f, (Min2D.Y + Max2D.Y) * 0.5f, Part.BaseZ + Part.HeightCm * 0.5f);
 				const FVector Extent((Max2D.X - Min2D.X) * 0.5f, (Max2D.Y - Min2D.Y) * 0.5f, Part.HeightCm * 0.5f);
 				if (IsAABBInsideFrustum(Frustum, Center, Extent))
 				{
-					Out.AddUnique(Part.Entity);
+					Out.Add(Part.Entity);   // `Seen` 已保证每栋只测一次 ⇒ 不需要 AddUnique
 				}
 			}
 		}
@@ -856,12 +869,9 @@ void UAsceSpatialGridSubsystem::AddPartToCells(const FAsceGridBuildingPart& Part
 			{
 				continue;
 			}
-			FAsceGridBuildingsData& Cell = BuildingCells[BuildingCoordToIndex(Coord)];
-			const bool bExists = Cell.Buildings.ContainsByPredicate([&Part](const FAsceGridBuildingPart& P) { return P.Entity == Part.Entity; });
-			if (!bExists)
-			{
-				Cell.AddBuilding(Part);   // 每格自旋锁（并行 chunk 可能同时写同一粗格）
-			}
+			// 直接追加：整层每帧先 Reset 再重填，且同一次调用对同一粗格只走一遍 ⇒ 不需要查重
+			// （并行 chunk 可能同时写同一粗格；互斥在 AddBuilding 里的每格自旋锁）
+			BuildingCells[BuildingCoordToIndex(Coord)].AddBuilding(Part);
 		}
 	}
 }
@@ -1298,8 +1308,8 @@ void UAsceSpatialGridSubsystem::GetConvexHullAABB2D(const TArray<FVector2D>& Hul
 
 void UAsceSpatialGridSubsystem::FindEntitiesInFrustum(const FConvexVolume& Frustum, const FVector2D& AABBMin, const FVector2D& AABBMax, TArray<FMassEntityHandle>& OutHandles) const
 {
-    OutHandles.Reset();
-
+    // **契约：追加**（不清空输出；和 `FindBuildingsInFrustum/InRadius/InLogicalRect` 一致）。
+    // 调用方要"本次查询结果"就自己在调用前 Reset（框选入口就是这么做的）。
     if (EntitiesDataCells.Num() == 0)
     {
         return;
@@ -1341,7 +1351,8 @@ void UAsceSpatialGridSubsystem::FindEntitiesInFrustum(const FConvexVolume& Frust
         }
     }
 
-    OutHandles = HandleSet.Array();
+    // 追加（本次查询内部按 handle 去重）
+    OutHandles.Append(HandleSet.Array());
 }
 
 

@@ -73,7 +73,7 @@
 ### 1.3 建筑（容器）
 - **类型定义**（共享；实体定义表）：`FAsceEtherBuildingDef`（`DeviceType`（组合/时序）、`ProcessCoreClass`、`SizeX/SizeY`/`OcclusionHeightCm`（基类）、`SupportedDimCount`、`PortSlots`、`DefaultInternalLinks`）。
 - **实例**（Subsystem）：`FNode`（身份/`DefData`（表行拷贝）/端口区间/内部布线/`CachedDirection`）+ 端口实例数组。
-- 标记 fragment `FEtherBuildingFragment { FName BuildingDefId; }`（注册/注销锚点 + 身份；= 定义表行名）+ `FAsceUnitDefFragment{ uint16 UniqueTypeId }`（= 行名数字）。
+- 标记 fragment `FEtherBuildingFragment`（**空标记**：注册/注销锚点）+ `FAsceUnitDefFragment{ uint16 UniqueTypeId }`（= 定义表行名的数字 id）。
 
 ---
 
@@ -250,7 +250,7 @@ PushPatchNode / PushSetNodeLinks / PushPatchPort / PushRefreshData / PushFullReb
 ### 3.4 Fragment
 
 ```cpp
-USTRUCT() struct FEtherBuildingFragment : public FMassFragment { FName BuildingDefId; };  // 只有标记
+USTRUCT() struct FEtherBuildingFragment : public FMassFragment {};  // 空标记（身份在 FAsceUnitDefFragment::UniqueTypeId）
 ```
 - 端口/布线/在制品在 **Subsystem**；器件状态在 **core 实例**；**fragment 不再承载任何状态**。
 
