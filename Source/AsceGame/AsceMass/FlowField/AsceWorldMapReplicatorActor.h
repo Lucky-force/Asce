@@ -3,6 +3,7 @@
 
 #include "GameFramework/Info.h"
 #include "AsceMass/FlowField/AsceFlowFieldCores.h"
+#include "AsceMass/FlowField/AsceLayeredCostField.h"
 #include "AsceWorldMapReplicatorActor.generated.h"
 
 class UAsceBakedMapData;
@@ -67,6 +68,11 @@ public:
 	// 不应该在Client上调用WorldMapData.SetCostField(...)。
 	UPROPERTY(Replicated)
 	FWorldMapData WorldMapData;
+
+	// 代价来源分层（BaseLand / Building / Special），**只在服务端权威端维护**：
+	// 客户端不建层，只用复制下来的 WorldMapData.CostFields（即组合后的最终值）。
+	// 不参与网络复制 ⇒ 这里刻意不做 UPROPERTY。
+	FAsceLayeredCostField LayeredCostField;
 
 private:
 	/** VisionDetailLevel → Scale（整除 GRID_SIZE；越界回退 2）。 */

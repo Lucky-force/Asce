@@ -8,19 +8,21 @@
 
 /**
  * 寻路侧的"建筑 footprint 生命周期" Observer：
- * 在带 FAsceGridFootprintFragment 的建筑实体创建/销毁时，事件驱动地把建筑占的格子
- * 写入/回滚 CostField 阻挡（建筑不可通行）。
+ * 在带 FAsceGridFootprintFragment 的建筑实体创建/销毁时，事件驱动地把建筑占的格子写进/撤销
+ * "建筑代价层"（FAsceLayeredCostField::BuildingCost），并逐格把"层组合结果"写回 CostFields
+ * （只在真变时写 ⇒ 才触发复制 + 扇区/墙簇重建）。
  *
  * - footprint 的原生坐标就是 flowfield 格（OriginGridLocation/Width/Height），零换算；
- * - 建筑 footprint 互不重叠，且放置校验保证落在"可通行的空地"上 → Add 全格写 block(255)，
- *   Remove 全格恢复为可通行(1)，不需要引用计数 / 记录原值；
- *   （若未来引入地形 cost 加权，放置校验要求原格 cost==1 的约束随之生效即可。）
+ * - 建筑 footprint 互不重叠 ⇒ 建筑层是单值（0 = 无建筑 / BlockedCost = 阻挡），不做引用计数；
+ * - Remove 不再硬写"可通行(1)"，而是清掉建筑层、由 BaseLand 基线恢复该格原值 ⇒ 修掉了
+ *   "建筑压在带地形代价/墙的格上时，拆除会把地形一并抹成可通行"的问题；
  * - 观察同一 fragment 的还有 Vision/AsceVisionOcclusionObserverProcessor（写视野遮挡），
  *   两模块各自独立订阅同一事件源，互不依赖。
  *
  * 改动记录：本文件由 AsceFootprintFragment.h 旧 TODO（Add/Remove 写 CostField）落地而来；
  * 旧 TODO 里"运行时寻路 Subsystem 还没搭"的前提现已满足（UAscePathFindingSubsystem +
  * FWorldMapData + SetCostField 管线已在 FlowField 模块实现）。
+ * 后续改造：写入统一走 FAsceLayeredCostField（BaseLand/Building/Special 分层），不再直接写 CostFields。
  */
 
 /** 建筑入场：把 footprint 覆盖格写成阻挡。 */

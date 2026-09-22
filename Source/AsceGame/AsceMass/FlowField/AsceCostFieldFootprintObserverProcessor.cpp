@@ -5,19 +5,21 @@
 #include "MassExecutionContext.h"
 
 #include "AscePathFindingSubsystem.h"
+#include "AsceLayeredCostField.h"
 #include "AsceMass/Fragments/AsceFootprintFragment.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AsceCostFieldFootprintObserverProcessor)
 
 namespace
 {
-	// CostField 语义（见 AsceFlowFieldCores.h：IsGridBlockStateChanged / 初始化代价场）：
-	// 255 = 不可通行(block)，1 = 可通行。建筑占用的格在 Add 时写 255、Remove 时恢复为 1。
-	constexpr uint8 kBlockCost = MAX_uint8;
-	constexpr uint8 kPassableCost = 1;
+	// 代价分层语义（见 AsceLayeredCostField.h）：
+	// - 建筑层（BuildingCost）：0 = 无建筑，AsceCostField::BlockedCost = 建筑占用阻挡；
+	// - Add/Remove 只改建筑层，最终 CostFields 由"层组合"统一写回（BaseLand 基线保证 Remove 能还原地形原值）。
+	constexpr uint8 kNoBuildingCost = 0;
 
-	/** 把 footprint 覆盖的格子逐格写 cost；返回是否至少处理了一格。 */
-	void ApplyCostToFootprint(FWorldMapData& WorldMapData, const FAsceGridFootprintFragment& Footprint, uint8 NewCost)
+	/** 把 footprint 覆盖格写进建筑层，并逐格 flush（组合结果与现值不同才写回 CostFields）。 */
+	void ApplyBuildingFootprint(FAsceLayeredCostField& LayeredCostField, FWorldMapData& WorldMapData,
+		const FAsceGridFootprintFragment& Footprint, uint8 NewBuildingCost)
 	{
 		const int32 GridCountX = WorldMapData.GetGridCountX();
 		const int32 GridCountY = WorldMapData.GetGridCountY();
@@ -34,14 +36,16 @@ namespace
 		{
 			for (int32 X = X0; X <= X1; ++X)
 			{
-				WorldMapData.SetCostField(static_cast<uint32>(X + Y * GridCountX), NewCost);
+				const uint32 GridIndex = static_cast<uint32>(X + Y * GridCountX);
+				LayeredCostField.SetBuildingCost(GridIndex, NewBuildingCost);
+				LayeredCostField.FlushCell(GridIndex, WorldMapData);
 			}
 		}
 	}
 }
 
 // ────────────────────────────────────────────
-// Add（建筑入场：写阻挡）
+// Add（建筑入场：建筑层写阻挡）
 // ────────────────────────────────────────────
 
 UAsceCostFieldFootprintAddObserverProcessor::UAsceCostFieldFootprintAddObserverProcessor()
@@ -65,21 +69,22 @@ void UAsceCostFieldFootprintAddObserverProcessor::Execute(FMassEntityManager& En
 	{
 		UAscePathFindingSubsystem& PathFinding = Ctx.GetMutableSubsystemChecked<UAscePathFindingSubsystem>();
 		FWorldMapData* WorldMapData = PathFinding.GetWorldMapDataMutableForAuthority();
-		if (!WorldMapData)
+		FAsceLayeredCostField* LayeredCostField = PathFinding.GetLayeredCostFieldMutableForAuthority();
+		if (!WorldMapData || !LayeredCostField)
 		{
-			return; // WorldMap 尚未就绪（replicator 未到位 / 非 authority）
+			return; // WorldMap / 代价分层尚未就绪（replicator 未到位 / 非 authority）
 		}
 
 		const TConstArrayView<FAsceGridFootprintFragment> Footprints = Ctx.GetFragmentView<FAsceGridFootprintFragment>();
 		for (const FAsceGridFootprintFragment& Footprint : Footprints)
 		{
-			ApplyCostToFootprint(*WorldMapData, Footprint, kBlockCost);
+			ApplyBuildingFootprint(*LayeredCostField, *WorldMapData, Footprint, AsceCostField::BlockedCost);
 		}
 	});
 }
 
 // ────────────────────────────────────────────
-// Remove（建筑退场：恢复可通行）
+// Remove（建筑退场：清建筑层，由 BaseLand 基线还原地形）
 // ────────────────────────────────────────────
 
 UAsceCostFieldFootprintRemoveObserverProcessor::UAsceCostFieldFootprintRemoveObserverProcessor()
@@ -102,7 +107,8 @@ void UAsceCostFieldFootprintRemoveObserverProcessor::Execute(FMassEntityManager&
 	{
 		UAscePathFindingSubsystem& PathFinding = Ctx.GetMutableSubsystemChecked<UAscePathFindingSubsystem>();
 		FWorldMapData* WorldMapData = PathFinding.GetWorldMapDataMutableForAuthority();
-		if (!WorldMapData)
+		FAsceLayeredCostField* LayeredCostField = PathFinding.GetLayeredCostFieldMutableForAuthority();
+		if (!WorldMapData || !LayeredCostField)
 		{
 			return;
 		}
@@ -110,7 +116,7 @@ void UAsceCostFieldFootprintRemoveObserverProcessor::Execute(FMassEntityManager&
 		const TConstArrayView<FAsceGridFootprintFragment> Footprints = Ctx.GetFragmentView<FAsceGridFootprintFragment>();
 		for (const FAsceGridFootprintFragment& Footprint : Footprints)
 		{
-			ApplyCostToFootprint(*WorldMapData, Footprint, kPassableCost);
+			ApplyBuildingFootprint(*LayeredCostField, *WorldMapData, Footprint, kNoBuildingCost);
 		}
 	});
 }

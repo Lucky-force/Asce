@@ -10,6 +10,7 @@
 
 class UAsceRTSCommanderComponent;
 class UAscePathFindingSubsystem;
+struct FAsceLayeredCostField;
 
 /**
  * 流场寻路调试器：
@@ -117,6 +118,19 @@ public:
 	UFUNCTION(Exec)
 	void FlowFieldDebugClearSources();
 
+	// ── 代价分层 Special 层自测（控制台命令；世界坐标） ──
+	// FlowFieldDebugAddSpecial WorldX WorldY Op ID   (Op: 0=Block 强制阻挡, 1=Unblock 强制可通行/只清地形)
+	UFUNCTION(Exec)
+	void FlowFieldDebugAddSpecial(float WorldX, float WorldY, int32 Op, int32 ID);
+
+	// FlowFieldDebugRemoveSpecial ID
+	UFUNCTION(Exec)
+	void FlowFieldDebugRemoveSpecial(int32 ID);
+
+	// FlowFieldDebugDumpCell WorldX WorldY   (打印 base/building/special/组合值/当前 CostFields)
+	UFUNCTION(Exec)
+	void FlowFieldDebugDumpCell(float WorldX, float WorldY);
+
 protected:
 	// source标记集合（空格键在鼠标位置添加，用于测试合并A*）
 	TArray<FVector2D> SourceWorldPositions;
@@ -174,6 +188,9 @@ protected:
 	// 指向关卡摆放的 AAsceWorldMapReplicatorActor 的 WorldMapData（不拥有）。
 	FWorldMapData* WorldMapData = nullptr;
 
+	// 指向 AAsceWorldMapReplicatorActor 的代价分层（权威端才有；调试器的地形写入走它）
+	FAsceLayeredCostField* LayeredCostField = nullptr;
+
 	// 指向 UAscePathFindingSubsystem 的 PathFinder（不拥有）。
 	UPathFinder* PathFinder = nullptr;
 
@@ -206,6 +223,9 @@ protected:
 
 	// 上次编辑的网格索引（F/E 拖动编辑时避免同格重复入队）
 	uint32 LastEditGridIndex = MAX_uint32;
+
+	/** 调试用：Special 贡献 ID → AddSpecialCostOp 返回的 Handle（配合 FlowFieldDebugAddSpecial/RemoveSpecial） */
+	TMap<int32, uint64> DebugSpecialHandles;
 
 	// 地图纹理需要全量更新（结构变化时置位，Tick末尾统一重写）
 	bool bMapTextureDirty = true;

@@ -90,6 +90,68 @@ FWorldMapData* UAscePathFindingSubsystem::GetWorldMapDataMutableForAuthority()
 	return &WorldMapReplicator->WorldMapData;
 }
 
+FAsceLayeredCostField* UAscePathFindingSubsystem::GetLayeredCostFieldMutableForAuthority()
+{
+	if (!ensureMsgf(WorldMapReplicator, TEXT("WorldMapReplicator尚未就绪，可能是在OnWorldBeginPlay之前调用的")))
+	{
+		return nullptr;
+	}
+	checkf(WorldMapReplicator->HasAuthority(), TEXT("只有Server能改代价分层，Client只用复制下来的最终CostFields"));
+	return &WorldMapReplicator->LayeredCostField;
+}
+
+uint64 UAscePathFindingSubsystem::AddSpecialCostOp(int32 GridX, int32 GridY, EAsceCostOp Op, uint32 ContributionID)
+{
+	AAsceWorldMapReplicatorActor* Replicator = WorldMapReplicator;
+	if (!Replicator || !Replicator->HasAuthority())
+	{
+		// 客户端不应该调（它只用复制下来的最终 CostFields）
+		ensureMsgf(false, TEXT("代价分层只能在Server(权威端)修改"));
+		return FAsceLayeredCostField::InvalidHandle;
+	}
+
+	FWorldMapData& WorldMapData = Replicator->WorldMapData;
+	FAsceLayeredCostField& LayeredCostField = Replicator->LayeredCostField;
+	const int32 GridCountX = WorldMapData.GetGridCountX();
+	const int32 GridCountY = WorldMapData.GetGridCountY();
+	if (GridX < 0 || GridY < 0 || GridX >= GridCountX || GridY >= GridCountY)
+	{
+		UE_LOG(LogFlowField, Warning,
+			TEXT("[SpecialCost] 越界：(%d,%d) 地图 %dx%d"), GridX, GridY, GridCountX, GridCountY);
+		return FAsceLayeredCostField::InvalidHandle;
+	}
+
+	const uint32 GridIndex = WorldMapData.GridLocationToGridIndex(FIntVector2(GridX, GridY));
+	const uint64 Handle = LayeredCostField.AddSpecialOp(GridIndex, Op, ContributionID);
+	if (Handle != FAsceLayeredCostField::InvalidHandle)
+	{
+		// 逐格组合写回：只有"组合结果与现值不同"才真的 SetCostField（⇒ 才触发复制/扇区脏标记）
+		LayeredCostField.FlushCell(GridIndex, WorldMapData);
+	}
+	return Handle;
+}
+
+void UAscePathFindingSubsystem::RemoveSpecialCostOp(uint64 Handle)
+{
+	if (Handle == FAsceLayeredCostField::InvalidHandle)
+	{
+		return;
+	}
+
+	AAsceWorldMapReplicatorActor* Replicator = WorldMapReplicator;
+	if (!Replicator || !Replicator->HasAuthority())
+	{
+		ensureMsgf(false, TEXT("代价分层只能在Server(权威端)修改"));
+		return;
+	}
+
+	FWorldMapData& WorldMapData = Replicator->WorldMapData;
+	// Handle = (GridIndex << 32) | ID ⇒ 由 Handle 直接得到格子，无需反查
+	const uint32 GridIndex = static_cast<uint32>(Handle >> 32);
+	Replicator->LayeredCostField.RemoveSpecialOp(Handle);
+	Replicator->LayeredCostField.FlushCell(GridIndex, WorldMapData);
+}
+
 void UAscePathFindingSubsystem::EnqueuePlanGroupReset(FMergedPathPlanHandle PlanHandle)
 {
 	if (PlanHandle.IsValid())

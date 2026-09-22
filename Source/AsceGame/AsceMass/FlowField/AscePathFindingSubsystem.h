@@ -7,6 +7,7 @@
 #include "Subsystems/WorldSubsystem.h"
 #include "MassExternalSubsystemTraits.h"
 #include "AsceMass/FlowField/AsceFlowFieldCores.h"
+#include "AsceMass/FlowField/AsceLayeredCostField.h"
 #include "AsceMass/FlowField/AscePathFinder.h"
 #include "AscePathFindingSubsystem.generated.h"
 
@@ -48,6 +49,25 @@ public:
 
 	UPathFinder* GetPathFinder() const { return PathFinder; }
 	FWorldMapData* GetWorldMapDataMutableForAuthority();
+
+	/** 权威端代价分层（BaseLand / Building / Special）的入口；只能 Server/Standalone 调用。 */
+	FAsceLayeredCostField* GetLayeredCostFieldMutableForAuthority();
+
+	// ── 代价分层 · Special 层（技能/机制施加的临时影响，权威端） ──
+	//
+	// 语义见 FAsceLayeredCostField：
+	//  · Block   = 强制阻挡（盖住地形）
+	//  · Unblock = 强制可通行（只清地形阻挡，**不清建筑**）
+	//  组合规则 FinalBlocked = BuildingBlocked || AnyBlock || (BaseBlocked && !AnyUnblock)。
+	//  契约：同一格上同一 ContributionID 只对应一种 Op；ContributionID 建议全局单调递增、
+	//  在一次贡献的生命周期内唯一（否则陈旧 Handle 会误删后来复用同一 ID 的贡献）。
+
+	/** 给网格坐标 (GridX, GridY) 的格子加一条 Special 贡献，返回用于释放的 Handle。
+	 *  越界 / 非权威端返回 FAsceLayeredCostField::InvalidHandle。 */
+	uint64 AddSpecialCostOp(int32 GridX, int32 GridY, EAsceCostOp Op, uint32 ContributionID);
+
+	/** 释放 AddSpecialCostOp 返回的 Handle（该格回到 BaseLand/Building 的组合结果）。 */
+	void RemoveSpecialCostOp(uint64 Handle);
 	AAsceWorldMapReplicatorActor* GetWorldMapReplicator() const { return WorldMapReplicator; }
 	void RegisterWorldMapReplicator(AAsceWorldMapReplicatorActor* InReplicator);
 	void UnregisterWorldMapReplicator(AAsceWorldMapReplicatorActor* InReplicator);

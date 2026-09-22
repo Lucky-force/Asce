@@ -11,6 +11,23 @@
 #include "AsceMass/FlowField/AsceWorldMapReplicatorActor.h"
 #include "AsceMass/Components/AsceRTSCommanderComponent.h"
 
+namespace
+{
+	/** 调试器修改"地形"：写 BaseLand 层 + flush（没有分层时退化为直写 CostFields）。 */
+	void SetDebugTerrainCost(FWorldMapData& WorldMapData, FAsceLayeredCostField* LayeredCostField, uint32 GridIndex, uint8 NewCost)
+	{
+		if (LayeredCostField)
+		{
+			LayeredCostField->SetBaseCost(GridIndex, NewCost);
+			LayeredCostField->FlushCell(GridIndex, WorldMapData);
+		}
+		else
+		{
+			WorldMapData.SetCostField(GridIndex, NewCost);
+		}
+	}
+}
+
 AAsceFlowFieldDebugger::AAsceFlowFieldDebugger(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
@@ -56,6 +73,7 @@ void AAsceFlowFieldDebugger::TryBindMap()
 	// 复用权威地图与共享 PathFinder
 	WorldMapData = &Replicator->WorldMapData;
 	PathFinder = PathFindingSubsystem->GetPathFinder();
+	LayeredCostField = &Replicator->LayeredCostField;
 	bMapAuthority = Replicator->HasAuthority();
 	bMapBound = true;
 
@@ -66,30 +84,37 @@ void AAsceFlowFieldDebugger::TryBindMap()
 	// 占位地图初始化（仅权威端，且 Replicator 未应用烘焙数据时）：全量可通行 + 测试墙。
 	// 若 Replicator 已应用真实烘焙地图（BakedMapData），这里不能再占地初始化——
 	// 否则会把烘焙出来的墙全部擦成可通行（两个初始化源的冲突，Actor BeginPlay 顺序还不保证）。
+	// 写入统一走 BaseLand 层（等同"手工改地形"）：这样建筑层 Add/Remove flush 时能正确还原地形原值。
 	if (Replicator->HasAuthority() && !Replicator->HasBakedDataApplied())
 	{
-		const int32 TotalGrids = WorldMapData->GetGridCountX() * WorldMapData->GetGridCountY();
-		for (int32 GridIndex = 0; GridIndex < TotalGrids; ++GridIndex)
+		if (LayeredCostField)
 		{
-			WorldMapData->SetCostField(GridIndex, 1);
-		}
-
-		if (bGenerateTestWalls)
-		{
-			for (const FVector4& Rect : TestWallRects)
+			const int32 TotalGrids = WorldMapData->GetGridCountX() * WorldMapData->GetGridCountY();
+			for (int32 GridIndex = 0; GridIndex < TotalGrids; ++GridIndex)
 			{
-				const int32 StartX = FMath::FloorToInt32(Rect.X);
-				const int32 StartY = FMath::FloorToInt32(Rect.Y);
-				const int32 Width  = FMath::FloorToInt32(Rect.Z);
-				const int32 Height = FMath::FloorToInt32(Rect.W);
-				for (int32 Y = StartY; Y < StartY + Height; ++Y)
+				LayeredCostField->SetBaseCost(static_cast<uint32>(GridIndex), AsceCostField::PlainPassableCost);
+			}
+
+			if (bGenerateTestWalls)
+			{
+				for (const FVector4& Rect : TestWallRects)
 				{
-					for (int32 X = StartX; X < StartX + Width; ++X)
+					const int32 StartX = FMath::FloorToInt32(Rect.X);
+					const int32 StartY = FMath::FloorToInt32(Rect.Y);
+					const int32 Width  = FMath::FloorToInt32(Rect.Z);
+					const int32 Height = FMath::FloorToInt32(Rect.W);
+					for (int32 Y = StartY; Y < StartY + Height; ++Y)
 					{
-						WorldMapData->SetGridWall(WorldMapData->GridLocationToGridIndex(FIntVector2(X, Y)));
+						for (int32 X = StartX; X < StartX + Width; ++X)
+						{
+							LayeredCostField->SetBaseCost(
+								WorldMapData->GridLocationToGridIndex(FIntVector2(X, Y)), AsceCostField::BlockedCost);
+						}
 					}
 				}
 			}
+
+			LayeredCostField->FlushAll(*WorldMapData);
 		}
 	}
 
@@ -215,6 +240,69 @@ void AAsceFlowFieldDebugger::FlowFieldDebugClearSources()
 	bMapTextureDirty = true; // 清掉LOS/积分显示
 }
 
+void AAsceFlowFieldDebugger::FlowFieldDebugAddSpecial(float WorldX, float WorldY, int32 Op, int32 ID)
+{
+	UAscePathFindingSubsystem* PathFinding = UAscePathFindingSubsystem::Get(this);
+	if (!PathFinding)
+	{
+		return;
+	}
+
+	const FIntVector2 GridLoc = FWorldMapData::WorldLocationToGridLocation(FVector2D(WorldX, WorldY));
+	const uint64 Handle = PathFinding->AddSpecialCostOp(
+		GridLoc.X, GridLoc.Y, static_cast<EAsceCostOp>(Op), static_cast<uint32>(ID));
+	if (Handle != FAsceLayeredCostField::InvalidHandle)
+	{
+		DebugSpecialHandles.Add(ID, Handle);
+	}
+	UE_LOG(LogFlowField, Log, TEXT("[DebugSpecial] Add op=%d id=%d grid(%d,%d) handle=%llu"),
+		Op, ID, GridLoc.X, GridLoc.Y, Handle);
+}
+
+void AAsceFlowFieldDebugger::FlowFieldDebugRemoveSpecial(int32 ID)
+{
+	UAscePathFindingSubsystem* PathFinding = UAscePathFindingSubsystem::Get(this);
+	uint64 Handle = FAsceLayeredCostField::InvalidHandle;
+	if (!PathFinding || !DebugSpecialHandles.RemoveAndCopyValue(ID, Handle))
+	{
+		UE_LOG(LogFlowField, Warning, TEXT("[DebugSpecial] 找不到 id=%d 的贡献"), ID);
+		return;
+	}
+
+	PathFinding->RemoveSpecialCostOp(Handle);
+	UE_LOG(LogFlowField, Log, TEXT("[DebugSpecial] Remove id=%d handle=%llu"), ID, Handle);
+}
+
+void AAsceFlowFieldDebugger::FlowFieldDebugDumpCell(float WorldX, float WorldY)
+{
+	if (!WorldMapData || !LayeredCostField)
+	{
+		UE_LOG(LogFlowField, Warning, TEXT("[DebugSpecial] 地图/代价分层尚未就绪"));
+		return;
+	}
+
+	const FIntVector2 GridLoc = FWorldMapData::WorldLocationToGridLocation(FVector2D(WorldX, WorldY));
+	const int32 GridCountX = WorldMapData->GetGridCountX();
+	const int32 GridCountY = WorldMapData->GetGridCountY();
+	if (GridLoc.X < 0 || GridLoc.Y < 0 || GridLoc.X >= GridCountX || GridLoc.Y >= GridCountY)
+	{
+		UE_LOG(LogFlowField, Warning, TEXT("[DebugSpecial] 越界：(%d,%d) 地图 %dx%d"), GridLoc.X, GridLoc.Y, GridCountX, GridCountY);
+		return;
+	}
+
+	const uint32 GridIndex = WorldMapData->GridLocationToGridIndex(GridLoc);
+	const int32 CellIndex = static_cast<int32>(GridIndex);
+	UE_LOG(LogFlowField, Log,
+		TEXT("[DebugSpecial] cell(%d,%d) idx=%u base=%u building=%u hasSpecial=%d composed=%u costField=%u (special 条目=%d)"),
+		GridLoc.X, GridLoc.Y, GridIndex,
+		LayeredCostField->GetBaseCost(GridIndex),
+		LayeredCostField->GetBuildingCost(GridIndex),
+		LayeredCostField->HasSpecialContribution(GridIndex) ? 1 : 0,
+		LayeredCostField->ComposeCellCost(GridIndex),
+		WorldMapData->CostFields.IsValidIndex(CellIndex) ? WorldMapData->CostFields[CellIndex].Cost : 0,
+		LayeredCostField->GetSpecialOpCount());
+}
+
 void AAsceFlowFieldDebugger::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	// 解绑选中监听
@@ -294,11 +382,11 @@ void AAsceFlowFieldDebugger::Tick(float DeltaTime)
 				LastEditGridIndex = GridIndex;
 				if (PC->IsInputKeyDown(EKeys::F))
 				{
-					WorldMapData->SetGridWall(GridIndex);
+					SetDebugTerrainCost(*WorldMapData, LayeredCostField, GridIndex, AsceCostField::BlockedCost);
 				}
 				else
 				{
-					WorldMapData->SetGridPassable(GridIndex);
+					SetDebugTerrainCost(*WorldMapData, LayeredCostField, GridIndex, AsceCostField::PlainPassableCost);
 				}
 			}
 		}

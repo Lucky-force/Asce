@@ -83,6 +83,32 @@ void AAsceWorldMapReplicatorActor::InitializeMapDimensions()
 		bBakedDataApplied = true;
 	}
 
+	// 代价分层（BaseLand / Building / Special）：只在权威端建层，客户端只用复制下来的最终 CostFields。
+	// 【步骤2】Base 层接线：直接抓"烘焙应用之后的当前代价"作为地形基线（未烘焙的地图抓到的就是初始值），
+	// 层组合结果因此与当前 CostFields 严格相等，紧跟的 FlushAll 是一个可验证的空操作（ensure 自查）。
+	// 注意：建筑的写入路径（footprint 观察者 / 技能 Special）本步仍未切到层组合，见后续步骤。
+	if (HasAuthority())
+	{
+		LayeredCostField.InitLayeredCostField(static_cast<uint32>(FlowGridX), static_cast<uint32>(FlowGridY));
+
+		const int32 GridNum = FlowGridX * FlowGridY;
+		for (int32 i = 0; i < GridNum; ++i)
+		{
+			LayeredCostField.SetBaseCost(static_cast<uint32>(i), WorldMapData.CostFields[i].Cost);
+		}
+
+		// 对齐验证：BaseLand 快照 + 空 Building + 空 Special ⇒ 组合结果必须等于现值，FlushAll 不该有任何变更
+		const bool bFlushChanged = LayeredCostField.FlushAll(WorldMapData);
+		ensureMsgf(!bFlushChanged, TEXT("BaseLand 快照后 FlushAll 不应产生任何变更（层组合结果必须等于当前 CostFields）"));
+
+		UE_LOG(LogFlowField, Log,
+			TEXT("[AsceLayeredCostField] 建层 %u x %u，BaseLand 快照完成（Flush 变更=%s）（sizeof(TMap<uint32,FAsceSpecialCostCell>)=%d, sizeof(FAsceCostOp)=%d）"),
+			static_cast<uint32>(FlowGridX), static_cast<uint32>(FlowGridY),
+			bFlushChanged ? TEXT("yes(异常)") : TEXT("no"),
+			static_cast<int32>(sizeof(TMap<uint32, FAsceSpecialCostCell>)),
+			static_cast<int32>(sizeof(FAsceCostOp)));
+	}
+
 	// 初始化阶段（loading）就把墙簇表建好，不让碰撞解算在游戏内等待第一次重建：
 	// - 权威端：SetCostField 已同步写了 CostFields，这里直接得到正确簇表；
 	// - 客户端：先用默认（全通行）代价建一份空表，之后 CostFields 复制下来变墙时会再触发重建。
