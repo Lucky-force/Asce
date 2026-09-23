@@ -14,6 +14,7 @@
 #include "AsceMass/Data/AsceEntityDefLibrary.h"
 #include "DataTableSystem/AsceDataTableSubsystem.h"
 #include "AsceMass/Ether/AsceEtherCores.h"
+#include "AsceMass/Ether/AsceEtherFragments.h"
 #include "AsceMass/Ether/AsceEtherPortTypeTable.h"
 #include "AsceMass/SpatialGrid/AsceSpatialGridSubsystem.h"
 
@@ -1298,6 +1299,9 @@ void UAsceEtherNetworkSubsystem::ApplyGraphCommands(const FAsceTickContext& Ctx)
 						DeviceNodes.Insert(NodeId, InsertAt);
 					}
 				}
+				// 结构变化（新节点接入）：标记本节点 + 受影响端口所属节点（含被接上的邻居）
+				MarkNodeRevision(NodeId);
+				MarkPortRevisions(Touched);
 				bLocalChanged = true;
 			}
 		}
@@ -1341,6 +1345,9 @@ void UAsceEtherNetworkSubsystem::ApplyGraphCommands(const FAsceTickContext& Ctx)
 					}
 				}
 
+				// 删除前先记下受影响端口（移除后端口会被回收）：邻居的边/段也变了
+				MarkPortRevisions(Touched);
+
 				RemoveNodeInternal(NodeId);
 				// DeviceNodes 保持升序：二分删除
 				{
@@ -1377,6 +1384,7 @@ void UAsceEtherNetworkSubsystem::ApplyGraphCommands(const FAsceTickContext& Ctx)
 						TEXT("[Ether] PatchNode 换建筑类型失败：%s（行不存在 / 不是 Ether 建筑 / 表没挂载）——节点将没有端口"),
 						*N.BuildingId.ToString());
 					N.bLinksInitialized = false;   // 换建筑类型：重新套用新类型的默认内布线
+					MarkNodeRevision(*NodeId);      // 配置变了（端口组会整组换掉）
 					bNeedRebuild = true; // 整组端口换掉（不搬在制品）
 				}
 				if (PatchNode->Patch.Mask & FAsceEtherNodePatch::MaskPlacement)
@@ -1399,6 +1407,8 @@ void UAsceEtherNetworkSubsystem::ApplyGraphCommands(const FAsceTickContext& Ctx)
 					TArray<int32> DevNodes;
 					GatherAdjacentDeviceNodes(AllAffected, DevNodes);
 					RecomputeDeviceAdjSegsForNodes(DevNodes);
+					MarkNodeRevision(*NodeId);
+					MarkPortRevisions(Touched);
 					bLocalChanged = true;
 				}
 			}
@@ -1417,6 +1427,8 @@ void UAsceEtherNetworkSubsystem::ApplyGraphCommands(const FAsceTickContext& Ctx)
 				TArray<int32> DevNodes;
 				GatherAdjacentDeviceNodes(AllAffected, DevNodes);
 				RecomputeDeviceAdjSegsForNodes(DevNodes);
+				MarkNodeRevision(*NodeId);
+				MarkPortRevisions(Touched);
 				bLocalChanged = true;
 			}
 		}
@@ -1428,6 +1440,7 @@ void UAsceEtherNetworkSubsystem::ApplyGraphCommands(const FAsceTickContext& Ctx)
 			if (Ports.IsValidIndex(PortId) && Ports[PortId].bActive)
 			{
 				FAsceEtherPortData& P = Ports[PortId];
+				MarkNodeRevision(*NodeId);   // 端口配置变化（SplitMode / 型号 / 维度都是结构/配置数据）
 				// 只有"影响线路"的改动才需要重扫/段重算：射程变化（PortTypeId）或维度变化
 				bool bGraphAffected = false;
 				if (PatchPort->Patch.Mask & FAsceEtherPortPatch::MaskSplitMode)
@@ -1466,12 +1479,15 @@ void UAsceEtherNetworkSubsystem::ApplyGraphCommands(const FAsceTickContext& Ctx)
 					TArray<int32> DevNodes;
 					GatherAdjacentDeviceNodes(AllAffected, DevNodes);
 					RecomputeDeviceAdjSegsForNodes(DevNodes);
+					MarkPortRevisions(Touched);
 					bLocalChanged = true;
 				}
 			}
 		}
 		else if (Command.GetPtr<FAsceEtherCmd_RefreshData>() || Command.GetPtr<FAsceEtherCmd_FullRebuild>())
 		{
+			// 全量重建类：所有节点的结构/配置派生数据都可能变
+			MarkAllNodeRevisions();
 			bNeedRebuild = true;
 		}
 	}
@@ -1494,6 +1510,10 @@ void UAsceEtherNetworkSubsystem::ApplyGraphCommands(const FAsceTickContext& Ctx)
 			RefreshInitialActiveSegments();
 		}
 	}
+
+	// 结构/配置修订号：本拍受影响节点的 `FEtherBuildingFragment::Revision` 统一 +1
+	// （UI 订阅它就知道"结构数据变了"；料流不走这里，面板自己轮询读）
+	FlushNodeRevisions();
 }
 
 uint8 UAsceEtherNetworkSubsystem::GetNodeRotation(FMassEntityHandle Entity, const FAsceTickContext& Ctx) const
@@ -1512,6 +1532,68 @@ int32 UAsceEtherNetworkSubsystem::FindNodeByEntity(FMassEntityHandle Entity) con
 {
 	const int32* Found = EntityToNode.Find(Entity);
 	return Found ? *Found : INDEX_NONE;
+}
+
+int32 UAsceEtherNetworkSubsystem::GetNodeIdByEntity(FMassEntityHandle Entity) const
+{
+	return FindNodeByEntity(Entity);
+}
+
+void UAsceEtherNetworkSubsystem::MarkNodeRevision(int32 NodeId)
+{
+	if (IsNodeAlive(NodeId))
+	{
+		PendingRevisionNodes.Add(NodeId);
+	}
+}
+
+void UAsceEtherNetworkSubsystem::MarkPortRevisions(const TArray<int32>& PortIds)
+{
+	for (const int32 PortId : PortIds)
+	{
+		if (Ports.IsValidIndex(PortId) && Ports[PortId].bActive)
+		{
+			MarkNodeRevision(Ports[PortId].NodeId);
+		}
+	}
+}
+
+void UAsceEtherNetworkSubsystem::MarkAllNodeRevisions()
+{
+	for (int32 NodeId = 0; NodeId < Nodes.Num(); ++NodeId)
+	{
+		if (Nodes[NodeId].bAlive)
+		{
+			PendingRevisionNodes.Add(NodeId);
+		}
+	}
+}
+
+void UAsceEtherNetworkSubsystem::FlushNodeRevisions()
+{
+	if (PendingRevisionNodes.Num() == 0)
+	{
+		return;
+	}
+
+	// 这里已经不在结构变更中（drain 末尾），可以安全地写别的实体的 fragment 值
+	if (UMassEntitySubsystem* MassSub = GetWorld() ? GetWorld()->GetSubsystem<UMassEntitySubsystem>() : nullptr)
+	{
+		FMassEntityManager& EntityManager = MassSub->GetMutableEntityManager();
+		for (const int32 NodeId : PendingRevisionNodes)
+		{
+			if (!IsNodeAlive(NodeId) || !EntityManager.IsEntityValid(Nodes[NodeId].Entity))
+			{
+				continue;
+			}
+			// 值修改（非结构变化）⇒ 不触发 observer；采样在后面的阶段 7，本帧就能看到新 Revision
+			if (FEtherBuildingFragment* Fragment = EntityManager.GetFragmentDataPtr<FEtherBuildingFragment>(Nodes[NodeId].Entity))
+			{
+				++Fragment->Revision;
+			}
+		}
+	}
+	PendingRevisionNodes.Reset();
 }
 
 int32 UAsceEtherNetworkSubsystem::FindPortBySlotKey(int32 NodeId, const FAsceEtherSlotKey& Slot) const
@@ -1800,9 +1882,14 @@ bool UAsceEtherNetworkSubsystem::MintFromEnergy(int32 NodeId, int32 LocalIndex, 
 	return true;
 }
 
-const TArray<FAsceEtherLinkDef>* UAsceEtherNetworkSubsystem::GetInternalLinks(int32 NodeId) const
+bool UAsceEtherNetworkSubsystem::GetInternalLinks(int32 NodeId, TArray<FAsceEtherLinkDef>& OutLinks) const
 {
-	return IsNodeAlive(NodeId) ? &Nodes[NodeId].InternalLinks : nullptr;
+	if (!IsNodeAlive(NodeId))
+	{
+		return false;
+	}
+	OutLinks = Nodes[NodeId].InternalLinks;   // 拷贝：内部指针会因 Nodes 扩容 / 节点死亡而失效
+	return true;
 }
 
 void UAsceEtherNetworkSubsystem::SetInternalLinks(int32 NodeId, const TArray<FAsceEtherLinkDef>& Links)
@@ -1811,8 +1898,10 @@ void UAsceEtherNetworkSubsystem::SetInternalLinks(int32 NodeId, const TArray<FAs
 	{
 		return;
 	}
-	Nodes[NodeId].InternalLinks = Links;
-	SetBuildingDirty();
+	// 走命令队列（drain 时局部重建 + 生效后 Revision++）。
+	// 不要在这里直写 `Nodes[NodeId].InternalLinks`：那样会出现"数据新、派生图（LinkTargets/段/器件邻接）旧"的窗口，
+	// 而且旧实现靠 `SetBuildingDirty()` 会退化成整图全量重建（改一个建筑的接线重建全图）。
+	PushSetNodeLinks(Nodes[NodeId].Entity, Links);
 }
 
 // ── 图 ──

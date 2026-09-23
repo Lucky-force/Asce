@@ -142,6 +142,9 @@ public:
 
 	bool IsNodeAlive(int32 NodeId) const;
 	FMassEntityHandle GetEntity(int32 NodeId) const;
+
+	/** 实体 → nodeId（UI 拿到 `EntityNumber` 后定位节点用；找不到返回 INDEX_NONE）。 */
+	int32 GetNodeIdByEntity(FMassEntityHandle Entity) const;
 	/** 器件（时序）；其余为传输器（纯组合）。 */
 	bool IsDevice(int32 NodeId) const;
 
@@ -169,8 +172,13 @@ public:
 	/** 用 0 号 ether（能量）把 Type 重铸到该端口：`1 份 = abs(Type)` 份能量；不足 ⇒ 不产出、不消耗。 */
 	bool MintFromEnergy(int32 NodeId, int32 LocalIndex, int16 Type);
 
-	/** 内部布线（建筑内端口下标；改完请 `SetBuildingDirty`）。 */
-	const TArray<FAsceEtherLinkDef>* GetInternalLinks(int32 NodeId) const;
+	/** 内部布线（**拷贝一份**返回；参数是建筑内端口下标）。节点不存在返回 false。
+	 *  ⚠️ 不返回内部指针：`Nodes` 是 TArray，扩容 / 节点死亡都会让内部指针失效。 */
+	bool GetInternalLinks(int32 NodeId, TArray<FAsceEtherLinkDef>& OutLinks) const;
+
+	/** 改内部布线（建筑内端口下标）。**走命令队列、不立即改数据**：drain 时局部重建
+	 *  （`RebuildNodeInternalTopology` + 受影响段，不搬在制品），生效后自动 `++Revision` 通知 UI。
+	 *  节点不存在时忽略。别回退到"直写 + `SetBuildingDirty`（全量重建）"。 */
 	void SetInternalLinks(int32 NodeId, const TArray<FAsceEtherLinkDef>& Links);
 
 	// ── 建图 / 每 tick 流程（由 `UAsceSimulationSubsystem` 按阶段顺序调用；本系统已关闭自 tick）──
@@ -229,6 +237,20 @@ private:
 	void RemoveNodeInternal(int32 NodeId);
 
 	int32 FindNodeByEntity(FMassEntityHandle Entity) const;
+
+	// ── 结构/配置修订号（`FEtherBuildingFragment::Revision`；**只管结构，不管料流**）──
+	//
+	// 谁改了"结构/配置"谁 Mark（节点本身 / 受影响的端口所属节点），drain 末尾统一 Flush 写进 fragment。
+	// 不在这里直接写：Mark 可能发生在结构变更（observer）期间，那时碰别的实体的 fragment 不安全。
+	// 范围：只标"结构 / 端口配置"直接相关的节点；段、器件邻接表这类**派生数据**变化不通知 UI。
+	/** 标记某节点（alive 才收） */
+	void MarkNodeRevision(int32 NodeId);
+	/** 按端口收其所属节点（改边/重扫后调用，覆盖"邻居也变了"） */
+	void MarkPortRevisions(const TArray<int32>& PortIds);
+	/** 全量重建类（RefreshData / FullRebuild）用：标记所有 alive 节点 */
+	void MarkAllNodeRevisions();
+	/** 把收集到的节点写进各自实体的 `FEtherBuildingFragment::Revision`（++），然后清空集合 */
+	void FlushNodeRevisions();
 	int32 FindPortBySlotKey(int32 NodeId, const FAsceEtherSlotKey& Slot) const;
 
 	// ── 增量更新（P1）──
@@ -323,6 +345,9 @@ private:
 	TArray<FNode> Nodes;
 	TArray<int32> FreeIds;
 	TMap<FMassEntityHandle, int32> EntityToNode;
+
+	/** 待写修订号的节点（drain 末尾统一 Flush；去重） */
+	TSet<int32> PendingRevisionNodes;
 
 	// —— 端口实例（全局扁平 + 空闲池；**持久存在**，按 node 的 SlotPortIds 索引）——
 	TArray<FAsceEtherPortData> Ports;

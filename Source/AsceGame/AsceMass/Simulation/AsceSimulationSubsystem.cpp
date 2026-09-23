@@ -16,6 +16,7 @@
 #include "AsceMass/Movement/AsceMassMovementSimulationSubsystem.h"
 #include "AsceMass/Vision/AsceFogSubsystem.h"
 #include "AsceMass/Vision/AsceFogRenderSubsystem.h"
+#include "AsceMass/UI/AsceFragmentSamplerSubsystem.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AsceSimulationSubsystem)
 
@@ -219,5 +220,14 @@ void UAsceSimulationSubsystem::Tick(float DeltaTime)
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(AsceSim_FogRenderUpload);
 		TickContext.FogRender->RunFogRenderStage(TickContext);
+	}
+
+	// 阶段 7：UI 字段采样（**最后**：本帧数据都已更新完）。
+	// 只读 fragment + 对"变了的字段"广播（绑定即广播初值）；细节与不变量见 `AsceMass/UI/AsceEntityFragmentSampler.h`。
+	// 命令回流：采样期间 UI 回调发出的命令只入队，下一帧的阶段 5 才 drain（不存在同帧反馈）。
+	if (UAsceFragmentSamplerSubsystem* FragmentSampler = World->GetSubsystem<UAsceFragmentSamplerSubsystem>())
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(AsceSim_FragmentSampler);
+		FragmentSampler->RunSamplingStage();
 	}
 }

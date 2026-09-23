@@ -73,7 +73,7 @@
 ### 1.3 建筑（容器）
 - **类型定义**（共享；实体定义表）：`FAsceEtherBuildingDef`（`DeviceType`（组合/时序）、`ProcessCoreClass`、`SizeX/SizeY`/`OcclusionHeightCm`（基类）、`SupportedDimCount`、`PortSlots`、`DefaultInternalLinks`）。
 - **实例**（Subsystem）：`FNode`（身份/`DefData`（表行拷贝）/端口区间/内部布线/`CachedDirection`）+ 端口实例数组。
-- 标记 fragment `FEtherBuildingFragment`（**空标记**：注册/注销锚点）+ `FAsceUnitDefFragment{ uint16 UniqueTypeId }`（= 定义表行名的数字 id）。
+- 标记 fragment `FEtherBuildingFragment`（注册/注销锚点 + `uint8 Revision` 结构修订号）+ `FAsceUnitDefFragment{ uint16 UniqueTypeId }`（= 定义表行名的数字 id）。
 
 ---
 
@@ -244,15 +244,22 @@ UPROPERTY(Transient) TArray<TObjectPtr<UAsceEtherProcessCore>> NodeCores;   // �
 ```
 
 **对外接口（core / 玩家逻辑用）**：`GetPort / GetNodePortId / FindPortByTransport / GetPortEther / GetPortSignalType / SetPort / ClearPort /
-MintFromEnergy / GetInternalLinks / SetInternalLinks / GetProcessCore / SetBuildingDirty`；结构性修改一律走 `PushAddNode / PushRemoveNode /
-PushPatchNode / PushSetNodeLinks / PushPatchPort / PushRefreshData / PushFullRebuild`；调试用 `GetPortView / GetPortLinkTargets / GetPortNum / GetNodeNum`。
+MintFromEnergy / GetInternalLinks(NodeId, OutLinks)（返回拷贝） / GetProcessCore`；结构性修改一律走 `PushAddNode / PushRemoveNode /
+PushPatchNode / PushSetNodeLinks / PushPatchPort / PushRefreshData / PushFullRebuild`（`SetInternalLinks(NodeId, Links)` 是它的**入队包装**：不立即改数据，
+drain 时局部重建、生效后自动 `++Revision` 通知 UI；`SetBuildingDirty`（= `PushFullRebuild`）留给"真的整图失效"的场景）；
+调试用 `GetPortView / GetPortLinkTargets / GetPortNum / GetNodeNum`。
 
 ### 3.4 Fragment
 
 ```cpp
-USTRUCT() struct FEtherBuildingFragment : public FMassFragment {};  // 空标记（身份在 FAsceUnitDefFragment::UniqueTypeId）
+USTRUCT() struct FEtherBuildingFragment : public FMassFragment
+{
+    uint8 Revision = 0;   // 结构/配置修订号：Ether 图拓扑、端口配置、内布线变化时 ++（**不管料流**）
+};
 ```
-- 端口/布线/在制品在 **Subsystem**；器件状态在 **core 实例**；**fragment 不再承载任何状态**。
+- 端口/布线/在制品在 **Subsystem**；器件状态在 **core 实例**；fragment 只承载**身份标记 + 结构修订号**。
+- `Revision` 只增（回绕无害）：UI 订阅它就知道"该建筑的 Ether 结构数据变过"，收到后自己去 Ether 取需要的结构数据；
+  `Ether`/信号这类逐帧在动的"料流"**不走修订号**（面板自己轮询读）。
 
 ---
 
