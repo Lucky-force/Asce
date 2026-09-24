@@ -310,7 +310,7 @@ void AAsceBuildingDebugger::BuildingDebugDump() const
 			*Record.Placement.BuildingDefId.ToString(),
 			Record.Placement.OriginGridLocation.X, Record.Placement.OriginGridLocation.Y,
 			Record.Placement.Size.X, Record.Placement.Size.Y,
-			Record.Placement.Rotation, Record.Placement.TeamKey,
+			Record.Placement.Rotation, Record.Placement.TeamId,
 			Min.X, Min.Y, Max.X, Max.Y);
 	}
 }

@@ -70,7 +70,8 @@ namespace
 				continue;
 			}
 
-			const int32 EntityTeam = Teams[i].TeamKey;
+			// 敌我比较用 **TeamId**（跨端一致）；fragment 里的 TeamIndex 只是写入方的本端下标
+			const int32 EntityTeam = AsceTeamId(Teams[i].TeamKey);
 
 			// 友方（含建筑）恒可见（§6.1.4）
 			if (EntityTeam == ClientTeam)

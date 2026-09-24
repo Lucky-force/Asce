@@ -20,6 +20,7 @@ enum class EAsceOrderRejectReason : uint8
 	InvalidTarget,       // 目标坐标/目标NetID本身不合法（比如坐标非有限值），或者依赖的Subsystem缺失
 	EntityNotFound,      // NetID在服务器权威表里查不到对应的EntityHandle（可能已经死亡/离线）
 	MissingOrderFragment,// 查到了entity，但它身上没有对应的Order Fragment（配置错误/单位类型不支持该指令）
+	NotOwned,            // 指挥了非自己阵营的实体（客户端已先过滤；这里是防作弊兜底）
 };
 
 /**
@@ -65,6 +66,20 @@ public:
 	 */
 	void RequestMoveOrder(const TArray<FMassEntityHandle>& LocalSelectedHandles, FVector2D GoalWorldLocation, float AcceptanceRadiusSquared);
 
+	/** `S` 停止指令（客户端入口）：清移动命令 + 取消施法（**不影响自动攻击开关**）。
+	 *  v1 不做本地预测（服务器立即生效，位置修正会跟上）。见 `Combat/技能系统设计.md` §3.2 */
+	void RequestStopOrder(const TArray<FMassEntityHandle>& LocalSelectedHandles);
+
+	/** 配置技能槽位：把技能 `ActionId` 放进槽位 `SlotIndex`（1/2/3 ↔ Q/W/E）。
+	 *  该技能已在别的槽位 ⇒ **两槽交换**（技能连同 CD 一起换位，见 `Combat/技能系统设计.md` §2.2）；
+	 *  新技能 ⇒ 写入并 CD 归零；`ActionId == 0` ⇒ 清空该槽位。 */
+	void RequestSetSkillSlot(const TArray<FMassEntityHandle>& LocalSelectedHandles, int32 SlotIndex, int32 ActionId);
+
+	/** 释放技能（客户端入口）：`SlotId` 是槽位号（1/2/3 ↔ Q/W/E），服务器按**该单位**槽位里的技能解析。
+	 *  客户端不判断技能与目标类型：统一带上 `TargetPos` 与 `TargetNetID`（可无效），服务器按技能 def 取用。
+	 *  v1 不做预测/回执（表现走状态复制），见 `Combat/技能系统设计.md` §3.1 */
+	void RequestSkillOrder(const TArray<FMassEntityHandle>& LocalSelectedHandles, int32 SlotId, FVector2D TargetPos, FMassNetworkID TargetNetID);
+
 	/** 客户端框选N个单位后发起移动指令，Goal是2D世界坐标（跟FlowField系统一致，不含Z）。
 	 * AcceptanceRadiusSquared是到达判定半径的平方值（见AsceOrderFragments.h），
 	 * 会随RPC透传给服务器，保证Server执行和客户端预测的到达判定一致。
@@ -79,6 +94,19 @@ public:
 	UFUNCTION(Server, Reliable, WithValidation)
 	void ServerRequestAttackOrder(const TArray<FMassNetworkID>& SelectedNetIDs, FMassNetworkID TargetNetID, int32 OrderSequence);
 
+	/** `S` 停止指令（服务器权威）：逐单位清移动命令 + 取消施法 */
+	UFUNCTION(Server, Reliable, WithValidation)
+	void ServerRequestStopOrder(const TArray<FMassNetworkID>& SelectedNetIDs, int32 OrderSequence);
+
+	/** 配置技能槽位（服务器权威）：逐单位校验"该单位确实有这个技能"，再写入/交换槽位 */
+	UFUNCTION(Server, Reliable, WithValidation)
+	void ServerRequestSetSkillSlot(const TArray<FMassNetworkID>& SelectedNetIDs, int32 SlotIndex, int32 ActionId, int32 OrderSequence);
+
+	/** 释放技能（服务器权威）：逐单位"**先无条件停止移动 → 校验（槽位/CD/蓝/目标/射程）→ 进施法动作**"。
+	 *  射程不够/目标不合法/没蓝/CD 中 ⇒ **停在原地不放**（不移动过去） */
+	UFUNCTION(Server, Reliable, WithValidation)
+	void ServerRequestSkillOrder(const TArray<FMassNetworkID>& SelectedNetIDs, int32 SlotId, FVector2D TargetPos, FMassNetworkID TargetNetID, int32 OrderSequence);
+
 	/** 整批请求被拒绝：这一次OrderSequence下的所有entity都没有被处理
 	 * （比如依赖的Subsystem缺失、请求本身不合法）。客户端收到后应该把这次下单在本地预测里
 	 * 涉及的所有entity都回滚/暂停，而不是只处理某一个。 */
@@ -91,11 +119,24 @@ public:
 	void ClientRejectEntityOrder(int32 OrderSequence, FMassNetworkID UnitNetID, EAsceOrderRejectReason Reason);
 
 private:
+	// 发起本次 RPC 的玩家的**团队身份 TeamId**（Owner→Controller→GenericTeamId；取不到 → 0 中立）。
+	// 指挥授权用 TeamId 比较（跨端一致；TeamIndex 只是各端自己的下标）
+	int32 GetRequesterTeamId();
+
 	bool ServerRequestMoveOrder_Validate(const TArray<FMassNetworkID>& SelectedNetIDs, FVector2D GoalWorldLocation, float AcceptanceRadiusSquared, int32 OrderSequence);
 	void ServerRequestMoveOrder_Implementation(const TArray<FMassNetworkID>& SelectedNetIDs, FVector2D GoalWorldLocation, float AcceptanceRadiusSquared, int32 OrderSequence);
 
 	bool ServerRequestAttackOrder_Validate(const TArray<FMassNetworkID>& SelectedNetIDs, FMassNetworkID TargetNetID, int32 OrderSequence);
 	void ServerRequestAttackOrder_Implementation(const TArray<FMassNetworkID>& SelectedNetIDs, FMassNetworkID TargetNetID, int32 OrderSequence);
+
+	bool ServerRequestStopOrder_Validate(const TArray<FMassNetworkID>& SelectedNetIDs, int32 OrderSequence);
+	void ServerRequestStopOrder_Implementation(const TArray<FMassNetworkID>& SelectedNetIDs, int32 OrderSequence);
+
+	bool ServerRequestSetSkillSlot_Validate(const TArray<FMassNetworkID>& SelectedNetIDs, int32 SlotIndex, int32 ActionId, int32 OrderSequence);
+	void ServerRequestSetSkillSlot_Implementation(const TArray<FMassNetworkID>& SelectedNetIDs, int32 SlotIndex, int32 ActionId, int32 OrderSequence);
+
+	bool ServerRequestSkillOrder_Validate(const TArray<FMassNetworkID>& SelectedNetIDs, int32 SlotId, FVector2D TargetPos, FMassNetworkID TargetNetID, int32 OrderSequence);
+	void ServerRequestSkillOrder_Implementation(const TArray<FMassNetworkID>& SelectedNetIDs, int32 SlotId, FVector2D TargetPos, FMassNetworkID TargetNetID, int32 OrderSequence);
 
 	void ClientRejectWholeOrder_Implementation(int32 OrderSequence, EAsceOrderRejectReason Reason);
 	void ClientRejectEntityOrder_Implementation(int32 OrderSequence, FMassNetworkID UnitNetID, EAsceOrderRejectReason Reason);

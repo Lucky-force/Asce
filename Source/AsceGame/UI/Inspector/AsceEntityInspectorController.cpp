@@ -401,7 +401,7 @@ void UAsceEntityInspectorController::BuildStatRowsInternal(TArray<FAsceInspector
 	}
 	if (const FAsceTeamFragment* Team = EntityManager->GetFragmentDataPtr<FAsceTeamFragment>(PrimaryEntity))
 	{
-		AddRow(LOCTEXT("Team", "阵营"), FString::FromInt(Team->TeamKey));
+		AddRow(LOCTEXT("Team", "阵营"), FString::FromInt(AsceTeamId(Team->TeamKey)));
 	}
 	if (const FAgentRadiusFragment* Radius = EntityManager->GetFragmentDataPtr<FAgentRadiusFragment>(PrimaryEntity))
 	{

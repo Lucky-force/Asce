@@ -8,6 +8,7 @@
 #include "../Fragments/AsceInteractionFragments.h"
 #include "../Fragments/AsceMovementFragments.h"
 #include "../Vision/AsceVisionFragments.h"
+#include "../Combat/AsceCombatFragments.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AsceRTSUnitTrait)
 
@@ -53,6 +54,9 @@ void UAsceRTSUnitTrait::BuildTemplate(FMassEntityTemplateBuildContext& BuildCont
 	if (bCanAttack)
 	{
 		BuildContext.AddFragment<FAsceAttackOrderFragment>();
+		// 战斗（**服务器权威**）：攻击参数（这里的值是默认值，生成时被实体定义表覆盖）+
+		// 动作状态由下方无条件挂载的 FAsceActionFragment 承担。见 `Combat/技能系统设计.md`
+		BuildContext.AddFragment<FAsceCombatFragment>();
 	}
 	if (bIsInteractable)
 	{
@@ -66,6 +70,15 @@ void UAsceRTSUnitTrait::BuildTemplate(FMassEntityTemplateBuildContext& BuildCont
 			BuildContext.AddTag<FAsceGenericInteractableTag>();
 		}
 	}
+
+	// 动作状态（**服务器权威**，唯一真相；客户端表现靠动作态通道复制下来的边沿）——
+	// 所有单位都挂（Idle/Move 也是动作态，见 `Combat/技能系统设计.md`）
+	BuildContext.AddFragment<FAsceActionFragment>();
+	// 技能槽位（**真实数据**：指令只发槽位号；要复制到客户端）+ 蓝量
+	BuildContext.AddFragment<FAsceSkillSlotsFragment>();
+	FAsceManaFragment& ManaFragment = BuildContext.AddFragment_GetRef<FAsceManaFragment>();
+	ManaFragment.MaxMana = 100.f;
+	ManaFragment.CurrentMana = 100.f;
 
 	// 自定义 Tag：可移动单位（SpatialGrid "单位层"按它收录，避免以后子弹/投射物等被误收）
 	BuildContext.AddTag<FAsceMovableUnitTag>();

@@ -2,6 +2,7 @@
 
 #pragma once
 #include "MassEntityTemplate.h"
+#include "AsceMass/Fragments/AsceCoreFragments.h"   // 阵营列常量/换算（AsceMaxTeams/AsceNeutralTeamId/AsceTeamIndex）
 #include "AsceSpatialGridDefines.generated.h"
 
 //格子中存储的实体信息, 目前来说只需要存一个在这个格子中的EntityHandle即可
@@ -20,15 +21,33 @@ struct FAsceGridEntityData
 	float CachedEntityHeight = 0.0f;
 };
 
+// ── 阵营列 ──
+// 0 = 无阵营（`FAsceTeamFragment::TeamKey` 的默认值；资源这类中立物也是 0，**可被攻击**）；
+// 1..AsceMaxTeams-1 = 战斗阵营。子弹沿用生成者的阵营。
+// `AsceMaxTeams` / `AsceNeutralTeamId` / `AsceTeamIndex` 定义在 `Fragments/AsceCoreFragments.h`（阵营属性所在地，供非空间层代码复用）。
+
 // ── 单个格子中的实体信息 ──
 struct FAsceSpatialGridEntitiesData
 {
-	//这个格子中的所有Entity数据
-	TArray<FAsceGridEntityData, TInlineAllocator<16>> Entities;
-	
+	// 按阵营分列存：扫描敌人时整列跳过友军，不必逐条比较阵营。
+	// 外层固定 AsceMaxTeams 列（inline，不产生堆分配），每列按需分配。
+	// Reset 只清空不释放容量 ⇒ 每帧重建（RebuildGridEntitiesData）不会反复申请内存。
+	TArray<TArray<FAsceGridEntityData>, TInlineAllocator<AsceMaxTeams>> EntitiesByTeam;
+
 	mutable TAtomic<bool> LockFlag { false };  // 自旋锁
 
-	void Reset() { Entities.Reset(); }
+	FAsceSpatialGridEntitiesData()
+	{
+		EntitiesByTeam.SetNum(AsceMaxTeams);
+	}
+
+	void Reset()
+	{
+		for (TArray<FAsceGridEntityData>& List : EntitiesByTeam)
+		{
+			List.Reset();
+		}
+	}
 	
 	FORCEINLINE void Lock()
 	{
@@ -40,11 +59,62 @@ struct FAsceSpatialGridEntitiesData
 		LockFlag = false;
 	}
 
-	FORCEINLINE void AddEntity(const FAsceGridEntityData& Entity)
+	FORCEINLINE void AddEntity(int32 TeamId, const FAsceGridEntityData& Entity)
 	{
 		Lock();
-		Entities.Add(Entity);
+		EntitiesByTeam[TeamId].Add(Entity);
 		Unlock();
+	}
+
+	/** 该格实体总数（调试/统计用） */
+	FORCEINLINE int32 GetNumEntities() const
+	{
+		int32 Count = 0;
+		for (const TArray<FAsceGridEntityData>& List : EntitiesByTeam)
+		{
+			Count += List.Num();
+		}
+		return Count;
+	}
+
+	/** 遍历该格**所有队**的实体（避让/碰撞/框选/射线/调试等"要所有单位"的调用方） */
+	template <typename FnType>
+	FORCEINLINE void ForEachEntity(FnType&& Fn) const
+	{
+		for (const TArray<FAsceGridEntityData>& List : EntitiesByTeam)
+		{
+			for (const FAsceGridEntityData& Entity : List)
+			{
+				Fn(Entity);
+			}
+		}
+	}
+
+	/** 只遍历**指定阵营列**（框选只收自己方用：比全列遍历少 N-1 次空检查） */
+	template <typename FnType>
+	FORCEINLINE void ForEachEntityInTeam(int32 TeamId, FnType&& Fn) const
+	{
+		for (const FAsceGridEntityData& Entity : EntitiesByTeam[TeamId])
+		{
+			Fn(Entity);
+		}
+	}
+
+	/** 只遍历**非我队**的实体（战斗扫描用；0 号无阵营对战斗单位也算敌人 ⇒ 只跳过 MyTeamId 列） */
+	template <typename FnType>
+	FORCEINLINE void ForEachEnemy(int32 MyTeamId, FnType&& Fn) const
+	{
+		for (int32 TeamId = 0; TeamId < AsceMaxTeams; ++TeamId)
+		{
+			if (TeamId == MyTeamId)
+			{
+				continue;
+			}
+			for (const FAsceGridEntityData& Entity : EntitiesByTeam[TeamId])
+			{
+				Fn(Entity);
+			}
+		}
 	}
 };
 
@@ -81,6 +151,10 @@ struct FAsceGridBuildingPart
 
 	/** 基座 Z（cm；建筑贴地后 = 实体 Transform 的 Z；选择盒从这个高度起算）。 */
 	float BaseZ = 0.f;
+
+	/** **本端**阵营列（= `AAsceGameState::FindTeamIndex(AsceTeamId(实体 TeamKey))`；选择/战斗按阵营过滤用）。
+	 *  建筑**不分列**（Ether 射线逐格查是热点，分列会让每次查格 ×N），这里只缓存一字节、查询时比较一次。 */
+	uint8 TeamIndex = AsceNeutralTeamId;
 };
 
 /** 建筑网格的一格：一格可能覆盖多个（小）建筑。 */

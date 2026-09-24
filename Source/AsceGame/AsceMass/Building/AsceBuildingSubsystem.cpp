@@ -14,6 +14,7 @@
 #include "AsceMass/Fragments/AsceCoreFragments.h"
 #include "AsceMass/Fragments/AsceFootprintFragment.h"
 #include "AsceMass/SpatialGrid/AsceSpatialGridSubsystem.h"
+#include "GameModes/AsceGameState.h"   // 本端阵营表（TeamId → 打包 TeamKey）
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "MassCommonFragments.h"
@@ -454,12 +455,14 @@ FMassEntityHandle UAsceBuildingSubsystem::CreateConstructingBuilding(const FAsce
 		UnitDef->UniqueTypeId = DefNumericId;
 	}
 
-	// 阵营（归属由摆放数据决定）
+	// 阵营（归属由摆放数据决定）：Placement.TeamId 是**跨端一致的 TeamId**，
+	// 写进 fragment 的 TeamKey 要打包上**本端** index（GameState 本端阵营表）
 	FAsceTeamFragment* Team = EntityManager.GetFragmentDataPtr<FAsceTeamFragment>(Entity);
 	ensureMsgf(Team, TEXT("[Building] EntityTemplate 缺 FAsceTeamFragment：建筑 def '%s' 的模板必须包含 UAsceRTSEntityTrait"), *DefIdForLog.ToString());
 	if (Team)
 	{
-		Team->TeamKey = Placement.TeamKey;
+		const AAsceGameState* GameState = World->GetGameState<AAsceGameState>();
+		Team->TeamKey = GameState ? GameState->GetTeamKey(Placement.TeamId) : 0;
 	}
 
 	// **建造中**：实体只带 `FAsceConstructingFragment`（**不写 footprint**）⇒ costfield/视野/Ether 的观察者

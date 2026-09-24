@@ -24,5 +24,5 @@ public:
 	 * @return 生成的实体 handle 数字（`FMassEntityHandle::AsNumber`；失败为空）
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Asce|Entity")
-	static TArray<int64> SpawnEntitiesByDef(UObject* WorldContextObject, FName DefRowName, const TArray<FTransform>& Transforms, int32 TeamKey = 0);
+	static TArray<int64> SpawnEntitiesByDef(UObject* WorldContextObject, FName DefRowName, const TArray<FTransform>& Transforms, int32 TeamId = 0);
 };

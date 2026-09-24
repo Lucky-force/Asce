@@ -29,7 +29,7 @@ public:
 
 	/** 归属阵营（写进 `FAsceTeamFragment::TeamKey`）。 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Building")
-	int32 TeamKey = 0;
+	int32 TeamId = 0;
 
 	/** 关掉就不会创建（地图作者临时禁用）。 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Building")

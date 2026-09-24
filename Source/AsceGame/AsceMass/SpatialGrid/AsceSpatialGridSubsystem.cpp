@@ -213,7 +213,7 @@ void UAsceSpatialGridSubsystem::FindEntities(const FVector2D& CenterWorldLocatio
 }
 
 void UAsceSpatialGridSubsystem::FindEntitiesScreen(const FVector2D& StartScreenLocation, const FVector2D& EndScreenLocation, const APlayerController* Controller, TArray<FMassEntityHandle>& OutResult,
-    bool bIncludeUnits, bool bIncludeBuildings)
+    bool bIncludeUnits, bool bIncludeBuildings, int32 TeamFilter)
 {
     // 1. 规范化屏幕矩形 (处理反向拖拽)
     const FVector2D MinScreen(
@@ -268,11 +268,11 @@ void UAsceSpatialGridSubsystem::FindEntitiesScreen(const FVector2D& StartScreenL
     OutResult.Reset();
     if (bIncludeUnits)
     {
-        FindEntitiesInFrustum(Frustum, HullMin, HullMax, OutResult);
+        FindEntitiesInFrustum(Frustum, HullMin, HullMax, OutResult, TeamFilter);
     }
     if (bIncludeBuildings)
     {
-        FindBuildingsInFrustum(Frustum, HullMin, HullMax, OutResult);
+        FindBuildingsInFrustum(Frustum, HullMin, HullMax, OutResult, TeamFilter);
     }
 }
 
@@ -319,11 +319,12 @@ FMassEntityHandle UAsceSpatialGridSubsystem::FindUnitHitOnRay(const FVector& Ori
         if (IsValidCoord(OriginCell))
         {
             // 3. 格子内实体做射线-球体 (3D, 不是水平面)
-            for (auto& E : EntitiesDataCells[CoordToIndex(OriginCell)].Entities)
+            //    遍历该格所有队（本步只做等价改造：不按队过滤）
+            EntitiesDataCells[CoordToIndex(OriginCell)].ForEachEntity([&](const FAsceGridEntityData& E)
             {
                 if (Visited.Contains(E.EntityHandle))
                 {
-                    continue;
+                    return;
                 }
                 Visited.Add(E.EntityHandle);
 
@@ -335,7 +336,7 @@ FMassEntityHandle UAsceSpatialGridSubsystem::FindUnitHitOnRay(const FVector& Ori
                     ClosestT = T;
                     Closest = E.EntityHandle;
                 }
-            }
+            });
         }
 
         if (Closest.IsValid())
@@ -791,7 +792,7 @@ void UAsceSpatialGridSubsystem::FindBuildingsInLogicalRect(const FIntPoint& Min,
 	}
 }
 
-void UAsceSpatialGridSubsystem::FindBuildingsInFrustum(const FConvexVolume& Frustum, const FVector2D& HullMin, const FVector2D& HullMax, TArray<FMassEntityHandle>& Out) const
+void UAsceSpatialGridSubsystem::FindBuildingsInFrustum(const FConvexVolume& Frustum, const FVector2D& HullMin, const FVector2D& HullMax, TArray<FMassEntityHandle>& Out, int32 TeamFilter) const
 {
 	if (BuildingCells.Num() == 0 || LogicalCellSize <= 0)
 	{
@@ -821,6 +822,11 @@ void UAsceSpatialGridSubsystem::FindBuildingsInFrustum(const FConvexVolume& Frus
 			}
 			for (const FAsceGridBuildingPart& Part : BuildingCells[BuildingCoordToIndex(Coord)].Buildings)
 			{
+				// 阵营过滤（建筑不分列 ⇒ 这里比较一次缓存下来的本端阵营列；INDEX_NONE = 不过滤）
+				if (TeamFilter != INDEX_NONE && Part.TeamIndex != static_cast<uint8>(TeamFilter))
+				{
+					continue;
+				}
 				if (Seen.Contains(Part.Entity))
 				{
 					continue;
@@ -1017,8 +1023,8 @@ const FAsceSpatialGridEntitiesData* UAsceSpatialGridSubsystem::GetGridEntitiesDa
 }
 
 
-// ── InsertEntity：只锁目标格子
-void UAsceSpatialGridSubsystem::InsertEntity(FMassEntityHandle EntityHandle, const FVector& Location, float Radius, float Height)
+// ── InsertEntity：只锁目标格子（TeamId = 归一化后的阵营列，见 AsceTeamIndex）
+void UAsceSpatialGridSubsystem::InsertEntity(FMassEntityHandle EntityHandle, const FVector& Location, float Radius, float Height, int32 TeamId)
 {
     const FIntVector CenterCoord = LocationToCoord(Location);
     const FAsceGridEntityData Data = { EntityHandle, Location, Radius, Height };
@@ -1027,7 +1033,7 @@ void UAsceSpatialGridSubsystem::InsertEntity(FMassEntityHandle EntityHandle, con
     {
         if (IsValidCoord(CenterCoord))
         {
-            EntitiesDataCells[CoordToIndex(CenterCoord)].AddEntity(Data);
+            EntitiesDataCells[CoordToIndex(CenterCoord)].AddEntity(TeamId, Data);
         }
         return;
     }
@@ -1044,7 +1050,7 @@ void UAsceSpatialGridSubsystem::InsertEntity(FMassEntityHandle EntityHandle, con
             const FIntVector Coord(x, y, 0);
             if (IsValidCoord(Coord))
             {
-                EntitiesDataCells[CoordToIndex(Coord)].AddEntity(Data);
+                EntitiesDataCells[CoordToIndex(Coord)].AddEntity(TeamId, Data);
             }
         }
     }
@@ -1082,7 +1088,7 @@ void UAsceSpatialGridSubsystem::FindEntities_Internal(const FVector2D& StartWorl
             }
 
             const int32 CellIndex = x + GridDimension.X * y;
-            for (const auto& Entity : EntitiesDataCells[CellIndex].Entities)
+            EntitiesDataCells[CellIndex].ForEachEntity([&](const FAsceGridEntityData& Entity)
             {
                 // 精确过滤：实体位置必须在矩形内
                 if (Entity.CacheEntityLocation.X + Entity.CachedEntityRadius >= MinX &&
@@ -1092,7 +1098,7 @@ void UAsceSpatialGridSubsystem::FindEntities_Internal(const FVector2D& StartWorl
                 {
                     HandleSet.Add(Entity.EntityHandle);
                 }
-            }
+            });
         }
     }
 
@@ -1129,14 +1135,14 @@ void UAsceSpatialGridSubsystem::FindEntities_Internal(const FVector2D& CenterLoc
             }
 
             const int32 CellIndex = x + GridDimension.X * y;
-            for (const auto& Entity : EntitiesDataCells[CellIndex].Entities)
+            EntitiesDataCells[CellIndex].ForEachEntity([&](const FAsceGridEntityData& Entity)
             {
                 // 精确过滤：实体位置必须在矩形内
                 if (UKismetMathLibrary::DistanceSquared2D(FVector2D(Entity.CacheEntityLocation.X, Entity.CacheEntityLocation.Y), CenterLocation) < Radius * Radius)
                 {
                     HandleSet.Add(Entity.EntityHandle);
                 }
-            }
+            });
         }
     }
     OutHandles = HandleSet.Array();
@@ -1306,7 +1312,7 @@ void UAsceSpatialGridSubsystem::GetConvexHullAABB2D(const TArray<FVector2D>& Hul
     }
 }
 
-void UAsceSpatialGridSubsystem::FindEntitiesInFrustum(const FConvexVolume& Frustum, const FVector2D& AABBMin, const FVector2D& AABBMax, TArray<FMassEntityHandle>& OutHandles) const
+void UAsceSpatialGridSubsystem::FindEntitiesInFrustum(const FConvexVolume& Frustum, const FVector2D& AABBMin, const FVector2D& AABBMax, TArray<FMassEntityHandle>& OutHandles, int32 TeamFilter) const
 {
     // **契约：追加**（不清空输出；和 `FindBuildingsInFrustum/InRadius/InLogicalRect` 一致）。
     // 调用方要"本次查询结果"就自己在调用前 Reset（框选入口就是这么做的）。
@@ -1330,7 +1336,7 @@ void UAsceSpatialGridSubsystem::FindEntitiesInFrustum(const FConvexVolume& Frust
             }
 
             const int32 CellIndex = CoordToIndex(Coord);
-            for (const FAsceGridEntityData& Entity : EntitiesDataCells[CellIndex].Entities)
+            auto VisitEntity = [&](const FAsceGridEntityData& Entity)
             {
                 // 用网格内缓存的位置 + 半径 + 默认半高构造 3D AABB
                 const FVector Center(
@@ -1347,6 +1353,15 @@ void UAsceSpatialGridSubsystem::FindEntitiesInFrustum(const FConvexVolume& Frust
                 {
                     HandleSet.Add(Entity.EntityHandle);
                 }
+            };
+            // 阵营过滤：不过滤 = 遍历该格所有队；指定阵营 = 只遍历那一列（少 N-1 次空检查）
+            if (TeamFilter == INDEX_NONE)
+            {
+                EntitiesDataCells[CellIndex].ForEachEntity(VisitEntity);
+            }
+            else
+            {
+                EntitiesDataCells[CellIndex].ForEachEntityInTeam(TeamFilter, VisitEntity);
             }
         }
     }

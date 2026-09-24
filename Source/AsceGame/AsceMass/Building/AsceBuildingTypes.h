@@ -35,7 +35,7 @@ struct FAsceBuildingPlacement
 
 	/** 归属阵营（写进 `FAsceTeamFragment::TeamKey`）。 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Building")
-	int32 TeamKey = 0;
+	int32 TeamId = 0;
 
 	/** 由"类型定义 id + 尺寸 + 中心格 + 朝向"生成摆放（摆放 Actor / 调试器共用）。 */
 	static FAsceBuildingPlacement MakeFromDefCenter(
@@ -43,7 +43,7 @@ struct FAsceBuildingPlacement
 		const FIntPoint& InSize,
 		const FIntPoint& CenterCell,
 		int32 InRotation = 0,
-		int32 InTeamKey = 0);
+		int32 InTeamId = 0);
 
 	/** footprint 中心（逻辑格坐标，可为半格）。 */
 	FORCEINLINE FVector2D GetCenterCell() const

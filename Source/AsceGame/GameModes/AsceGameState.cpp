@@ -8,6 +8,7 @@
 #include "GameModes/AsceExperienceManagerComponent.h"
 #include "Messages/AsceVerbMessage.h"
 #include "Player/AscePlayerState.h"
+#include "Teams/AsceTeamAgentInterface.h"   // GenericTeamIdToInteger（本端阵营表用玩家 TeamId）
 #include "AsceLogChannels.h"
 #include "Net/UnrealNetwork.h"
 
@@ -60,6 +61,10 @@ void AAsceGameState::EndPlay(const EEndPlayReason::Type EndPlayReason)
 void AAsceGameState::AddPlayerState(APlayerState* PlayerState)
 {
 	Super::AddPlayerState(PlayerState);
+
+	// 本端阵营表：玩家队**先**登记（index 稳定，不会因为某个 AI 先刷出来而抖动）。
+	// 服务器与各客户端各自登记自己的表（TeamId 一致，TeamIndex 各端可以不同）。
+	SeedLocalTeamsFromPlayers();
 }
 
 void AAsceGameState::RemovePlayerState(APlayerState* PlayerState)
@@ -67,6 +72,86 @@ void AAsceGameState::RemovePlayerState(APlayerState* PlayerState)
 	//@TODO: This isn't getting called right now (only the 'rich' AGameMode uses it, not AGameModeBase)
 	// Need to at least comment the engine code, and possibly move things around
 	Super::RemovePlayerState(PlayerState);
+	// 注意：**不回收**阵营表槽位——index 必须在一局内保持稳定（实体 fragment 里的打包值、列/行下标都依赖它）。
+}
+
+// ──────────────────────────────────────────
+// 本端阵营表（TeamId → TeamIndex）
+// ──────────────────────────────────────────
+
+int32 AAsceGameState::GetOrAssignTeamIndex(int32 RawTeamId)
+{
+	// 表的**唯一写入点**：只在 GameThread 调用（实体创建、PlayerState 到达）
+	check(IsInGameThread());
+
+	const int32 TeamId = AsceNormalizeTeamId(RawTeamId);
+	if (TeamId == AsceNeutralTeamId)
+	{
+		return 0;
+	}
+
+	for (int32 Index = 1; Index < LocalTeamCount; ++Index)
+	{
+		if (LocalTeamIds[Index] == TeamId)
+		{
+			return Index;
+		}
+	}
+
+	if (LocalTeamCount >= AsceMaxTeams)
+	{
+		if (!bLoggedLocalTeamsFull)
+		{
+			bLoggedLocalTeamsFull = true;
+			UE_LOG(LogAsceTeams, Warning, TEXT("[AsceGameState] 本端阵营表已满（%d 队），TeamId=%d 归入中立列"), AsceMaxTeams, TeamId);
+		}
+		return 0;
+	}
+
+	const int32 NewIndex = LocalTeamCount++;
+	LocalTeamIds[NewIndex] = TeamId;
+	return NewIndex;
+}
+
+int32 AAsceGameState::FindTeamIndex(int32 RawTeamId) const
+{
+	const int32 TeamId = AsceNormalizeTeamId(RawTeamId);
+	if (TeamId == AsceNeutralTeamId)
+	{
+		return 0;
+	}
+	for (int32 Index = 1; Index < LocalTeamCount; ++Index)
+	{
+		if (LocalTeamIds[Index] == TeamId)
+		{
+			return Index;
+		}
+	}
+	// 未登记（并行路径的正常兜底）：中立列
+	return 0;
+}
+
+int32 AAsceGameState::GetTeamKey(int32 RawTeamId) const
+{
+	const int32 TeamId = AsceNormalizeTeamId(RawTeamId);
+	if (TeamId == AsceNeutralTeamId)
+	{
+		return 0;
+	}
+	return AsceMakeTeamKey(FindTeamIndex(TeamId), TeamId);
+}
+
+void AAsceGameState::SeedLocalTeamsFromPlayers()
+{
+	check(IsInGameThread());
+
+	for (APlayerState* PlayerState : PlayerArray)
+	{
+		if (const IGenericTeamAgentInterface* TeamAgent = Cast<IGenericTeamAgentInterface>(PlayerState))
+		{
+			GetOrAssignTeamIndex(GenericTeamIdToInteger(TeamAgent->GetGenericTeamId()));
+		}
+	}
 }
 
 void AAsceGameState::SeamlessTravelTransitionCheckpoint(bool bToTransitionMap)

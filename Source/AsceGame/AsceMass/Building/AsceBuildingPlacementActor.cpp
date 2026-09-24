@@ -44,7 +44,7 @@ FAsceBuildingPlacement AAsceBuildingPlacementActor::BuildPlacement() const
 		Size = FIntPoint(FMath::Max(1, Def.SizeX), FMath::Max(1, Def.SizeY));
 	}
 
-	return FAsceBuildingPlacement::MakeFromDefCenter(BuildingDef.RowName, Size, CenterCell, Rotation, TeamKey);
+	return FAsceBuildingPlacement::MakeFromDefCenter(BuildingDef.RowName, Size, CenterCell, Rotation, TeamId);
 }
 
 void AAsceBuildingPlacementActor::BeginPlay()

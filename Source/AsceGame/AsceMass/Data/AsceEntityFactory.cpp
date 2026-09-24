@@ -4,10 +4,12 @@
 #include "AsceMass/Data/AsceEntityDefLibrary.h"
 #include "AsceMass/Data/AsceUnitDef.h"
 #include "AsceMass/Fragments/AsceCoreFragments.h"
+#include "AsceMass/Combat/AsceCombatFragments.h"
 #include "AsceMass/Fragments/AsceMovementFragments.h"
 #include "AsceMass/Vision/AsceVisionFragments.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
+#include "GameModes/AsceGameState.h"   // 本端阵营表（TeamId → 打包 TeamKey）
 #include "MassCommonFragments.h"
 #include "MassEntityConfigAsset.h"
 #include "MassEntityManager.h"
@@ -18,16 +20,41 @@
 namespace
 {
 	/** 把单位类型数据写进已生成的实体（有哪些 fragment 就写哪些）。 */
-	void ApplyUnitDef(FMassEntityManager& EntityManager, FMassEntityHandle Entity, const FAsceRTSUnitDef& Def, int32 TeamKey)
+	void ApplyUnitDef(FMassEntityManager& EntityManager, FMassEntityHandle Entity, const FAsceRTSUnitDef& Def, int32 TeamKeyPacked)
 	{
 		if (FAsceHealthFragment* Health = EntityManager.GetFragmentDataPtr<FAsceHealthFragment>(Entity))
 		{
 			Health->MaxHealth = Def.MaxHealth;
 			Health->CurrentHealth = Def.MaxHealth;
 		}
+		if (FAsceManaFragment* Mana = EntityManager.GetFragmentDataPtr<FAsceManaFragment>(Entity))
+		{
+			Mana->MaxMana = Def.MaxMana;
+			Mana->CurrentMana = Def.MaxMana;
+		}
+		// 技能槽位：把 def 里配的初始技能填进槽位（CD 归零；换槽/施法由后续流程维护）
+		if (FAsceSkillSlotsFragment* SkillSlots = EntityManager.GetFragmentDataPtr<FAsceSkillSlotsFragment>(Entity))
+		{
+			for (int32 SlotIndex = 0; SlotIndex < FAsceSkillSlotsFragment::NumSkillSlots; ++SlotIndex)
+			{
+				SkillSlots->Slots[SlotIndex].ActionId = Def.SkillSlots.IsValidIndex(SlotIndex) ? Def.SkillSlots[SlotIndex] : 0;
+				SkillSlots->Slots[SlotIndex].NextReadyServerTime = 0.0;
+			}
+		}
+		// 战斗参数（见 `Combat/技能系统设计.md`）：只写静态值；运行时状态由战斗 processor 推进
+		if (FAsceCombatFragment* Combat = EntityManager.GetFragmentDataPtr<FAsceCombatFragment>(Entity))
+		{
+			Combat->AttackRange = Def.AttackRange;
+			Combat->AttackDamage = Def.AttackDamage;
+			Combat->BaseAttackTime = FMath::Max(Def.BaseAttackTime, 0.05f);
+			Combat->AttackSpeed = Def.AttackSpeed;
+			Combat->bAutoAttack = Def.bAutoAttackDefault;
+			Combat->bProjectile = Def.bProjectile;
+			Combat->ProjectileDefId = Def.ProjectileDefId;
+		}
 		if (FAsceTeamFragment* Team = EntityManager.GetFragmentDataPtr<FAsceTeamFragment>(Entity))
 		{
-			Team->TeamKey = TeamKey;
+			Team->TeamKey = TeamKeyPacked;
 		}
 		if (FAgentRadiusFragment* Radius = EntityManager.GetFragmentDataPtr<FAgentRadiusFragment>(Entity))
 		{
@@ -51,7 +78,7 @@ namespace
 	}
 }
 
-TArray<int64> UAsceEntityFactory::SpawnEntitiesByDef(UObject* WorldContextObject, FName DefRowName, const TArray<FTransform>& Transforms, int32 TeamKey)
+TArray<int64> UAsceEntityFactory::SpawnEntitiesByDef(UObject* WorldContextObject, FName DefRowName, const TArray<FTransform>& Transforms, int32 TeamId)
 {
 	TArray<int64> Result;
 	if (Transforms.Num() == 0)
@@ -64,6 +91,10 @@ TArray<int64> UAsceEntityFactory::SpawnEntitiesByDef(UObject* WorldContextObject
 	{
 		return Result;
 	}
+
+	// 阵营：入参是**跨端一致的 TeamId**，写进 fragment 的 TeamKey 要打包上**本端** index（GameState 本端阵营表）
+	const AAsceGameState* GameState = World->GetGameState<AAsceGameState>();
+	const int32 PackedTeamKey = GameState ? GameState->GetTeamKey(TeamId) : 0;
 
 	FAsceEntityDefRow Row;
 	if (!UAsceEntityDefLibrary::GetEntityDefRowByName(DefRowName, Row))
@@ -143,7 +174,7 @@ TArray<int64> UAsceEntityFactory::SpawnEntitiesByDef(UObject* WorldContextObject
 		}
 		if (UnitDef)
 		{
-			ApplyUnitDef(EntityManager, Handle, *UnitDef, TeamKey);
+			ApplyUnitDef(EntityManager, Handle, *UnitDef, PackedTeamKey);
 		}
 		Result.Add(Handle.AsNumber());
 	}

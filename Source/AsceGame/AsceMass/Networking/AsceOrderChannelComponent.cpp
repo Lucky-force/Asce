@@ -4,14 +4,22 @@
 
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
+#include "GameFramework/Pawn.h"
+#include "GameFramework/Controller.h"
 #include "Math/NumericLimits.h"
 #include "MassEntitySubsystem.h"
 #include "MassCommonFragments.h"
+#include "GenericTeamAgentInterface.h"
+#include "Teams/AsceTeamAgentInterface.h"   // GenericTeamIdToInteger
+#include "AsceMass/Fragments/AsceCoreFragments.h"
 #include "MassReplicationFragments.h"
 #include "AsceMass/Networking/AsceNetIDRegistrySubsystem.h"
 #include "AsceMass/FlowField/AscePathFindingSubsystem.h"
 #include "AsceMass/FlowField/AscePathFinder.h"
 #include "AsceMass/Fragments/AsceOrderFragments.h"
+#include "AsceMass/Combat/AsceCombatFragments.h"   // FAsceActionFragment/FAsceSkillSlotsFragment（停止与技能槽位）
+#include "AsceMass/Combat/AsceActionDefLibrary.h"  // 技能（动作定义）查表校验
+#include "GameModes/AsceGameState.h"               // 服务器世界时间（CD 判定）
 #include "AsceMass/Fragments/AsceMovementFragments.h"
 #include "AsceMass/Movement/AsceMoveOrderExecutor.h"
 
@@ -21,6 +29,31 @@ UAsceOrderChannelComponent::UAsceOrderChannelComponent()
 {
 	PrimaryComponentTick.bCanEverTick = false;
 	SetIsReplicatedByDefault(true);
+}
+
+namespace
+{
+	/** 单个实体的"停止"效果（客户端入口与服务器实现共用）：
+	 *  - **清移动命令**：项目惯用法 = `FAsceMoveOrderFragment::bHasOrder = false`；
+	 *  - **取消动作**：施法（`Cast`/`Channel`）与攻击都回 `Idle`。
+	 *    `Cast` 未到"真正释放"⇒ 完全不付费；`Channel` 已生效效果保留、蓝/CD 不返还；
+	 *    攻击清零后会由扫描按"自动攻击开关"重新起手（**停止不影响自动攻击开关**）。 */
+	void ApplyStopToEntity(FMassEntityManager& EntityManager, const FMassEntityHandle Handle)
+	{
+		if (FAsceMoveOrderFragment* MoveOrder = EntityManager.GetFragmentDataPtr<FAsceMoveOrderFragment>(Handle))
+		{
+			MoveOrder->bHasOrder = false;
+		}
+		if (FAsceActionFragment* Action = EntityManager.GetFragmentDataPtr<FAsceActionFragment>(Handle))
+		{
+			if (Action->ActionState != EAsceActionState::Idle && Action->ActionState != EAsceActionState::Dying)
+			{
+				Action->ActionState = EAsceActionState::Idle;
+				Action->ActionTarget.Reset();
+				++Action->Counter;
+			}
+		}
+	}
 }
 
 // ──────────────────────────────────────────
@@ -133,6 +166,19 @@ void UAsceOrderChannelComponent::RequestMoveOrder(const TArray<FMassEntityHandle
 // ServerRequestMoveOrder
 // ──────────────────────────────────────────
 
+int32 UAsceOrderChannelComponent::GetRequesterTeamId()
+{
+	APawn* Pawn = Cast<APawn>(GetOwner());
+	AController* Controller = Pawn ? Pawn->GetController() : nullptr;
+	// 团队身份来源：Controller（没有则退回 Pawn）的 GenericTeamId；NoTeam/取不到 → 0 中立
+	IGenericTeamAgentInterface* TeamAgent = Cast<IGenericTeamAgentInterface>(Controller);
+	if (!TeamAgent && Pawn)
+	{
+		TeamAgent = Cast<IGenericTeamAgentInterface>(Pawn);
+	}
+	return TeamAgent ? AsceNormalizeTeamId(GenericTeamIdToInteger(TeamAgent->GetGenericTeamId())) : AsceNeutralTeamId;
+}
+
 bool UAsceOrderChannelComponent::ServerRequestMoveOrder_Validate(const TArray<FMassNetworkID>& SelectedNetIDs, FVector2D GoalWorldLocation, float AcceptanceRadiusSquared, int32 OrderSequence)
 {
 	// 只做"值本身是否合法/请求规模是否离谱"这类无关业务的硬性校验，
@@ -177,12 +223,22 @@ void UAsceOrderChannelComponent::ServerRequestMoveOrder_Implementation(const TAr
 	ValidHandles.Reserve(SelectedNetIDs.Num());
 	EntityWorldLocations2D.Reserve(SelectedNetIDs.Num());
 
+	const int32 RequesterTeamId = GetRequesterTeamId();
+
 	for (const FMassNetworkID& NetID : SelectedNetIDs)
 	{
 		const FMassEntityHandle Handle = Registry->FindEntity(NetID);
 		if (!EntityManager.IsEntityValid(Handle))
 		{
 			ClientRejectEntityOrder(OrderSequence, NetID, EAsceOrderRejectReason::EntityNotFound);
+			continue;
+		}
+
+		// ownership：只能指挥自己阵营的实体（**TeamId** 比较，客户端已先过滤，这里是防作弊兜底）
+		const FAsceTeamFragment* TeamFragment = EntityManager.GetFragmentDataPtr<FAsceTeamFragment>(Handle);
+		if (!TeamFragment || AsceTeamId(TeamFragment->TeamKey) != RequesterTeamId)
+		{
+			ClientRejectEntityOrder(OrderSequence, NetID, EAsceOrderRejectReason::NotOwned);
 			continue;
 		}
 
@@ -250,12 +306,22 @@ void UAsceOrderChannelComponent::ServerRequestAttackOrder_Implementation(const T
 		return;
 	}
 
+	const int32 RequesterTeamId = GetRequesterTeamId();
+
 	for (const FMassNetworkID& NetID : SelectedNetIDs)
 	{
 		const FMassEntityHandle Handle = Registry->FindEntity(NetID);
 		if (!EntityManager.IsEntityValid(Handle))
 		{
 			ClientRejectEntityOrder(OrderSequence, NetID, EAsceOrderRejectReason::EntityNotFound);
+			continue;
+		}
+
+		// ownership：只能指挥自己阵营的实体（点选可以选中敌方来查看，但不能指挥它去打人）
+		const FAsceTeamFragment* TeamFragment = EntityManager.GetFragmentDataPtr<FAsceTeamFragment>(Handle);
+		if (!TeamFragment || AsceTeamId(TeamFragment->TeamKey) != RequesterTeamId)
+		{
+			ClientRejectEntityOrder(OrderSequence, NetID, EAsceOrderRejectReason::NotOwned);
 			continue;
 		}
 
@@ -269,6 +335,447 @@ void UAsceOrderChannelComponent::ServerRequestAttackOrder_Implementation(const T
 		AttackOrder->TargetNetID = TargetNetID;
 		AttackOrder->bHasOrder = true;
 		AttackOrder->OrderSequence = OrderSequence;
+	}
+}
+
+// ──────────────────────────────────────────
+// RequestSkillOrder / ServerRequestSkillOrder（释放技能）
+// ──────────────────────────────────────────
+
+void UAsceOrderChannelComponent::RequestSkillOrder(const TArray<FMassEntityHandle>& LocalSelectedHandles, int32 SlotId, FVector2D TargetPos, FMassNetworkID TargetNetID)
+{
+	if (LocalSelectedHandles.Num() == 0)
+	{
+		return;
+	}
+	const UWorld* World = GetWorld();
+	if (!IsValid(World))
+	{
+		return;
+	}
+	UMassEntitySubsystem* MassEntitySubsystem = World->GetSubsystem<UMassEntitySubsystem>();
+	if (!MassEntitySubsystem)
+	{
+		return;
+	}
+	FMassEntityManager& EntityManager = MassEntitySubsystem->GetMutableEntityManager();
+
+	const int32 OrderSequence = ++NextOrderSequence;
+
+	TArray<FMassNetworkID> NetIDs;
+	NetIDs.Reserve(LocalSelectedHandles.Num());
+	for (const FMassEntityHandle& Handle : LocalSelectedHandles)
+	{
+		if (!EntityManager.IsEntityValid(Handle))
+		{
+			continue;
+		}
+		if (const FMassNetworkIDFragment* NetIDFragment = EntityManager.GetFragmentDataPtr<FMassNetworkIDFragment>(Handle))
+		{
+			NetIDs.Add(NetIDFragment->NetID);
+		}
+	}
+	if (NetIDs.Num() == 0)
+	{
+		return;
+	}
+
+	// v1 不做预测/回执：施法由服务器权威处理，表现走状态复制（见 `Combat/技能系统设计.md` §3.1）
+	ServerRequestSkillOrder(NetIDs, SlotId, TargetPos, TargetNetID, OrderSequence);
+}
+
+bool UAsceOrderChannelComponent::ServerRequestSkillOrder_Validate(const TArray<FMassNetworkID>& SelectedNetIDs, int32 SlotId, FVector2D TargetPos, FMassNetworkID TargetNetID, int32 OrderSequence)
+{
+	return SelectedNetIDs.Num() > 0 && SelectedNetIDs.Num() <= MaxOrderSelectionCount;
+}
+
+void UAsceOrderChannelComponent::ServerRequestSkillOrder_Implementation(const TArray<FMassNetworkID>& SelectedNetIDs, int32 SlotId, FVector2D TargetPos, FMassNetworkID TargetNetID, int32 OrderSequence)
+{
+	const UWorld* World = GetWorld();
+	if (!IsValid(World))
+	{
+		return;
+	}
+	if (SlotId < 0 || SlotId >= FAsceSkillSlotsFragment::NumSkillSlots)
+	{
+		ClientRejectWholeOrder(OrderSequence, EAsceOrderRejectReason::InvalidTarget);
+		return;
+	}
+
+	UAsceNetIDRegistrySubsystem* Registry = UAsceNetIDRegistrySubsystem::Get(this);
+	UMassEntitySubsystem* MassEntitySubsystem = World->GetSubsystem<UMassEntitySubsystem>();
+	if (!Registry || !MassEntitySubsystem)
+	{
+		ClientRejectWholeOrder(OrderSequence, EAsceOrderRejectReason::InvalidTarget);
+		return;
+	}
+
+	FMassEntityManager& EntityManager = MassEntitySubsystem->GetMutableEntityManager();
+	const AAsceGameState* GameState = World->GetGameState<AAsceGameState>();
+	const double Now = GameState ? GameState->GetServerWorldTimeSeconds() : World->GetTimeSeconds();
+	const int32 RequesterTeamId = GetRequesterTeamId();
+
+	// 指向性技能的目标（客户端只能点到"已复制到自己这里"的单位 ⇒ 天然不会隔雾点人；服务器照样兜底校验）
+	FMassEntityHandle TargetHandle;
+	if (TargetNetID.IsValid())
+	{
+		TargetHandle = Registry->FindEntity(TargetNetID);
+	}
+
+	for (const FMassNetworkID& NetID : SelectedNetIDs)
+	{
+		const FMassEntityHandle Handle = Registry->FindEntity(NetID);
+		if (!EntityManager.IsEntityValid(Handle))
+		{
+			ClientRejectEntityOrder(OrderSequence, NetID, EAsceOrderRejectReason::EntityNotFound);
+			continue;
+		}
+		const FAsceTeamFragment* TeamFragment = EntityManager.GetFragmentDataPtr<FAsceTeamFragment>(Handle);
+		if (!TeamFragment || AsceTeamId(TeamFragment->TeamKey) != RequesterTeamId)
+		{
+			ClientRejectEntityOrder(OrderSequence, NetID, EAsceOrderRejectReason::NotOwned);
+			continue;
+		}
+
+		// ── ① **无条件停止移动**（即使技能放不出来也要停：否则框选里"有的放有的还在走"很诡异，见 §3.1）──
+		if (FAsceMoveOrderFragment* MoveOrder = EntityManager.GetFragmentDataPtr<FAsceMoveOrderFragment>(Handle))
+		{
+			MoveOrder->bHasOrder = false;
+		}
+
+		// ── ② 校验：槽位非空 / 技能存在 / CD / 蓝 / 目标 / 射程（任一不满足 ⇒ 只停不放）──
+		FAsceSkillSlotsFragment* Slots = EntityManager.GetFragmentDataPtr<FAsceSkillSlotsFragment>(Handle);
+		if (!Slots || Slots->Slots[SlotId].ActionId == 0)
+		{
+			continue;
+		}
+		FAsceActionDef ActionDef;
+		if (!FAsceActionDefLibrary::GetActionDef(Slots->Slots[SlotId].ActionId, ActionDef))
+		{
+			continue;   // 技能表查不到（配置错误）
+		}
+		if (Slots->Slots[SlotId].NextReadyServerTime > Now)
+		{
+			continue;   // CD 中
+		}
+		if (const FAsceManaFragment* Mana = EntityManager.GetFragmentDataPtr<FAsceManaFragment>(Handle))
+		{
+			if (Mana->CurrentMana < ActionDef.ManaCost)
+			{
+				continue;   // 蓝不够
+			}
+		}
+		FTransformFragment* Transform = EntityManager.GetFragmentDataPtr<FTransformFragment>(Handle);
+		if (!Transform)
+		{
+			continue;
+		}
+		const FVector Location = Transform->GetTransform().GetLocation();
+
+		FVector AimLocation(TargetPos.X, TargetPos.Y, Location.Z);
+		if (ActionDef.TargetKind == EAsceTargetKind::Unit)
+		{
+			// 指向性：没点到有效单位 ⇒ 什么都不发生（只停）
+			if (!TargetHandle.IsValid() || !EntityManager.IsEntityValid(TargetHandle) || TargetHandle == Handle)
+			{
+				continue;
+			}
+			if (const FTransformFragment* TargetTransform = EntityManager.GetFragmentDataPtr<FTransformFragment>(TargetHandle))
+			{
+				AimLocation = TargetTransform->GetTransform().GetLocation();
+			}
+		}
+		else if (ActionDef.TargetKind == EAsceTargetKind::None)
+		{
+			AimLocation = Location;
+		}
+
+		// 射程（v1：圆心距离 + 双方半径；高度口径后补）——不够就**不释放、也不走过去**
+		float TargetRadius = 0.f;
+		if (TargetHandle.IsValid())
+		{
+			if (const FAgentRadiusFragment* TargetRadiusFragment = EntityManager.GetFragmentDataPtr<FAgentRadiusFragment>(TargetHandle))
+			{
+				TargetRadius = TargetRadiusFragment->Radius;
+			}
+		}
+		float SelfRadius = 0.f;
+		if (const FAgentRadiusFragment* SelfRadiusFragment = EntityManager.GetFragmentDataPtr<FAgentRadiusFragment>(Handle))
+		{
+			SelfRadius = SelfRadiusFragment->Radius;
+		}
+		if (ActionDef.Range > 0.f
+			&& FVector::Dist2D(Location, AimLocation) > ActionDef.Range + SelfRadius + TargetRadius)
+		{
+			continue;
+		}
+
+		// ── ③ 进动作（技能优先级最高：可顶掉攻击与施法；Cast 未到释放点 ⇒ 不结算，Channel 已生效保留）──
+		// ⚠️ 施法推进（前摇结束 = **真正释放**：扣蓝/落 CD/effect 入队；Channel 周期结算）在**下一步的 processor** 里；
+		//    在它落地前，单位进了 Cast/Channel **不会自动结束** —— 接线前先别实际放技能。
+		FAsceActionFragment* Action = EntityManager.GetFragmentDataPtr<FAsceActionFragment>(Handle);
+		if (!Action)
+		{
+			continue;
+		}
+		const float FacingYaw = FMath::RadiansToDegrees(FMath::Atan2(AimLocation.Y - Location.Y, AimLocation.X - Location.X));
+		const bool bChannel = (ActionDef.CastKind == EAsceCastKind::Channel);
+		Action->ActionState = bChannel ? EAsceActionState::Channel : EAsceActionState::Cast;
+		Action->ActionDefId = Slots->Slots[SlotId].ActionId;
+		Action->ActionTarget = TargetHandle;
+		Action->ActionTargetPos = FVector2D(AimLocation.X, AimLocation.Y);
+		Action->FacingYaw = FacingYaw;
+		Action->ActionEndTime = Now + (bChannel ? ActionDef.ChannelDuration : FMath::Max(ActionDef.CastTime, 0.f));
+		Action->NextTickTime = bChannel ? (Now + FMath::Max(ActionDef.ChannelTickInterval, 0.01f)) : 0.0;
+		++Action->Counter;
+
+		// **`Channel` 无前摇 ⇒ 进入那一刻就是"真正释放"**：立刻扣蓝 + 落 CD（槽位）。
+		// `Cast` 的 cost/CD 在"施法推进"里、前摇结束那一帧才处理（见 `Combat/技能系统设计.md` §5）
+		if (bChannel)
+		{
+			if (FAsceManaFragment* Mana = EntityManager.GetFragmentDataPtr<FAsceManaFragment>(Handle))
+			{
+				Mana->CurrentMana = FMath::Max(0.f, Mana->CurrentMana - ActionDef.ManaCost);
+			}
+			Slots->Slots[SlotId].NextReadyServerTime = Now + ActionDef.Cooldown;
+		}
+
+		// 动作开始时对齐朝向（服务器权威朝向；客户端表现靠动作态通道的 FacingQ）
+		Transform->GetMutableTransform().SetRotation(FRotator(0.f, FacingYaw, 0.f).Quaternion());
+
+		UE_LOG(LogTemp, Verbose, TEXT("[Skill] %lld 开始施法：技能 %d（槽 %d，CastKind %d）"),
+			static_cast<int64>(Handle.AsNumber()), Action->ActionDefId, SlotId, static_cast<int32>(ActionDef.CastKind));
+	}
+}
+
+// ──────────────────────────────────────────
+// RequestSetSkillSlot / ServerRequestSetSkillSlot（配置技能槽位）
+// ──────────────────────────────────────────
+
+void UAsceOrderChannelComponent::RequestSetSkillSlot(const TArray<FMassEntityHandle>& LocalSelectedHandles, int32 SlotIndex, int32 ActionId)
+{
+	if (LocalSelectedHandles.Num() == 0)
+	{
+		return;
+	}
+
+	const UWorld* World = GetWorld();
+	if (!IsValid(World))
+	{
+		return;
+	}
+	UMassEntitySubsystem* MassEntitySubsystem = World->GetSubsystem<UMassEntitySubsystem>();
+	if (!MassEntitySubsystem)
+	{
+		return;
+	}
+	FMassEntityManager& EntityManager = MassEntitySubsystem->GetMutableEntityManager();
+
+	const int32 OrderSequence = ++NextOrderSequence;
+
+	TArray<FMassNetworkID> NetIDs;
+	NetIDs.Reserve(LocalSelectedHandles.Num());
+	for (const FMassEntityHandle& Handle : LocalSelectedHandles)
+	{
+		if (!EntityManager.IsEntityValid(Handle))
+		{
+			continue;
+		}
+		if (const FMassNetworkIDFragment* NetIDFragment = EntityManager.GetFragmentDataPtr<FMassNetworkIDFragment>(Handle))
+		{
+			NetIDs.Add(NetIDFragment->NetID);
+		}
+	}
+	if (NetIDs.Num() == 0)
+	{
+		return;
+	}
+
+	ServerRequestSetSkillSlot(NetIDs, SlotIndex, ActionId, OrderSequence);
+}
+
+bool UAsceOrderChannelComponent::ServerRequestSetSkillSlot_Validate(const TArray<FMassNetworkID>& SelectedNetIDs, int32 SlotIndex, int32 ActionId, int32 OrderSequence)
+{
+	return SelectedNetIDs.Num() > 0 && SelectedNetIDs.Num() <= MaxOrderSelectionCount;
+}
+
+void UAsceOrderChannelComponent::ServerRequestSetSkillSlot_Implementation(const TArray<FMassNetworkID>& SelectedNetIDs, int32 SlotIndex, int32 ActionId, int32 OrderSequence)
+{
+	const UWorld* World = GetWorld();
+	if (!IsValid(World))
+	{
+		return;
+	}
+	// 槽位下标与技能合法性先做一次（与单位无关的检查；单位的"有没有这技能"逐单位查）
+	if (SlotIndex < 0 || SlotIndex >= FAsceSkillSlotsFragment::NumSkillSlots)
+	{
+		ClientRejectWholeOrder(OrderSequence, EAsceOrderRejectReason::InvalidTarget);
+		return;
+	}
+	if (ActionId != 0)
+	{
+		FAsceActionDef ActionDef;
+		if (!FAsceActionDefLibrary::GetActionDef(ActionId, ActionDef)
+			|| ActionDef.SkillType != EAsceSkillType::Active)
+		{
+			ClientRejectWholeOrder(OrderSequence, EAsceOrderRejectReason::InvalidTarget);
+			return;
+		}
+	}
+
+	UAsceNetIDRegistrySubsystem* Registry = UAsceNetIDRegistrySubsystem::Get(this);
+	UMassEntitySubsystem* MassEntitySubsystem = World->GetSubsystem<UMassEntitySubsystem>();
+	if (!Registry || !MassEntitySubsystem)
+	{
+		ClientRejectWholeOrder(OrderSequence, EAsceOrderRejectReason::InvalidTarget);
+		return;
+	}
+
+	FMassEntityManager& EntityManager = MassEntitySubsystem->GetMutableEntityManager();
+	const int32 RequesterTeamId = GetRequesterTeamId();
+
+	for (const FMassNetworkID& NetID : SelectedNetIDs)
+	{
+		const FMassEntityHandle Handle = Registry->FindEntity(NetID);
+		if (!EntityManager.IsEntityValid(Handle))
+		{
+			ClientRejectEntityOrder(OrderSequence, NetID, EAsceOrderRejectReason::EntityNotFound);
+			continue;
+		}
+		const FAsceTeamFragment* TeamFragment = EntityManager.GetFragmentDataPtr<FAsceTeamFragment>(Handle);
+		if (!TeamFragment || AsceTeamId(TeamFragment->TeamKey) != RequesterTeamId)
+		{
+			ClientRejectEntityOrder(OrderSequence, NetID, EAsceOrderRejectReason::NotOwned);
+			continue;
+		}
+		FAsceSkillSlotsFragment* Slots = EntityManager.GetFragmentDataPtr<FAsceSkillSlotsFragment>(Handle);
+		if (!Slots)
+		{
+			ClientRejectEntityOrder(OrderSequence, NetID, EAsceOrderRejectReason::MissingOrderFragment);
+			continue;
+		}
+
+		// **槽位 = 技能的容器**（技能运行时状态随槽位，见 `Combat/技能系统设计.md` §2.2）：
+		//  - 该技能已在别的槽位 ⇒ **两槽交换**（技能连同 CD 一起换位，不重置）；
+		//  - 新技能 ⇒ 写入并 CD 归零；
+		//  - `ActionId == 0` ⇒ 只清空该槽位（不牵动别的槽位）。
+		int32 SourceIndex = INDEX_NONE;
+		if (ActionId != 0)
+		{
+			for (int32 Index = 0; Index < FAsceSkillSlotsFragment::NumSkillSlots; ++Index)
+			{
+				if (Index != SlotIndex && Slots->Slots[Index].ActionId == ActionId)
+				{
+					SourceIndex = Index;
+					break;
+				}
+			}
+		}
+
+		if (SourceIndex != INDEX_NONE)
+		{
+			Swap(Slots->Slots[SlotIndex], Slots->Slots[SourceIndex]);
+		}
+		else
+		{
+			Slots->Slots[SlotIndex].ActionId = ActionId;
+			Slots->Slots[SlotIndex].NextReadyServerTime = 0.0;
+		}
+
+		UE_LOG(LogTemp, Verbose, TEXT("[Skill] 槽位配置：%lld 槽 %d = %d（交换源 %d）"),
+			static_cast<int64>(Handle.AsNumber()), SlotIndex, ActionId, SourceIndex);
+	}
+}
+
+// ──────────────────────────────────────────
+// RequestStopOrder / ServerRequestStopOrder（`S` 停止指令）
+// ──────────────────────────────────────────
+
+void UAsceOrderChannelComponent::RequestStopOrder(const TArray<FMassEntityHandle>& LocalSelectedHandles)
+{
+	if (LocalSelectedHandles.Num() == 0)
+	{
+		return;
+	}
+
+	const UWorld* World = GetWorld();
+	if (!IsValid(World))
+	{
+		return;
+	}
+	UMassEntitySubsystem* MassEntitySubsystem = World->GetSubsystem<UMassEntitySubsystem>();
+	if (!MassEntitySubsystem)
+	{
+		return;
+	}
+	FMassEntityManager& EntityManager = MassEntitySubsystem->GetMutableEntityManager();
+
+	const int32 OrderSequence = ++NextOrderSequence;
+
+	// 本地 selection 本来就是 EntityHandle；NetID 只给服务器反查用
+	TArray<FMassNetworkID> NetIDs;
+	NetIDs.Reserve(LocalSelectedHandles.Num());
+	for (const FMassEntityHandle& Handle : LocalSelectedHandles)
+	{
+		if (!EntityManager.IsEntityValid(Handle))
+		{
+			continue;
+		}
+		if (const FMassNetworkIDFragment* NetIDFragment = EntityManager.GetFragmentDataPtr<FMassNetworkIDFragment>(Handle))
+		{
+			NetIDs.Add(NetIDFragment->NetID);
+		}
+	}
+	if (NetIDs.Num() == 0)
+	{
+		return;
+	}
+
+	// v1 不做本地预测：停止由服务器权威处理（与技能一致，见 `Combat/技能系统设计.md` §3.2）
+	ServerRequestStopOrder(NetIDs, OrderSequence);
+}
+
+bool UAsceOrderChannelComponent::ServerRequestStopOrder_Validate(const TArray<FMassNetworkID>& SelectedNetIDs, int32 OrderSequence)
+{
+	return SelectedNetIDs.Num() > 0 && SelectedNetIDs.Num() <= MaxOrderSelectionCount;
+}
+
+void UAsceOrderChannelComponent::ServerRequestStopOrder_Implementation(const TArray<FMassNetworkID>& SelectedNetIDs, int32 OrderSequence)
+{
+	const UWorld* World = GetWorld();
+	if (!IsValid(World))
+	{
+		return;
+	}
+
+	UAsceNetIDRegistrySubsystem* Registry = UAsceNetIDRegistrySubsystem::Get(this);
+	UMassEntitySubsystem* MassEntitySubsystem = World->GetSubsystem<UMassEntitySubsystem>();
+	if (!Registry || !MassEntitySubsystem)
+	{
+		ClientRejectWholeOrder(OrderSequence, EAsceOrderRejectReason::InvalidTarget);
+		return;
+	}
+
+	FMassEntityManager& EntityManager = MassEntitySubsystem->GetMutableEntityManager();
+	const int32 RequesterTeamId = GetRequesterTeamId();
+
+	for (const FMassNetworkID& NetID : SelectedNetIDs)
+	{
+		const FMassEntityHandle Handle = Registry->FindEntity(NetID);
+		if (!EntityManager.IsEntityValid(Handle))
+		{
+			ClientRejectEntityOrder(OrderSequence, NetID, EAsceOrderRejectReason::EntityNotFound);
+			continue;
+		}
+		// ownership：只能指挥自己阵营的实体（防作弊兜底）
+		const FAsceTeamFragment* TeamFragment = EntityManager.GetFragmentDataPtr<FAsceTeamFragment>(Handle);
+		if (!TeamFragment || AsceTeamId(TeamFragment->TeamKey) != RequesterTeamId)
+		{
+			ClientRejectEntityOrder(OrderSequence, NetID, EAsceOrderRejectReason::NotOwned);
+			continue;
+		}
+
+		ApplyStopToEntity(EntityManager, Handle);
 	}
 }
 

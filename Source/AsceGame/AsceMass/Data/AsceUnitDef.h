@@ -43,4 +43,41 @@ struct FAsceRTSUnitDef : public FAsceEntityDefBase
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Attributes")
 	float MaxHealth = 100.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Attributes")
+	float MaxMana = 100.f;
+
+	// ── 战斗（写入 FAsceCombatFragment；见 `Combat/技能系统设计.md`）──
+
+	/** 攻击距离（cm）；v1 固定"近战表面/圆心"口径，高度口径后补 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Combat")
+	float AttackRange = 300.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Combat")
+	float AttackDamage = 10.f;
+
+	/** 攻击动作自然时长（秒） */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Combat")
+	float BaseAttackTime = 1.f;
+
+	/** 攻击速度；PlayRate = AttackSpeed / 200 + 0.1（180 → 1.0x） */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Combat")
+	float AttackSpeed = 180.f;
+
+	/** 自动攻击默认开关（玩家可切） */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Combat")
+	bool bAutoAttackDefault = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Combat")
+	bool bProjectile = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Combat")
+	int32 ProjectileDefId = 0;
+
+	// ── 技能（写入 FAsceSkillSlotsFragment 的初始槽位；见 `Combat/技能系统设计.md`）──
+
+	/** 初始技能槽位（1/2/3 ↔ Q/W/E）：每项是技能（动作定义）id；0 = 空槽。
+	 *  运行时换槽由"配置槽位"指令改，这里只是出生时的初始配置 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
+	TArray<int32> SkillSlots;
 };

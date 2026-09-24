@@ -59,7 +59,7 @@ public:
 	
 	//传入屏幕空间的矩形两个顶点的坐标，查询被框选的实体（**单位 + 建筑**，按需开关）
 	void FindEntitiesScreen(const FVector2D& StartScreenLocation, const FVector2D& EndScreenLocation, const APlayerController* Controller, TArray<FMassEntityHandle>& OutResult,
-		bool bIncludeUnits = true, bool bIncludeBuildings = true);
+		bool bIncludeUnits = true, bool bIncludeBuildings = true, int32 TeamFilter = INDEX_NONE);
 
 	//传入屏幕空间的点坐标，使用这个点作为起点进行射线检测来选中实体（单位 + 建筑取离相机最近，按需开关）
 	FMassEntityHandle FindEntitiesAtScreenPoint(const FVector2D ScreenLocation, float MaxDistance, APlayerController* Controller,
@@ -148,7 +148,7 @@ protected:
 	friend class UAsceGridEntitiesUpdateProcessor;
 	friend class UAsceGridBuildingsUpdateProcessor;
 	
-	void InsertEntity(FMassEntityHandle EntityHandle, const FVector& Location, float Radius, float Height);
+	void InsertEntity(FMassEntityHandle EntityHandle, const FVector& Location, float Radius, float Height, int32 TeamId);
 	
 public:
 	// 坐标映射
@@ -207,7 +207,7 @@ protected:
 	//获取2D凸包的AABB包围盒，我们不需要直接使用2D凸包与网格进行相交测试选出相交的网格，这部分的开销已经大于直接使用AABB框选的网格时多遍历的一些网格了
 	void GetConvexHullAABB2D(const TArray<FVector2D>& Hull, FVector2D& OutMin, FVector2D& OutMax);
 	//使用视锥对所有entity进行相交测试筛选
-	void FindEntitiesInFrustum(const FConvexVolume& Frustum, const FVector2D& AABBMin, const FVector2D& AABBMax, TArray<FMassEntityHandle>& OutHandles) const;
+	void FindEntitiesInFrustum(const FConvexVolume& Frustum, const FVector2D& AABBMin, const FVector2D& AABBMax, TArray<FMassEntityHandle>& OutHandles, int32 TeamFilter = INDEX_NONE) const;
 
 	/** 射线命中的**最近单位**（世界射线；`OutT` 返回命中 t；未命中返回无效 handle）。 */
 	FMassEntityHandle FindUnitHitOnRay(const FVector& Origin, const FVector& Dir, float MaxDistance, float& OutT);
@@ -216,7 +216,7 @@ protected:
 	FMassEntityHandle FindBuildingHitOnRay(const FVector& Origin, const FVector& Dir, float MaxDistance, float& OutT) const;
 
 	/** 框选：屏幕凸包 AABB 覆盖的建筑，盒 vs 视锥（按 Entity 去重追加）。 */
-	void FindBuildingsInFrustum(const FConvexVolume& Frustum, const FVector2D& HullMin, const FVector2D& HullMax, TArray<FMassEntityHandle>& Out) const;
+	void FindBuildingsInFrustum(const FConvexVolume& Frustum, const FVector2D& HullMin, const FVector2D& HullMax, TArray<FMassEntityHandle>& Out, int32 TeamFilter = INDEX_NONE) const;
 
 	//对AABB进行射线相交测试，返回首次交点的t值
 	float RayAABBHit(const FVector& Origin, const FVector& Dir, const FVector& BoxCenter, const FVector& BoxExtent) const;

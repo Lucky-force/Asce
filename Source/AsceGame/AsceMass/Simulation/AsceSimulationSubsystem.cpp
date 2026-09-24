@@ -1,5 +1,7 @@
 // AsceSimulationSubsystem.cpp
 #include "AsceSimulationSubsystem.h"
+#include "AsceMass/Combat/AsceCombatSubsystem.h"   // 阶段 5b：战斗阶段
+#include "AsceMass/Spawn/AsceSpawnQueueSubsystem.h" // 阶段 8：生成队列 drain
 
 #include "AsceTickContext.h"
 #include "Engine/Engine.h"
@@ -215,6 +217,15 @@ void UAsceSimulationSubsystem::Tick(float DeltaTime)
 		}
 	}
 
+	// 阶段 5b：战斗（0.3s 扫描 / 动作推进 / 结算）——必须在**阶段 4（雾逻辑）之后**
+	// （目标选择要查迷雾可见性）、**阶段 5 命令 drain 之后**（本帧新下的命令同帧生效）；
+	// 只有权威端跑（`UAsceCombatSubsystem::RunCombatStage` 内门控）。见 `Combat/技能系统设计.md`
+	if (UAsceCombatSubsystem* Combat = World->GetSubsystem<UAsceCombatSubsystem>())
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(AsceSim_Combat);
+		Combat->RunCombatStage();
+	}
+
 	// 阶段 6：雾渲染上传（吃阶段 4 的结果）
 	if (TickContext.FogRender)
 	{
@@ -229,5 +240,13 @@ void UAsceSimulationSubsystem::Tick(float DeltaTime)
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(AsceSim_FragmentSampler);
 		FragmentSampler->RunSamplingStage();
+	}
+
+	// 阶段 8：生成队列 drain（**帧末**：实体在帧末创建，下一帧的阶段 2 才把它们收进空间层/建筑层，
+	// 满足"实体创建/销毁必须在阶段 2 之前"的不变式）。入队方 = 战斗/技能结算（阶段 5b/7）
+	if (UAsceSpawnQueueSubsystem* SpawnQueue = World->GetSubsystem<UAsceSpawnQueueSubsystem>())
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(AsceSim_SpawnQueue);
+		SpawnQueue->RunGenerationStage();
 	}
 }

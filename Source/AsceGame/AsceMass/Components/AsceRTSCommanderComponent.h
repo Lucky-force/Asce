@@ -100,6 +100,16 @@ private:
     // 选中状态变化统一出口：打印当前选中 + 广播OnSelectionChanged（调用方改完SelectedEntities后调）
     void BroadcastSelectionChanged();
 
+    // 本地玩家**团队身份**（跨端一致，来自 Controller 的 GenericTeamId；NoTeam/非法 → 0 中立）
+    // 敌我/指挥权限比较一律用它
+    int32 GetLocalTeamId();
+
+    // 本地玩家在**本端阵营表**里的列（空间层过滤用；= GameState->FindTeamIndex(GetLocalTeamId())）
+    int32 GetLocalTeamIndex();
+
+    // 框选回退：屏幕矩形内"离 Start 屏幕坐标最近的非己方"（框里只有敌人时当点选用；找不到 → 无效 handle）
+    FMassEntityHandle FindNearestOtherTeamEntityInScreenRect(const FVector2D& Start, const FVector2D& End);
+
     // ── 缓存 ──
     UPROPERTY()
     TWeakObjectPtr<UAsceObserverComponent> ObserverComp;

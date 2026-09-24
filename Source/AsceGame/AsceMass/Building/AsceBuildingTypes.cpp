@@ -6,11 +6,11 @@ FAsceBuildingPlacement FAsceBuildingPlacement::MakeFromDefCenter(
 	const FIntPoint& InSize,
 	const FIntPoint& CenterCell,
 	int32 InRotation,
-	int32 InTeamKey)
+	int32 InTeamId)
 {
 	FAsceBuildingPlacement Out;
 	Out.BuildingDefId = InBuildingDefId;
-	Out.TeamKey = InTeamKey;
+	Out.TeamId = InTeamId;
 	Out.Rotation = ((InRotation % 4) + 4) % 4;
 	Out.Size = FIntPoint(FMath::Max(1, InSize.X), FMath::Max(1, InSize.Y));
 

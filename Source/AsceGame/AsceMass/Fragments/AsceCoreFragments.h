@@ -27,6 +27,37 @@ struct FAsceHealthFragment : public FMassFragment
 };
 
 // ──────────────────────────────────────────
+// 阵营：TeamKey = (TeamIndex << 16) | TeamId（与 AsceVisionDefines.h 同一口径）
+// ──────────────────────────────────────────
+// - **TeamId**（低 16 位）= **跨端一致**的身份（玩家看 AAscePlayerState::MyTeamID；NoTeam → 0）。
+//   敌我判断 / 指挥授权校验一律用它。
+// - **TeamIndex**（高 16 位）= **本端**的数组下标（空间层列、迷雾行），先来先得，各端可以不一样
+//   ⇒ 只用来索引数组，**不用于比较、不跨端传**；分配点在 `AAsceGameState`（本端阵营表）。
+// - 0 = 无阵营/中立（资源这类中立物也是 0，**可被攻击**）；玩家队由 GameState 先从 PlayerArray 登记。
+inline constexpr int32 AsceMaxTeams = 8;
+inline constexpr int32 AsceNeutralTeamId = 0;
+inline constexpr int32 AsceTeamKeyShift = 16;
+inline constexpr int32 AsceTeamIdMask = 0xFFFF;
+
+/** 打包 TeamKey → TeamId（低 16 位；跨端一致，用于比较/授权） */
+FORCEINLINE int32 AsceTeamId(int32 TeamKey) { return TeamKey & AsceTeamIdMask; }
+
+/** 打包 TeamKey → TeamIndex（高 16 位；**本端**数组下标。别直接拿它索引数组，先用 AAsceGameState 重映射） */
+FORCEINLINE int32 AsceTeamIndex(int32 TeamKey) { return TeamKey >> AsceTeamKeyShift; }
+
+/** 打包（TeamIndex 由本端阵营表给出：`AAsceGameState::GetTeamKey`） */
+FORCEINLINE int32 AsceMakeTeamKey(int32 TeamIndex, int32 TeamId)
+{
+	return (TeamIndex << AsceTeamKeyShift) | (TeamId & AsceTeamIdMask);
+}
+
+/** 归一化**裸** TeamId（玩家/定义填的原始队号）：<=0 / NoTeam / 越界一律归 0 中立 */
+FORCEINLINE int32 AsceNormalizeTeamId(int32 RawTeamId)
+{
+	return (RawTeamId > 0 && RawTeamId <= AsceTeamIdMask) ? RawTeamId : AsceNeutralTeamId;
+}
+
+// ──────────────────────────────────────────
 // 阵营
 // ──────────────────────────────────────────
 

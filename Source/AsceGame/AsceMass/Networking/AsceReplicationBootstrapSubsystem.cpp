@@ -8,6 +8,8 @@
 #include "AsceMass/Networking/Capabilities/Velocity/AsceVelocityReplicationCapability.h"
 #include "AsceMass/Networking/Capabilities/Health/AsceHealthReplication.h"
 #include "AsceMass/Networking/Capabilities/Health/AsceHealthReplicationCapability.h"
+#include "AsceMass/Networking/Capabilities/Mana/AsceManaReplication.h"
+#include "AsceMass/Networking/Capabilities/Mana/AsceManaReplicationCapability.h"
 #include "AsceMass/Networking/Core/AsceUnitReplicator.h"
 #include "MassReplicationSubsystem.h"
 
@@ -35,6 +37,7 @@ namespace
 		UAsceUnitReplicator::RegisterCapability(MakeUnique<FAsceTransformReplicationCapability>());
 		UAsceUnitReplicator::RegisterCapability(MakeUnique<FAsceVelocityReplicationCapability>());
 		UAsceUnitReplicator::RegisterCapability(MakeUnique<FAsceHealthReplicationCapability>());
+		UAsceUnitReplicator::RegisterCapability(MakeUnique<FAsceManaReplicationCapability>());
 	}
 }
 
@@ -51,5 +54,6 @@ void UAsceReplicationBootstrapSubsystem::PostInitialize()
 		ReplicationSubsystem->RegisterBubbleInfoClass(AAsceTransformClientBubbleInfo::StaticClass());
 		ReplicationSubsystem->RegisterBubbleInfoClass(AAsceVelocityClientBubbleInfo::StaticClass());
 		ReplicationSubsystem->RegisterBubbleInfoClass(AAsceHealthClientBubbleInfo::StaticClass());
+		ReplicationSubsystem->RegisterBubbleInfoClass(AAsceManaClientBubbleInfo::StaticClass());
 	}
 }

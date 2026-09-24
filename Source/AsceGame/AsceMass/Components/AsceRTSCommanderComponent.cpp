@@ -8,6 +8,10 @@
 #include "MassCommonFragments.h"
 #include "MassEntityManager.h"
 #include "MassEntityView.h"
+#include "GenericTeamAgentInterface.h"
+#include "Teams/AsceTeamAgentInterface.h"   // GenericTeamIdToInteger
+#include "GameModes/AsceGameState.h"        // 本端阵营表（TeamId → 本端 index）
+#include "Math/NumericLimits.h"
 #include "AsceMass/Fragments/AsceOrderFragments.h"
 #include "AsceMass/FlowField/AscePathFindingSubsystem.h"
 #include "AsceMass/Movement/AsceMoveOrderExecutor.h"
@@ -232,6 +236,75 @@ void UAsceRTSCommanderComponent::UnbindFromObserverComponent()
 
 // ── 委托回调 ──────────────────────────────────
 
+int32 UAsceRTSCommanderComponent::GetLocalTeamId()
+{
+    APawn* Pawn = GetPawn<APawn>();
+    AController* Controller = Pawn ? Pawn->GetController() : nullptr;
+    // 团队身份来源：Controller（没有则退回 Pawn）的 GenericTeamId；NoTeam/非法 → 0 中立
+    IGenericTeamAgentInterface* TeamAgent = Cast<IGenericTeamAgentInterface>(Controller);
+    if (!TeamAgent && Pawn)
+    {
+        TeamAgent = Cast<IGenericTeamAgentInterface>(Pawn);
+    }
+    return TeamAgent ? AsceNormalizeTeamId(GenericTeamIdToInteger(TeamAgent->GetGenericTeamId())) : AsceNeutralTeamId;
+}
+
+int32 UAsceRTSCommanderComponent::GetLocalTeamIndex()
+{
+    // 空间层的"列"是**本端** index ⇒ 必须经本端阵营表换算（不能直接用 TeamId）
+    const AAsceGameState* GameState = GetWorld() ? GetWorld()->GetGameState<AAsceGameState>() : nullptr;
+    return GameState ? GameState->FindTeamIndex(GetLocalTeamId()) : 0;
+}
+
+FMassEntityHandle UAsceRTSCommanderComponent::FindNearestOtherTeamEntityInScreenRect(const FVector2D& Start, const FVector2D& End)
+{
+    APawn* Pawn = GetPawn<APawn>();
+    APlayerController* PlayerController = Pawn ? Pawn->GetController<APlayerController>() : nullptr;
+    if (!SpatialGrid.IsValid() || !IsValid(PlayerController) || !EntityManager.IsValid())
+    {
+        return FMassEntityHandle();
+    }
+
+    // 不过滤地拿框内全部候选（单位 + 建筑），再挑"非己方里离 Start 屏幕坐标最近"的那个
+    TArray<FMassEntityHandle> Candidates;
+    SpatialGrid->FindEntitiesScreen(Start, End, PlayerController, Candidates, true, true, INDEX_NONE);
+
+    const int32 MyTeamId = GetLocalTeamId();
+    FMassEntityHandle BestHandle;
+    float BestDistSq = TNumericLimits<float>::Max();
+    for (const FMassEntityHandle Handle : Candidates)
+    {
+        if (!EntityManager->IsEntityValid(Handle))
+        {
+            continue;
+        }
+        const FAsceTeamFragment* Team = EntityManager->GetFragmentDataPtr<FAsceTeamFragment>(Handle);
+        // 敌我比较用 **TeamId**（跨端一致；TeamIndex 只是本端下标，不能比较）
+        if (!Team || AsceTeamId(Team->TeamKey) == MyTeamId)
+        {
+            continue;   // 只挑非己方
+        }
+        const FTransformFragment* Transform = EntityManager->GetFragmentDataPtr<FTransformFragment>(Handle);
+        if (!Transform)
+        {
+            continue;
+        }
+        // 屏幕距离（不是世界距离）：投影到屏幕再和 Start 比
+        FVector2D ScreenPos;
+        if (!PlayerController->ProjectWorldLocationToScreen(Transform->GetTransform().GetLocation(), ScreenPos))
+        {
+            continue;
+        }
+        const float DistSq = FVector2D::DistSquared(ScreenPos, Start);
+        if (DistSq < BestDistSq)
+        {
+            BestDistSq = DistSq;
+            BestHandle = Handle;
+        }
+    }
+    return BestHandle;
+}
+
 void UAsceRTSCommanderComponent::OnClickSelect(const FVector2D& ScreenPos)
 {
     SelectedEntities.Reset();
@@ -260,7 +333,17 @@ void UAsceRTSCommanderComponent::OnDragSelect(const FVector2D& Start, const FVec
         APlayerController* PlayerController = Pawn->GetController<APlayerController>();
         if (SpatialGrid.IsValid() && IsValid(PlayerController))
         {
-            SpatialGrid->FindEntitiesScreen(Start, End, PlayerController, SelectedEntities);
+            // 框选：**只收自己方**（单位 + 建筑；阵营过滤在网格查询里做）
+            SpatialGrid->FindEntitiesScreen(Start, End, PlayerController, SelectedEntities, true, true, GetLocalTeamIndex());
+            if (SelectedEntities.Num() == 0)
+            {
+                // 框里只有敌方 ⇒ 视作对"离框选起点最近的非己方"的点选（用于查看敌人信息）
+                const FMassEntityHandle Enemy = FindNearestOtherTeamEntityInScreenRect(Start, End);
+                if (Enemy.IsValid())
+                {
+                    SelectedEntities.Add(Enemy);
+                }
+            }
         }
     }
     BroadcastSelectionChanged();
@@ -300,7 +383,8 @@ void UAsceRTSCommanderComponent::OnAdditiveDragSelect(const FVector2D& Start, co
     if (SpatialGrid.IsValid() && IsValid(PlayerController))
     {
         TArray<FMassEntityHandle> EntityHandles;
-        SpatialGrid->FindEntitiesScreen(Start, End, PlayerController, EntityHandles);
+        // 追加框选：同样只收自己方；**不做回退**（框里只有敌方 = 空操作）
+        SpatialGrid->FindEntitiesScreen(Start, End, PlayerController, EntityHandles, true, true, GetLocalTeamIndex());
         SelectedEntities.Append(EntityHandles);
     }
     BroadcastSelectionChanged();
@@ -331,7 +415,15 @@ void UAsceRTSCommanderComponent::IssueAttackOrder(int64 Target)
 
 void UAsceRTSCommanderComponent::IssueStopOrder()
 {
-
+    // `S`：向当前选中单位发停止指令（服务器权威：清移动命令 + 取消施法；**不影响自动攻击开关**）
+    APawn* Pawn = GetPawn<APawn>();
+    if (Pawn)
+    {
+        if (UAsceOrderChannelComponent* OrderChannel = Pawn->FindComponentByClass<UAsceOrderChannelComponent>())
+        {
+            OrderChannel->RequestStopOrder(SelectedEntities);
+        }
+    }
 }
 
 void UAsceRTSCommanderComponent::OnRegister()
@@ -382,15 +474,23 @@ void UAsceRTSCommanderComponent::IssueMoveOrder(const FVector& TargetLocation, c
 		return;
 	}
 
-	// 只对**可移动单位**下达移动令（框选可能混入建筑等静态实体）
+	// 只对**自己方 + 可移动单位**下达移动令（框选可能混入建筑；点选查看的敌方单位也不能指挥）
+	const int32 MyTeamId = GetLocalTeamId();
 	TArray<FMassEntityHandle> MovableEntities;
 	MovableEntities.Reserve(SelectedEntities.Num());
 	for (const FMassEntityHandle Handle : SelectedEntities)
 	{
-		if (EntityManager->IsEntityValid(Handle) && FMassEntityView(*EntityManager, Handle).HasTag<FAsceMovableUnitTag>())
+		if (!EntityManager->IsEntityValid(Handle) || !FMassEntityView(*EntityManager, Handle).HasTag<FAsceMovableUnitTag>())
 		{
-			MovableEntities.Add(Handle);
+			continue;
 		}
+		// 指挥权限：客户端先过滤非己方（**TeamId** 比较；服务器 RPC 侧还有一层 NotOwned 兜底）
+		const FAsceTeamFragment* Team = EntityManager->GetFragmentDataPtr<FAsceTeamFragment>(Handle);
+		if (!Team || AsceTeamId(Team->TeamKey) != MyTeamId)
+		{
+			continue;
+		}
+		MovableEntities.Add(Handle);
 	}
 	if (MovableEntities.Num() == 0)
 	{

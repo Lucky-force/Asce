@@ -80,7 +80,7 @@ void AAsceSpatialGridDebugger::DrawDebugGrid()
         {
             if (const FAsceSpatialGridEntitiesData* EntitiesData = SpatialGridSubsystem->GetGridEntitiesDataCell(FIntVector2(x, y)))
             {
-                const int32 Count = EntitiesData->Entities.Num();
+                const int32 Count = EntitiesData->GetNumEntities();
                 const uint8 R = static_cast<uint8>(FMath::Clamp(Count * 15, 0, 255));
                 const uint8 G = (Count == 0) ? 50 : 0;
                 const uint8 B = 0;
@@ -240,11 +240,11 @@ void AAsceSpatialGridDebugger::DrawDebugEntityBounds()
                 continue;
             }
 
-            for (const auto& E : CellData->Entities)
+            CellData->ForEachEntity([&](const FAsceGridEntityData& E)
             {
                 if (DrawnEntities.Contains(E.EntityHandle))
                 {
-                    continue;
+                    return;
                 }
                 DrawDebugBox(GetWorld(),FVector(E.CacheEntityLocation.X, E.CacheEntityLocation.Y, E.CacheEntityLocation.Z + E.CachedEntityHeight * 0.5f), FVector(E.CachedEntityRadius, E.CachedEntityRadius, E.CachedEntityHeight * 0.5f),
                     FColor::Cyan,
@@ -253,7 +253,7 @@ void AAsceSpatialGridDebugger::DrawDebugEntityBounds()
                     0, 0.5f
                     );
                 DrawnEntities.Add(E.EntityHandle);
-            }
+            });
         }
     }
 }

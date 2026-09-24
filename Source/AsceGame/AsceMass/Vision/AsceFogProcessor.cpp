@@ -10,6 +10,7 @@
 #include "AsceMass/Fragments/AsceCoreFragments.h"
 #include "AsceMass/Vision/AsceVisionFragments.h"
 #include "AsceMass/Vision/AsceFogSubsystem.h"
+#include "GameModes/AsceGameState.h"   // 本端阵营表（TeamId → 本端 index）
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AsceFogProcessor)
 
@@ -44,10 +45,13 @@ void UAsceFogProcessor::Execute(FMassEntityManager& EntityManager, FMassExecutio
 		return; // 地图高度场尚未初始化（加载期），跳过
 	}
 
+	// 本端阵营表：迷雾的"行"必须是**本端** index ⇒ 用本端表重映射（fragment 里那位可能是写入方的）
+	const AAsceGameState* GameState = GetWorld() ? GetWorld()->GetGameState<AAsceGameState>() : nullptr;
+
 	// ① 视野观察者单位：逐单位 diff 视野贡献
 	// 注意：单位消亡（死亡/销毁）不用在这里处理——由 AsceVisionViewRemoveObserverProcessor
 	// （观察 FAsceVisionViewFragment 的 Remove）在实体销毁前读其"上帧贡献状态"按旧参数下线。
-	UnitQuery.ParallelForEachEntityChunk(Context, [Fog](FMassExecutionContext& Ctx)
+	UnitQuery.ParallelForEachEntityChunk(Context, [Fog, GameState](FMassExecutionContext& Ctx)
 	{
 		const TConstArrayView<FAsceVisionViewFragment> Views = Ctx.GetFragmentView<FAsceVisionViewFragment>();
 		const TConstArrayView<FAsceTeamFragment> Teams = Ctx.GetFragmentView<FAsceTeamFragment>();
@@ -70,7 +74,7 @@ void UAsceFogProcessor::Execute(FMassEntityManager& EntityManager, FMassExecutio
 			// 与单位本地"上帧贡献状态" diff（Fog 不维护单位级表，见 AsceVisionFragments.h）：
 			// 只有 (cell / He / R / team) 任一变化才做 下线旧档 → 上线新档。
 			FAsceVisionFogStateFragment& Prev = PrevCells[i];
-			const int32 TeamKey = Teams[i].TeamKey;
+			const int32 TeamKey = GameState ? GameState->GetTeamKey(AsceTeamId(Teams[i].TeamKey)) : 0;
 			const uint16 R = Views[i].SightRadius;
 			if (Prev.LastVisionCellIndex != CellIndex
 				|| Prev.LastHe != He
