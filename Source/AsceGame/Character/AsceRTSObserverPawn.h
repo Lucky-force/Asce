@@ -10,12 +10,16 @@
 #include "AsceRTSObserverPawn.generated.h"
 #define UE_API ASCEGAME_API
 class UAsceObserverComponent;
+class UAsceOrderChannelComponent;
 class AAscePlayerController;
 class AAscePlayerState;
 class UAscePawnExtensionComponent;
 class UAsceCameraComponent;
 
-//服务器创建并复制到客户端，随后不进行同步，完全由客户端任意的设置位置
+//服务器创建并复制到客户端；Pawn的移动**不复制**，完全由客户端任意设置位置（相机权威在本地）。
+//客户端以低频RPC把焦点上报给服务器（AAscePlayerController::Server_UpdateViewFocus），
+//服务器那份Pawn仅作为MassLOD/MassReplication的viewer载体用（Config/DefaultMass.ini:
+//bUsePlayerPawnLocationInsteadOfCamera=True），不参与玩法、也不会回传位置打断客户端。
 
 UCLASS(MinimalAPI, Config = Game, Meta = (ShortTooltip = "The base rts observer pawn class used by this project."))
 class AAsceRTSObserverPawn : public AModularPawn, public IAsceTeamAgentInterface
@@ -72,6 +76,11 @@ protected:
 	UE_API virtual void UnPossessed() override;
 
 	UE_API virtual void OnRep_Controller() override;
+
+	// 本地玩家的鼠标/输入模式设置。
+	// 注意 UE5.7 起客户端 possession 不调用 PossessedBy（客户端走 ClientRestart->Restart/OnRep_Controller），
+	// 所以"服务器本地玩家"（听服 host）由 PossessedBy 调用，"客户端本地玩家"由 OnRep_Controller 调用。
+	UE_API void ApplyLocalPlayerInputSetup(APlayerController* PlayerController);
 	UE_API virtual void OnRep_PlayerState() override;
 
 	UE_API virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
@@ -98,6 +107,10 @@ protected:
 	
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Asce|Character", Meta = (AllowPrivateAccess = "true"))
 	TObjectPtr<UAsceObserverComponent> ObserverComponent;
+
+	/** 指令通道（Server RPC + 客户端本地预测）；没有它时 Commander 会退化成本地直写（只有本端能看到单位移动）。 */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Asce|Character", Meta = (AllowPrivateAccess = "true"))
+	TObjectPtr<UAsceOrderChannelComponent> OrderChannelComponent;
 	
 	UPROPERTY(ReplicatedUsing = OnRep_MyTeamID)
 	FGenericTeamId MyTeamID;

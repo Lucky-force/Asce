@@ -213,7 +213,7 @@ void UAsceSpatialGridSubsystem::FindEntities(const FVector2D& CenterWorldLocatio
 }
 
 void UAsceSpatialGridSubsystem::FindEntitiesScreen(const FVector2D& StartScreenLocation, const FVector2D& EndScreenLocation, const APlayerController* Controller, TArray<FMassEntityHandle>& OutResult,
-    bool bIncludeUnits, bool bIncludeBuildings, int32 TeamFilter)
+    bool bIncludeUnits, bool bIncludeBuildings, int32 TeamFilter, const FAsceGridEntityFilter* Filter)
 {
     // 1. 规范化屏幕矩形 (处理反向拖拽)
     const FVector2D MinScreen(
@@ -268,15 +268,15 @@ void UAsceSpatialGridSubsystem::FindEntitiesScreen(const FVector2D& StartScreenL
     OutResult.Reset();
     if (bIncludeUnits)
     {
-        FindEntitiesInFrustum(Frustum, HullMin, HullMax, OutResult, TeamFilter);
+        FindEntitiesInFrustum(Frustum, HullMin, HullMax, OutResult, TeamFilter, Filter);
     }
     if (bIncludeBuildings)
     {
-        FindBuildingsInFrustum(Frustum, HullMin, HullMax, OutResult, TeamFilter);
+        FindBuildingsInFrustum(Frustum, HullMin, HullMax, OutResult, TeamFilter, Filter);
     }
 }
 
-FMassEntityHandle UAsceSpatialGridSubsystem::FindUnitHitOnRay(const FVector& Origin, const FVector& Dir, float MaxDistance, float& OutT)
+FMassEntityHandle UAsceSpatialGridSubsystem::FindUnitHitOnRay(const FVector& Origin, const FVector& Dir, float MaxDistance, float& OutT, const FAsceGridEntityFilter* Filter)
 {
     OutT = TNumericLimits<float>::Max();
 
@@ -328,6 +328,12 @@ FMassEntityHandle UAsceSpatialGridSubsystem::FindUnitHitOnRay(const FVector& Ori
                 }
                 Visited.Add(E.EntityHandle);
 
+                // 可选过滤（如迷雾可见性）：被过滤的候选跳过，DDA 继续往后找（不是"过滤最终结果"）
+                if (Filter && !(*Filter)(E.EntityHandle))
+                {
+                    return;
+                }
+
                 // 命中盒：用实体的**真实 Z** + **高度片段**（和框选/debugger 同一口径；高度缺失时退回用半径）
                 const float PickHeight = (E.CachedEntityHeight > 0.f) ? E.CachedEntityHeight : E.CachedEntityRadius;
                 float T = RayAABBHit(Origin, Dir, FVector(E.CacheEntityLocation.X, E.CacheEntityLocation.Y, E.CacheEntityLocation.Z + PickHeight * 0.5f), FVector(E.CachedEntityRadius, E.CachedEntityRadius, PickHeight * 0.5f));
@@ -370,7 +376,7 @@ FMassEntityHandle UAsceSpatialGridSubsystem::FindUnitHitOnRay(const FVector& Ori
 }
 
 FMassEntityHandle UAsceSpatialGridSubsystem::FindEntitiesAtScreenPoint(const FVector2D ScreenLocation, float MaxDistance, APlayerController* Controller,
-    bool bIncludeUnits, bool bIncludeBuildings)
+    bool bIncludeUnits, bool bIncludeBuildings, const FAsceGridEntityFilter* Filter)
 {
     if (!IsValid(Controller))
     {
@@ -391,7 +397,7 @@ FMassEntityHandle UAsceSpatialGridSubsystem::FindEntitiesAtScreenPoint(const FVe
     if (bIncludeUnits)
     {
         float T = TNumericLimits<float>::Max();
-        const FMassEntityHandle Hit = FindUnitHitOnRay(Origin, Dir, MaxDistance, T);
+        const FMassEntityHandle Hit = FindUnitHitOnRay(Origin, Dir, MaxDistance, T, Filter);
         if (Hit.IsValid() && T < BestT)
         {
             Best = Hit;
@@ -401,7 +407,7 @@ FMassEntityHandle UAsceSpatialGridSubsystem::FindEntitiesAtScreenPoint(const FVe
     if (bIncludeBuildings)
     {
         float T = TNumericLimits<float>::Max();
-        const FMassEntityHandle Hit = FindBuildingHitOnRay(Origin, Dir, MaxDistance, T);
+        const FMassEntityHandle Hit = FindBuildingHitOnRay(Origin, Dir, MaxDistance, T, Filter);
         if (Hit.IsValid() && T < BestT)
         {
             Best = Hit;
@@ -411,7 +417,7 @@ FMassEntityHandle UAsceSpatialGridSubsystem::FindEntitiesAtScreenPoint(const FVe
     return Best;
 }
 
-    FMassEntityHandle UAsceSpatialGridSubsystem::FindBuildingHitOnRay(const FVector& Origin, const FVector& Dir, float MaxDistance, float& OutT) const
+    FMassEntityHandle UAsceSpatialGridSubsystem::FindBuildingHitOnRay(const FVector& Origin, const FVector& Dir, float MaxDistance, float& OutT, const FAsceGridEntityFilter* Filter) const
 {
     // OutT 用 MaxDistance 播种（与 `FindUnitHitOnRay` 的 `ClosestT` 同口径）：命中必须落在射程内
     OutT = MaxDistance;
@@ -455,6 +461,12 @@ FMassEntityHandle UAsceSpatialGridSubsystem::FindEntitiesAtScreenPoint(const FVe
                     continue;
                 }
                 Tested.Add(Part.Entity);
+
+                // 可选过滤（如迷雾可见性）：被过滤的候选跳过，DDA 继续往后找
+                if (Filter && !(*Filter)(Part.Entity))
+                {
+                    continue;
+                }
 
                 // 命中盒 = footprint（旋转后 AABB）× HeightCm，**基座贴地**（`BaseZ` = 实体 Z）
                 const int32 SizeX = FMath::Max(1, Part.Size.X);
@@ -792,7 +804,7 @@ void UAsceSpatialGridSubsystem::FindBuildingsInLogicalRect(const FIntPoint& Min,
 	}
 }
 
-void UAsceSpatialGridSubsystem::FindBuildingsInFrustum(const FConvexVolume& Frustum, const FVector2D& HullMin, const FVector2D& HullMax, TArray<FMassEntityHandle>& Out, int32 TeamFilter) const
+void UAsceSpatialGridSubsystem::FindBuildingsInFrustum(const FConvexVolume& Frustum, const FVector2D& HullMin, const FVector2D& HullMax, TArray<FMassEntityHandle>& Out, int32 TeamFilter, const FAsceGridEntityFilter* Filter) const
 {
 	if (BuildingCells.Num() == 0 || LogicalCellSize <= 0)
 	{
@@ -832,6 +844,12 @@ void UAsceSpatialGridSubsystem::FindBuildingsInFrustum(const FConvexVolume& Frus
 					continue;
 				}
 				Seen.Add(Part.Entity);
+
+				// 可选过滤（如迷雾可见性）
+				if (Filter && !(*Filter)(Part.Entity))
+				{
+					continue;
+				}
 
 				const int32 SizeX = FMath::Max(1, Part.Size.X);
 				const int32 SizeY = FMath::Max(1, Part.Size.Y);
@@ -1312,7 +1330,7 @@ void UAsceSpatialGridSubsystem::GetConvexHullAABB2D(const TArray<FVector2D>& Hul
     }
 }
 
-void UAsceSpatialGridSubsystem::FindEntitiesInFrustum(const FConvexVolume& Frustum, const FVector2D& AABBMin, const FVector2D& AABBMax, TArray<FMassEntityHandle>& OutHandles, int32 TeamFilter) const
+void UAsceSpatialGridSubsystem::FindEntitiesInFrustum(const FConvexVolume& Frustum, const FVector2D& AABBMin, const FVector2D& AABBMax, TArray<FMassEntityHandle>& OutHandles, int32 TeamFilter, const FAsceGridEntityFilter* Filter) const
 {
     // **契约：追加**（不清空输出；和 `FindBuildingsInFrustum/InRadius/InLogicalRect` 一致）。
     // 调用方要"本次查询结果"就自己在调用前 Reset（框选入口就是这么做的）。
@@ -1338,6 +1356,12 @@ void UAsceSpatialGridSubsystem::FindEntitiesInFrustum(const FConvexVolume& Frust
             const int32 CellIndex = CoordToIndex(Coord);
             auto VisitEntity = [&](const FAsceGridEntityData& Entity)
             {
+                // 可选过滤（如迷雾可见性）
+                if (Filter && !(*Filter)(Entity.EntityHandle))
+                {
+                    return;
+                }
+
                 // 用网格内缓存的位置 + 半径 + 默认半高构造 3D AABB
                 const FVector Center(
                     Entity.CacheEntityLocation.X,

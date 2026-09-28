@@ -126,6 +126,7 @@ void UGameFeatureAction_AddWidgets::Reset(FPerContextData& ActiveData)
 void UGameFeatureAction_AddWidgets::HandleActorExtension(AActor* Actor, FName EventName, FGameFeatureStateChangeContext ChangeContext)
 {
 	FPerContextData& ActiveData = ContextData.FindOrAdd(ChangeContext);
+
 	if ((EventName == UGameFrameworkComponentManager::NAME_ExtensionRemoved) || (EventName == UGameFrameworkComponentManager::NAME_ReceiverRemoved))
 	{
 		RemoveWidgets(Actor, ActiveData);

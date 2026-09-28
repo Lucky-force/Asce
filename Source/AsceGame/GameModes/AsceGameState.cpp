@@ -141,6 +141,16 @@ int32 AAsceGameState::GetTeamKey(int32 RawTeamId) const
 	return AsceMakeTeamKey(FindTeamIndex(TeamId), TeamId);
 }
 
+int32 AAsceGameState::GetOrAssignTeamKey(int32 RawTeamId)
+{
+	const int32 TeamId = AsceNormalizeTeamId(RawTeamId);
+	if (TeamId == AsceNeutralTeamId)
+	{
+		return 0;
+	}
+	return AsceMakeTeamKey(GetOrAssignTeamIndex(TeamId), TeamId);
+}
+
 void AAsceGameState::SeedLocalTeamsFromPlayers()
 {
 	check(IsInGameThread());

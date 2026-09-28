@@ -92,6 +92,10 @@ public:
 	UE_API virtual FOnAsceTeamIndexChangedDelegate* GetOnTeamIndexChangedDelegate() override;
 	//~End of IAsceTeamAgentInterface interface
 
+	/** 把队伍登记进本端阵营表，并（若是本地玩家）刷新黑雾渲染使用的队伍行。
+	 *  设队/OnRep 时调用；本地玩家被附身时也调一次（兜"设队早于附身"）。 */
+	UE_API void RefreshLocalFogTeamKey();
+
 	static UE_API const FName NAME_AsceAbilityReady;
 
 	UE_API void SetPlayerConnectionType(EAscePlayerConnectionType NewType);

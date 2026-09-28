@@ -16,8 +16,8 @@
 #include "AsceMass/FlowField/AscePathFindingSubsystem.h"
 #include "AsceMass/Movement/AsceMoveOrderExecutor.h"
 #include "AsceMass/Networking/AsceOrderChannelComponent.h"
-#include "AsceMass/ScriptBridge/AsceMassScriptBridge.h"
 #include "AsceMass/SpatialGrid/AsceSpatialGridSubsystem.h"
+#include "AsceMass/Vision/AsceFogSubsystem.h"
 #include "AsceMass/Fragments/AsceCoreFragments.h"
 #include "AsceGameplayTags.h"
 #include "GameFramework/GameplayMessageSubsystem.h"
@@ -195,8 +195,7 @@ void UAsceRTSCommanderComponent::DoUninitialize()
 void UAsceRTSCommanderComponent::CacheSubsystems()
 {
     UWorld* World = GetWorld();
-    ScriptBridge = World ? World->GetSubsystem<UAsceMassScriptBridge>() : nullptr;
-    SpatialGrid  = World ? World->GetSubsystem<UAsceSpatialGridSubsystem>() : nullptr;
+    SpatialGrid = World ? World->GetSubsystem<UAsceSpatialGridSubsystem>() : nullptr;
 }
 
 void UAsceRTSCommanderComponent::BindToObserverComponent()
@@ -256,6 +255,85 @@ int32 UAsceRTSCommanderComponent::GetLocalTeamIndex()
     return GameState ? GameState->FindTeamIndex(GetLocalTeamId()) : 0;
 }
 
+bool UAsceRTSCommanderComponent::BuildLocalVisionFilter(UAsceFogSubsystem*& OutFog, int32& OutTeamKey)
+{
+    OutFog = nullptr;
+    OutTeamKey = 0;
+
+    if (!EntityManager.IsValid())
+    {
+        return false;
+    }
+    UWorld* World = GetWorld();
+    if (!World || World->GetNetMode() == NM_Client)
+    {
+        return false;   // 客户端：敌人实体已被复制裁剪，本地不需要再查迷雾
+    }
+    UAsceFogSubsystem* Fog = UAsceFogSubsystem::Get(this);
+    if (!Fog || !Fog->IsReady())
+    {
+        return false;
+    }
+    AAsceGameState* GameState = World->GetGameState<AAsceGameState>();
+    if (!GameState)
+    {
+        return false;
+    }
+    const int32 TeamKey = GameState->GetTeamKey(GetLocalTeamId());
+    if (TeamKey == 0)
+    {
+        return false;   // 中立/未登记队伍：不裁（安全默认）
+    }
+
+    OutFog = Fog;
+    OutTeamKey = TeamKey;
+    return true;
+}
+
+FMassEntityHandle UAsceRTSCommanderComponent::PickVisibleEntityAtScreenPoint(const FVector2D& ScreenPos, APlayerController* Controller)
+{
+    if (!SpatialGrid.IsValid() || !IsValid(Controller))
+    {
+        return FMassEntityHandle();
+    }
+
+    UAsceFogSubsystem* Fog = nullptr;
+    int32 TeamKey = 0;
+    if (BuildLocalVisionFilter(Fog, TeamKey))
+    {
+        auto FilterFn = [this, Fog, TeamKey](FMassEntityHandle Handle)
+        {
+            return Fog->IsEntityVisibleToLocalTeam(*EntityManager, Handle, TeamKey);
+        };
+        const FAsceGridEntityFilter Filter(FilterFn);
+        return SpatialGrid->FindEntitiesAtScreenPoint(ScreenPos, 100000.f, Controller, true, true, &Filter);
+    }
+    return SpatialGrid->FindEntitiesAtScreenPoint(ScreenPos, 100000.f, Controller);
+}
+
+void UAsceRTSCommanderComponent::QueryVisibleEntitiesInScreenRect(const FVector2D& Start, const FVector2D& End, APlayerController* Controller, int32 TeamFilter, TArray<FMassEntityHandle>& OutResult)
+{
+    OutResult.Reset();
+    if (!SpatialGrid.IsValid() || !IsValid(Controller))
+    {
+        return;
+    }
+
+    UAsceFogSubsystem* Fog = nullptr;
+    int32 TeamKey = 0;
+    if (BuildLocalVisionFilter(Fog, TeamKey))
+    {
+        auto FilterFn = [this, Fog, TeamKey](FMassEntityHandle Handle)
+        {
+            return Fog->IsEntityVisibleToLocalTeam(*EntityManager, Handle, TeamKey);
+        };
+        const FAsceGridEntityFilter Filter(FilterFn);
+        SpatialGrid->FindEntitiesScreen(Start, End, Controller, OutResult, true, true, TeamFilter, &Filter);
+        return;
+    }
+    SpatialGrid->FindEntitiesScreen(Start, End, Controller, OutResult, true, true, TeamFilter);
+}
+
 FMassEntityHandle UAsceRTSCommanderComponent::FindNearestOtherTeamEntityInScreenRect(const FVector2D& Start, const FVector2D& End)
 {
     APawn* Pawn = GetPawn<APawn>();
@@ -265,9 +343,9 @@ FMassEntityHandle UAsceRTSCommanderComponent::FindNearestOtherTeamEntityInScreen
         return FMassEntityHandle();
     }
 
-    // 不过滤地拿框内全部候选（单位 + 建筑），再挑"非己方里离 Start 屏幕坐标最近"的那个
+    // 不过滤阵营地拿框内全部候选（单位 + 建筑；本地视野过滤在查询里生效），再挑"非己方里离 Start 屏幕坐标最近"的那个
     TArray<FMassEntityHandle> Candidates;
-    SpatialGrid->FindEntitiesScreen(Start, End, PlayerController, Candidates, true, true, INDEX_NONE);
+    QueryVisibleEntitiesInScreenRect(Start, End, PlayerController, INDEX_NONE, Candidates);
 
     const int32 MyTeamId = GetLocalTeamId();
     FMassEntityHandle BestHandle;
@@ -305,89 +383,132 @@ FMassEntityHandle UAsceRTSCommanderComponent::FindNearestOtherTeamEntityInScreen
     return BestHandle;
 }
 
-void UAsceRTSCommanderComponent::OnClickSelect(const FVector2D& ScreenPos)
+void UAsceRTSCommanderComponent::ConvertEntityNumbersToHandles(const TArray<int64>& EntityNumbers, TArray<FMassEntityHandle>& OutHandles) const
+{
+    OutHandles.Reset();
+    OutHandles.Reserve(EntityNumbers.Num());
+    for (const int64 EntityNumber : EntityNumbers)
+    {
+        const FMassEntityHandle Handle = FMassEntityHandle::FromNumber(static_cast<uint64>(EntityNumber));
+        if (!Handle.IsValid())
+        {
+            continue;
+        }
+        if (EntityManager.IsValid() && !EntityManager->IsEntityValid(Handle))
+        {
+            continue;   // 本端已不存在的实体（死亡/被裁剪）
+        }
+        OutHandles.Add(Handle);
+    }
+}
+
+void UAsceRTSCommanderComponent::ReplaceSelection(const TArray<FMassEntityHandle>& Handles)
 {
     SelectedEntities.Reset();
-    APawn* Pawn = GetPawn<APawn>();
-    if (IsValid(Pawn))
+    SelectedEntities.Reserve(Handles.Num());
+    for (const FMassEntityHandle Handle : Handles)
     {
-        APlayerController* PlayerController = Pawn->GetController<APlayerController>();
-        if (SpatialGrid.IsValid() && IsValid(PlayerController))
+        if (!Handle.IsValid() || SelectedEntities.Contains(Handle))
         {
-            FMassEntityHandle EntityHandle = SpatialGrid->FindEntitiesAtScreenPoint(ScreenPos, 100000.f, PlayerController);
-            if (EntityHandle.IsValid())
-            {
-                SelectedEntities.Add(EntityHandle);
-            }
+            continue;
         }
+        if (EntityManager.IsValid() && !EntityManager->IsEntityValid(Handle))
+        {
+            continue;
+        }
+        SelectedEntities.Add(Handle);
     }
     BroadcastSelectionChanged();
 }
 
-void UAsceRTSCommanderComponent::OnDragSelect(const FVector2D& Start, const FVector2D& End)
+void UAsceRTSCommanderComponent::AppendSelection(const TArray<FMassEntityHandle>& Handles)
 {
-    SelectedEntities.Reset();
+    for (const FMassEntityHandle Handle : Handles)
+    {
+        if (!Handle.IsValid() || SelectedEntities.Contains(Handle))
+        {
+            continue;
+        }
+        if (EntityManager.IsValid() && !EntityManager->IsEntityValid(Handle))
+        {
+            continue;
+        }
+        SelectedEntities.Add(Handle);
+    }
+    BroadcastSelectionChanged();
+}
+
+void UAsceRTSCommanderComponent::OnClickSelect(const FVector2D& ScreenPos)
+{
+    TArray<FMassEntityHandle> NewSelection;
     APawn* Pawn = GetPawn<APawn>();
     if (IsValid(Pawn))
     {
         APlayerController* PlayerController = Pawn->GetController<APlayerController>();
-        if (SpatialGrid.IsValid() && IsValid(PlayerController))
+        const FMassEntityHandle EntityHandle = PickVisibleEntityAtScreenPoint(ScreenPos, PlayerController);
+        if (EntityHandle.IsValid())
         {
-            // 框选：**只收自己方**（单位 + 建筑；阵营过滤在网格查询里做）
-            SpatialGrid->FindEntitiesScreen(Start, End, PlayerController, SelectedEntities, true, true, GetLocalTeamIndex());
-            if (SelectedEntities.Num() == 0)
+            NewSelection.Add(EntityHandle);
+        }
+    }
+    ReplaceSelection(NewSelection);
+}
+
+void UAsceRTSCommanderComponent::OnDragSelect(const FVector2D& Start, const FVector2D& End)
+{
+    TArray<FMassEntityHandle> NewSelection;
+    APawn* Pawn = GetPawn<APawn>();
+    if (IsValid(Pawn))
+    {
+        APlayerController* PlayerController = Pawn->GetController<APlayerController>();
+        if (IsValid(PlayerController))
+        {
+            // 框选：**只收自己方**（单位 + 建筑；阵营过滤在网格查询里做；本地视野过滤在查询里生效）
+            QueryVisibleEntitiesInScreenRect(Start, End, PlayerController, GetLocalTeamIndex(), NewSelection);
+            if (NewSelection.Num() == 0)
             {
                 // 框里只有敌方 ⇒ 视作对"离框选起点最近的非己方"的点选（用于查看敌人信息）
                 const FMassEntityHandle Enemy = FindNearestOtherTeamEntityInScreenRect(Start, End);
                 if (Enemy.IsValid())
                 {
-                    SelectedEntities.Add(Enemy);
+                    NewSelection.Add(Enemy);
                 }
             }
         }
     }
-    BroadcastSelectionChanged();
+    ReplaceSelection(NewSelection);
 }
 
 void UAsceRTSCommanderComponent::OnAdditiveClickSelect(const FVector2D& ScreenPos)
 {
+    TArray<FMassEntityHandle> Hits;
     APawn* Pawn = GetPawn<APawn>();
-    if (!IsValid(Pawn))
+    if (IsValid(Pawn))
     {
-        BroadcastSelectionChanged();
-        return;
-    }
-    
-    APlayerController* PlayerController = Pawn->GetController<APlayerController>();
-    if (SpatialGrid.IsValid() && IsValid(PlayerController))
-    {
-        FMassEntityHandle EntityHandle = SpatialGrid->FindEntitiesAtScreenPoint(ScreenPos, 100000.f, PlayerController);
+        APlayerController* PlayerController = Pawn->GetController<APlayerController>();
+        const FMassEntityHandle EntityHandle = PickVisibleEntityAtScreenPoint(ScreenPos, PlayerController);
         if (EntityHandle.IsValid())
         {
-            SelectedEntities.Add(EntityHandle);
+            Hits.Add(EntityHandle);
         }
     }
-    BroadcastSelectionChanged();
+    AppendSelection(Hits);
 }
 
 void UAsceRTSCommanderComponent::OnAdditiveDragSelect(const FVector2D& Start, const FVector2D& End)
 {
+    TArray<FMassEntityHandle> Hits;
     APawn* Pawn = GetPawn<APawn>();
-    if (!IsValid(Pawn))
+    if (IsValid(Pawn))
     {
-        BroadcastSelectionChanged();
-        return;
+        APlayerController* PlayerController = Pawn->GetController<APlayerController>();
+        if (IsValid(PlayerController))
+        {
+            // 追加框选：同样只收自己方；**不做回退**（框里只有敌方 = 空操作）；本地视野过滤在查询里生效
+            QueryVisibleEntitiesInScreenRect(Start, End, PlayerController, GetLocalTeamIndex(), Hits);
+        }
     }
-    
-    APlayerController* PlayerController = Pawn->GetController<APlayerController>();
-    if (SpatialGrid.IsValid() && IsValid(PlayerController))
-    {
-        TArray<FMassEntityHandle> EntityHandles;
-        // 追加框选：同样只收自己方；**不做回退**（框里只有敌方 = 空操作）
-        SpatialGrid->FindEntitiesScreen(Start, End, PlayerController, EntityHandles, true, true, GetLocalTeamIndex());
-        SelectedEntities.Append(EntityHandles);
-    }
-    BroadcastSelectionChanged();
+    AppendSelection(Hits);
 }
 
 
@@ -401,17 +522,19 @@ void UAsceRTSCommanderComponent::ClearSelection()
 
 void UAsceRTSCommanderComponent::SelectEntities(TArray<int64>& EntityHandles)
 {
+    TArray<FMassEntityHandle> Handles;
+    ConvertEntityNumbersToHandles(EntityHandles, Handles);
+    ReplaceSelection(Handles);
 }
 
 void UAsceRTSCommanderComponent::AddictiveSelectEntities(TArray<int64>& EntityHandles)
 {
+    TArray<FMassEntityHandle> Handles;
+    ConvertEntityNumbersToHandles(EntityHandles, Handles);
+    AppendSelection(Handles);
 }
 
 // ── 命令 ────────────────────────────────────
-
-void UAsceRTSCommanderComponent::IssueAttackOrder(int64 Target)
-{
-}
 
 void UAsceRTSCommanderComponent::IssueStopOrder()
 {
@@ -500,14 +623,21 @@ void UAsceRTSCommanderComponent::IssueMoveOrder(const FVector& TargetLocation, c
 	// 到达半径转平方（Fragment存的是平方值，见AsceOrderFragments.h说明）
 	const float AcceptanceRadiusSquared = AcceptanceRadius * AcceptanceRadius;
 
-	// 若有OrderChannel就当它是唯一入口（它会走NetID RPC + 客户端本地预测），
-	// 保证和正式网络链路行为一致；没有就退化为本地直写，让Standalone先跑通。
+	// 若有OrderChannel就当它是唯一入口（走 NetID RPC；客户端本地预测默认关闭，见 AsceOrderChannelComponent），
+	// 保证和正式网络链路行为一致；没有OrderChannel时只有权威端（Standalone/听服host）走本地直写兜底。
 	APawn* Pawn = GetPawn<APawn>();
 	if (Pawn)
 	{
 		if (UAsceOrderChannelComponent* OrderChannel = Pawn->FindComponentByClass<UAsceOrderChannelComponent>())
 		{
 			OrderChannel->RequestMoveOrder(MovableEntities, FVector2D(TargetLocation.X, TargetLocation.Y), AcceptanceRadiusSquared);
+			return;
+		}
+
+		// 纯客户端没有 OrderChannel 时指令无法下发到服务器：直接拒绝，不要再本地直写（那只会有本端能看到移动）
+		if (!Pawn->HasAuthority())
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[Order] 纯客户端 Pawn(%s) 上没有 UAsceOrderChannelComponent，移动指令被忽略"), *GetNameSafe(Pawn));
 			return;
 		}
 	}

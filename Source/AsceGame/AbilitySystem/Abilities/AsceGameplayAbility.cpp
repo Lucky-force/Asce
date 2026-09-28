@@ -329,7 +329,7 @@ void UAsceGameplayAbility::ApplyAbilityTagsToGameplayEffectSpec(FGameplayEffectS
 	
 	if (const FHitResult* HitResult = Spec.GetContext().GetHitResult())
 	{
-		if (const UPhysicalMaterialWithTags* PhysMatWithTags = Cast<const UPhysicalMaterialWithTags>(HitResult->PhysMaterial.Get()))
+		if (const UPhysicalMaterialWithTags* PhysMatWithTags = Cast<UPhysicalMaterialWithTags>(HitResult->PhysMaterial.Get()))
 		{
 			//Spec.CapturedTargetTags.GetSpecTags().AppendTags(PhysMatWithTags->Tags);
 		}

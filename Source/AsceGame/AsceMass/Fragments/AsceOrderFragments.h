@@ -22,9 +22,10 @@ struct FAsceMoveOrderFragment : public FMassFragment
 	UPROPERTY(BlueprintReadWrite)
 	FVector TargetLocation = FVector::ZeroVector;
 
-	// 存平方值，不存原始半径——到达判定(AsceMovementSteeringProcessor)每帧都在跟这个值比较，
-	// 存成平方能省掉判定那里FMath::Square的重复运算；任何地方要写这个字段，都要先自己
-	// 把半径平方一次再赋值（50.f半径 -> 默认值2500.f）。
+	// 存平方值，不存原始半径——下单时由 FAsceMoveOrderExecutor 从 RPC 参数写入。
+	// **注意**：当前到达判定（UAsceArrivalProcessor 路径1）用的是实体自身的
+	// FAgentRadiusFragment.Radius（身体贴住目标点），不再读这个字段；这里保留作订单元数据
+	// （RPC 参数/将来需要"自定义接受半径"时再用）。任何地方要写这个字段，仍要先自己把半径平方一次。
 	UPROPERTY(BlueprintReadWrite)
 	float AcceptanceRadiusSquared = 2500.f;
 
@@ -43,40 +44,4 @@ struct FAsceMoveOrderFragment : public FMassFragment
 	// - 订单被拒绝/取消时才清零（那种情况不再是该方案组员）。
 	// 不是USTRUCT，没有UPROPERTY反射——纯粹是运行时状态（一个uint32），不需要被GC追踪。
 	FMergedPathPlanHandle PathPlanHandle;
-};
-
-
-// ──────────────────────────────────────────
-// 攻击命令
-// 注意：目标用FMassNetworkID寻址，不用EntityHandle/裸Index——
-// 见架构文档4.1节，EntityHandle是每个MassEntityManager实例私有的编号，
-// 客户端和服务器是两个独立实例，不能跨端直接传EntityHandle。
-// ──────────────────────────────────────────
-
-USTRUCT(BlueprintType)
-struct FAsceAttackOrderFragment : public FMassFragment
-{
-	GENERATED_BODY()
-
-	UPROPERTY()
-	FMassNetworkID TargetNetID;
-
-	UPROPERTY(BlueprintReadWrite)
-	bool bHasOrder = false;
-
-	// 语义同FAsceMoveOrderFragment::OrderSequence
-	UPROPERTY(BlueprintReadOnly)
-	int32 OrderSequence = 0;
-
-	UPROPERTY(BlueprintReadWrite)
-	float AttackRange = 200.f;
-
-	UPROPERTY(BlueprintReadWrite)
-	float AttackCooldown = 1.f;
-
-	UPROPERTY(BlueprintReadWrite)
-	float AttackDamage = 25.f;
-
-	UPROPERTY(BlueprintReadWrite)
-	float TimeSinceLastAttack = 0.f;
 };

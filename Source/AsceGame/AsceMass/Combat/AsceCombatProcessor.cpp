@@ -89,8 +89,8 @@ void UAsceCombatProcessor::Execute(FMassEntityManager& EntityManager, FMassExecu
 			// 播放速度：AttackSpeed 180 → 1.0x（见 `技能系统设计.md`）
 			const float PlayRate = FMath::Max(Combat.AttackSpeed / 200.f + 0.1f, KINDA_SMALL_NUMBER);
 
-			// ───────── ①a 施法推进：`Cast` 前摇结束 = **真正释放**；`Channel` 周期结算 ─────────
-			if (Action.ActionState == EAsceActionState::Cast || Action.ActionState == EAsceActionState::Channel)
+			// ───────── ①a 施法推进：Trigger 结算（普通=TriggerTime；持续=前摇结束进 Channel）─────────
+			if (Action.ActionState == EAsceActionState::Casting || Action.ActionState == EAsceActionState::Channel)
 			{
 				FAsceActionDef ActionDef;
 				if (!FAsceActionDefLibrary::GetActionDef(Action.ActionDefId, ActionDef))
@@ -102,7 +102,7 @@ void UAsceCombatProcessor::Execute(FMassEntityManager& EntityManager, FMassExecu
 					continue;
 				}
 
-				const bool bChannel = (Action.ActionState == EAsceActionState::Channel);
+				const FAsceSkillCastConfig* CastConfig = ActionDef.CastConfig.GetPtr<FAsceSkillCastConfig>();
 
 				// 单次结算：目标失效 ⇒ 什么都不做；v1 只做 `Instant`（直接伤害），
 				// `Projectile`/`SpawnAtTarget` 要"生成排队 → 下一帧生成阶段创建实体"（下一步做）
@@ -155,13 +155,13 @@ void UAsceCombatProcessor::Execute(FMassEntityManager& EntityManager, FMassExecu
 					}
 				};
 
-				if (bChannel)
+				// `Channel`：周期结算（cost/CD 已在"真正释放"那一刻付过）
+				if (Action.ActionState == EAsceActionState::Channel)
 				{
-					// 周期结算（cost 已在进入施法那一刻支付，见 `AsceOrderChannelComponent`）
 					if (Now >= Action.NextTickTime)
 					{
 						SettleOnce();
-						Action.NextTickTime = Now + FMath::Max(ActionDef.ChannelTickInterval, 0.01f);
+						Action.NextTickTime = Now + FMath::Max(CastConfig ? CastConfig->GetTickInterval() : 0.5f, 0.01f);
 					}
 					if (Now >= Action.ActionEndTime)
 					{
@@ -172,9 +172,21 @@ void UAsceCombatProcessor::Execute(FMassEntityManager& EntityManager, FMassExecu
 					continue;
 				}
 
-				// `Cast`：**前摇结束那一帧才是真正释放** —— 先 cost（扣蓝 + 写槽位 CD），
+				// 已经 Trigger 过：只剩动画尾巴（普通施法）
+				if (Action.bTriggered)
+				{
+					if (Now >= Action.ActionEndTime)
+					{
+						Action.ActionState = EAsceActionState::Idle;
+						Action.ActionTarget.Reset();
+						++Action.Counter;
+					}
+					continue;
+				}
+
+				// `Casting`：**Trigger 那一刻才是真正释放** —— 先 cost（扣蓝 + 写槽位 CD），
 				// 再查一次"目标是否还存在"，最后才结算 effect（见 `技能系统设计.md` §5）
-				if (Now < Action.ActionEndTime)
+				if (Now < Action.TriggerTime)
 				{
 					continue;   // 还在前摇，只是播动画
 				}
@@ -182,7 +194,7 @@ void UAsceCombatProcessor::Execute(FMassEntityManager& EntityManager, FMassExecu
 				{
 					if (Mana->CurrentMana < ActionDef.ManaCost)
 					{
-						// 前摇期间蓝被扣掉 ⇒ 释放失败：不扣、不落 CD、不生成
+						// Trigger 时蓝已不够 ⇒ 释放失败：不扣、不落 CD、不生成
 						Action.ActionState = EAsceActionState::Idle;
 						Action.ActionTarget.Reset();
 						++Action.Counter;
@@ -203,62 +215,82 @@ void UAsceCombatProcessor::Execute(FMassEntityManager& EntityManager, FMassExecu
 					}
 				}
 				SettleOnce();
-				Action.ActionState = EAsceActionState::Idle;
-				Action.ActionTarget.Reset();
-				++Action.Counter;
+				Action.bTriggered = true;
+
+				if (CastConfig && CastConfig->IsChannel())
+				{
+					// 持续施法：进入 Channel（Trigger 的这次就是"首次结算"），循环动画 + 周期结算
+					Action.ActionState = EAsceActionState::Channel;
+					Action.ActionEndTime = Now + FMath::Max(CastConfig->GetChannelDuration(), 0.f);
+					Action.NextTickTime = Now + FMath::Max(CastConfig->GetTickInterval(), 0.01f);
+					++Action.Counter;
+					continue;
+				}
+
+				// 普通施法：动作继续播到尾巴 → Idle
+				if (Now >= Action.ActionEndTime)
+				{
+					Action.ActionState = EAsceActionState::Idle;
+					Action.ActionTarget.Reset();
+					++Action.Counter;
+				}
 				continue;
 			}
 
-			// ───────── ① 动作推进：攻击到点 → 结算 ─────────
+			// ───────── ① 动作推进：攻击 —— Trigger 结算；到点回 Idle ─────────
 			if (Action.ActionState == EAsceActionState::Attack)
 			{
 				if (bMoving)
 				{
-					// 移动打断：**不结算**
+					// 移动打断：Trigger 前 ⇒ **不结算**；Trigger 后 ⇒ 已结算，直接结束
 					Action.ActionState = EAsceActionState::Idle;
 					Action.ActionTarget.Reset();
 					++Action.Counter;
 					continue;
 				}
 
-				if (Now < Action.ActionEndTime)
+				// Trigger：结算一次（目标必须仍有效，且落在 2× 射程内）
+				if (!Action.bTriggered && Now >= Action.TriggerTime)
 				{
-					continue;   // 动作还没走完
-				}
-
-				// 结算：目标必须仍有效，且落在 2× 射程内
-				bool bApplied = false;
-				if (Action.ActionTarget.IsValid() && EntityManager.IsEntityValid(Action.ActionTarget))
-				{
-					if (const FTransformFragment* TargetTransform = EntityManager.GetFragmentDataPtr<FTransformFragment>(Action.ActionTarget))
+					bool bApplied = false;
+					if (Action.ActionTarget.IsValid() && EntityManager.IsEntityValid(Action.ActionTarget))
 					{
-						const FVector TargetLocation = TargetTransform->GetTransform().GetLocation();
-						// v1：圆心距离 + 双方半径（后续替换为表面距离/高低口径）
-						float TargetRadius = 0.f;
-						if (const FAgentRadiusFragment* TargetRadiusFragment = EntityManager.GetFragmentDataPtr<FAgentRadiusFragment>(Action.ActionTarget))
+						if (const FTransformFragment* TargetTransform = EntityManager.GetFragmentDataPtr<FTransformFragment>(Action.ActionTarget))
 						{
-							TargetRadius = TargetRadiusFragment->Radius;
-						}
-						const float MaxDistance = Combat.AttackRange * 2.f + Radius + TargetRadius;
-						if (FVector::Dist2D(Location, TargetLocation) <= MaxDistance)
-						{
-							if (Healths.Num() > 0)
+							const FVector TargetLocation = TargetTransform->GetTransform().GetLocation();
+							// v1：圆心距离 + 双方半径（后续替换为表面距离/高低口径）
+							float TargetRadius = 0.f;
+							if (const FAgentRadiusFragment* TargetRadiusFragment = EntityManager.GetFragmentDataPtr<FAgentRadiusFragment>(Action.ActionTarget))
 							{
-								if (FAsceHealthFragment* TargetHealth = EntityManager.GetFragmentDataPtr<FAsceHealthFragment>(Action.ActionTarget))
+								TargetRadius = TargetRadiusFragment->Radius;
+							}
+							const float MaxDistance = Combat.AttackRange * 2.f + Radius + TargetRadius;
+							if (FVector::Dist2D(Location, TargetLocation) <= MaxDistance)
+							{
+								if (Healths.Num() > 0)
 								{
-									TargetHealth->CurrentHealth = FMath::Max(0.f, TargetHealth->CurrentHealth - Combat.AttackDamage);
-									bApplied = true;
-									UE_LOG(LogTemp, Verbose, TEXT("[Combat] 结算：%lld → %lld 伤害 %.1f（剩余 HP %.1f）"),
-										static_cast<int64>(Self.AsNumber()), static_cast<int64>(Action.ActionTarget.AsNumber()),
-										Combat.AttackDamage, TargetHealth->CurrentHealth);
+									if (FAsceHealthFragment* TargetHealth = EntityManager.GetFragmentDataPtr<FAsceHealthFragment>(Action.ActionTarget))
+									{
+										TargetHealth->CurrentHealth = FMath::Max(0.f, TargetHealth->CurrentHealth - Combat.AttackDamage);
+										bApplied = true;
+										UE_LOG(LogTemp, Verbose, TEXT("[Combat] 结算：%lld → %lld 伤害 %.1f（剩余 HP %.1f）"),
+											static_cast<int64>(Self.AsNumber()), static_cast<int64>(Action.ActionTarget.AsNumber()),
+											Combat.AttackDamage, TargetHealth->CurrentHealth);
+									}
 								}
 							}
 						}
 					}
+					if (!bApplied)
+					{
+						UE_LOG(LogTemp, Verbose, TEXT("[Combat] 结算失败（目标失效/超 2× 射程）：%lld"), static_cast<int64>(Self.AsNumber()));
+					}
+					Action.bTriggered = true;
 				}
-				if (!bApplied)
+
+				if (Now < Action.ActionEndTime)
 				{
-					UE_LOG(LogTemp, Verbose, TEXT("[Combat] 结算失败（目标失效/超 2× 射程）：%lld"), static_cast<int64>(Self.AsNumber()));
+					continue;   // 结算完还有动画尾巴
 				}
 
 				// 结束动作 → CD（从**动作结束**起算）
@@ -357,14 +389,16 @@ void UAsceCombatProcessor::Execute(FMassEntityManager& EntityManager, FMassExecu
 			Action.ActionDefId = AttackActionId;
 			Action.ActionTarget = Target;
 			Action.ActionTargetPos = FVector2D(TargetLocation.X, TargetLocation.Y);
-			Action.ActionEndTime = Now + Combat.BaseAttackTime / PlayRate;
+			Action.TriggerTime = Now + Combat.AttackTriggerTime / PlayRate;
+			Action.ActionEndTime = Now + Combat.AttackTotalTime / PlayRate;
+			Action.bTriggered = false;
 			Action.FacingYaw = FacingYaw;
 			++Action.Counter;
 
 			Transforms[i].GetMutableTransform().SetRotation(FRotator(0.f, FacingYaw, 0.f).Quaternion());
 
 			UE_LOG(LogTemp, Verbose, TEXT("[Combat] %lld 开始攻击 %lld（PlayRate %.2f，动作 %.2fs）"),
-				static_cast<int64>(Self.AsNumber()), static_cast<int64>(Target.AsNumber()), PlayRate, Combat.BaseAttackTime / PlayRate);
+				static_cast<int64>(Self.AsNumber()), static_cast<int64>(Target.AsNumber()), PlayRate, Combat.AttackTotalTime / PlayRate);
 		}
 	});
 }

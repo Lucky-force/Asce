@@ -53,7 +53,6 @@ void UAsceRTSUnitTrait::BuildTemplate(FMassEntityTemplateBuildContext& BuildCont
 	}
 	if (bCanAttack)
 	{
-		BuildContext.AddFragment<FAsceAttackOrderFragment>();
 		// 战斗（**服务器权威**）：攻击参数（这里的值是默认值，生成时被实体定义表覆盖）+
 		// 动作状态由下方无条件挂载的 FAsceActionFragment 承担。见 `Combat/技能系统设计.md`
 		BuildContext.AddFragment<FAsceCombatFragment>();
@@ -74,6 +73,10 @@ void UAsceRTSUnitTrait::BuildTemplate(FMassEntityTemplateBuildContext& BuildCont
 	// 动作状态（**服务器权威**，唯一真相；客户端表现靠动作态通道复制下来的边沿）——
 	// 所有单位都挂（Idle/Move 也是动作态，见 `Combat/技能系统设计.md`）
 	BuildContext.AddFragment<FAsceActionFragment>();
+	// 客户端表现：动作态（动作态复制通道写入；驱动转身/VAT），见 AsceCombatFragments.h
+	BuildContext.AddFragment<FAsceCombatVisualFragment>();
+	// 动画播放状态（表现 processor 维护；见 `Combat/AsceCombatVisualProcessor.h`）
+	BuildContext.AddFragment<FAsceAnimPlaybackFragment>();
 	// 技能槽位（**真实数据**：指令只发槽位号；要复制到客户端）+ 蓝量
 	BuildContext.AddFragment<FAsceSkillSlotsFragment>();
 	FAsceManaFragment& ManaFragment = BuildContext.AddFragment_GetRef<FAsceManaFragment>();

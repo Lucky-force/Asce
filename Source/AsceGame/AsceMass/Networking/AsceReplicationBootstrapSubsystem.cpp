@@ -10,7 +10,12 @@
 #include "AsceMass/Networking/Capabilities/Health/AsceHealthReplicationCapability.h"
 #include "AsceMass/Networking/Capabilities/Mana/AsceManaReplication.h"
 #include "AsceMass/Networking/Capabilities/Mana/AsceManaReplicationCapability.h"
+#include "AsceMass/Networking/Capabilities/Team/AsceTeamReplication.h"
+#include "AsceMass/Networking/Capabilities/Team/AsceTeamReplicationCapability.h"
+#include "AsceMass/Networking/Capabilities/Action/AsceActionReplication.h"
+#include "AsceMass/Networking/Capabilities/Action/AsceActionReplicationCapability.h"
 #include "AsceMass/Networking/Core/AsceUnitReplicator.h"
+#include "AsceMass/Data/AsceEntityDefLibrary.h"
 #include "MassReplicationSubsystem.h"
 
 namespace
@@ -29,8 +34,8 @@ namespace
 		bRegistered = true;
 
 		// 每新增一个"同步能力"（坐标/速度/生命值/护盾……），都要在这里补一行注册，
-		// entity那边的UMassReplicationTrait::Params.ReplicatorClass统一填UAsceUnitReplicator，
-		// 不用为每个能力单独配一个Replicator。
+		// 复制组参数（ReplicatorClass=UAsceUnitReplicator + 代表 BubbleInfoClass）由
+		// `UAsceRTSEntityTrait` 自动写入模板，模板不用再手动加引擎 "Replication" trait。
 		//
 		// 坐标和速度虽然都来自移动，但是两个独立的Capability——各自独立判脏、独立广播，
 		// 不会因为合并payload而互相拖累，详见AsceReplicationPositionHandlers.h类头注释。
@@ -38,6 +43,8 @@ namespace
 		UAsceUnitReplicator::RegisterCapability(MakeUnique<FAsceVelocityReplicationCapability>());
 		UAsceUnitReplicator::RegisterCapability(MakeUnique<FAsceHealthReplicationCapability>());
 		UAsceUnitReplicator::RegisterCapability(MakeUnique<FAsceManaReplicationCapability>());
+		UAsceUnitReplicator::RegisterCapability(MakeUnique<FAsceTeamReplicationCapability>());
+		UAsceUnitReplicator::RegisterCapability(MakeUnique<FAsceActionReplicationCapability>());
 	}
 }
 
@@ -55,5 +62,22 @@ void UAsceReplicationBootstrapSubsystem::PostInitialize()
 		ReplicationSubsystem->RegisterBubbleInfoClass(AAsceVelocityClientBubbleInfo::StaticClass());
 		ReplicationSubsystem->RegisterBubbleInfoClass(AAsceHealthClientBubbleInfo::StaticClass());
 		ReplicationSubsystem->RegisterBubbleInfoClass(AAsceManaClientBubbleInfo::StaticClass());
+		ReplicationSubsystem->RegisterBubbleInfoClass(AAsceTeamClientBubbleInfo::StaticClass());
+		ReplicationSubsystem->RegisterBubbleInfoClass(AAsceActionClientBubbleInfo::StaticClass());
 	}
+}
+
+void UAsceReplicationBootstrapSubsystem::OnWorldBeginPlay(UWorld& InWorld)
+{
+	Super::OnWorldBeginPlay(InWorld);
+
+	// 实体模板预注册（**服务器和客户端都要跑**）：Mass 复制在客户端是按 TemplateID
+	// 本地 spawn 实体的（bubble PostReplicatedAdd → UMassSpawnerSubsystem::SpawnEntities，
+	// MassClientBubbleHandler.h），而客户端不跑 EntityFactory（生成被权威端拦截，
+	// AsceEntityFactory.cpp）⇒ 客户端不预注册就会命中
+	// checkf("SpawnEntities: TemplateID must have been registered!")。
+	// 模板 id = UMassEntityConfigAsset 路径的确定性 GUID（MassEntityConfigAsset.cpp），
+	// 两端同一资产必然一致；对同一 World 幂等，单机/服务器重复调也不会重复建。
+	const int32 RegisteredCount = UAsceEntityDefLibrary::PreRegisterAllEntityTemplates(InWorld);
+	UE_LOG(LogTemp, Log, TEXT("[Replication] 实体模板预注册完成：%d 个"), RegisteredCount);
 }

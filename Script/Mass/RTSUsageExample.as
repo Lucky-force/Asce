@@ -21,9 +21,9 @@ class ARTSManager : AActor
     UPROPERTY(EditAnywhere, meta = (DataTableBinding = "AsceEntityDefRow:DisplayName,Description"))
     FAsceRowNameWrapper SoldierDefRow;
 
-    /** 归属阵营（由生成方决定；写进 FAsceTeamFragment）。 */
+    /** 归属阵营（**跨端一致的 TeamId**，由生成方决定；1..N，0=中立。内部会打包成本端 TeamKey 写进 FAsceTeamFragment）。 */
     UPROPERTY(EditAnywhere)
-    int32 SoldierTeamKey = 0;
+    int32 SoldierTeamId = 0;
 
     UPROPERTY()
     TArray<int32> SelectedUnits;
@@ -38,6 +38,12 @@ class ARTSManager : AActor
     {
         MassBridge = UAsceMassScriptBridge::Get();
 
+        // 生成必须服务器权威：客户端本地生成不走复制（幽灵实体）
+        if (!HasAuthority())
+        {
+            return;
+        }
+
         TArray<FTransform> SpawnTransforms;
         for (int i = 0; i < 3; i++)
         {
@@ -50,7 +56,7 @@ class ARTSManager : AActor
         }
 
         // 走实体定义表：模板 + 类型数值（半径/速度/血量/视野）都在这一条里
-        TArray<int64> Handles = MassBridge.SpawnEntitiesByDef(SoldierDefRow.RowName, SpawnTransforms, SoldierTeamKey);
+        TArray<int64> Handles = MassBridge.SpawnEntitiesByDef(SoldierDefRow.RowName, SpawnTransforms, SoldierTeamId);
         Log("Spawned " + Handles.Num() + " soldiers (def=" + SoldierDefRow.RowName + ")");
     }
 
@@ -66,27 +72,7 @@ class ARTSManager : AActor
     // ── 停止命令 ───────────────────────────
 
 
-    // ── 攻击命令 ───────────────────────────
-
-    // UFUNCTION()
-    // void AttackTarget(int64 TargetEntity)
-    // {
-    //     if (SelectedUnits.Num() == 0 || MassBridge.IsUnitDead(TargetEntity))
-    //     {
-    //         return;
-    //     }
-
-    //     MassBridge.IssueAttackOrder(SelectedUnits, TargetEntity);
-    //     Log("Attacking entity " + TargetEntity);
-    // }
-
-    // ── 停止攻击 ───────────────────────────
-
-    // UFUNCTION()
-    // void StopAttack()
-    // {
-    //     MassBridge.ClearAttackOrder(SelectedUnits);
-    // }
+    // ── 攻击：无手动攻击指令，攻击全自动（见 Combat/技能系统设计.md）────
 
     // ── 打印单位信息 ────────────────────────
 

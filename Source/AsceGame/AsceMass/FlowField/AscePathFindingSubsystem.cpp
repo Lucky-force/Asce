@@ -37,6 +37,14 @@ void UAscePathFindingSubsystem::Tick(float DeltaTime)
 
 void UAscePathFindingSubsystem::RunFlowFieldStage(const FAsceTickContext& Ctx)
 {
+	// 客户端不跑寻路/流场：不预测、不碰撞，PathFinder 在客户端没有消费者（位置由服务器同步驱动）。
+	// 以后恢复客户端本地模拟时把这个早退删掉即可（寻路代码完整保留）。
+	const UWorld* World = Ctx.World ? Ctx.World : GetWorld();
+	if (World && World->GetNetMode() == NM_Client)
+	{
+		return;
+	}
+
 	// 每帧给 goal LOS 失效队列一个预算（与实体寻路调用解耦，即使本帧没有实体也推进重算）。
 	constexpr int32 GoalLOSRefreshBudgetPerFrame = 10;
 	if (PathFinder)

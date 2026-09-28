@@ -80,6 +80,9 @@ protected:
 	UE_API void OnExperienceLoaded(const UAsceExperienceDefinition* CurrentExperience);
 	UE_API bool IsExperienceLoaded() const;
 
+	/** 下一名加入玩家的 TeamId（跨端一致，从 1 开始；超出阵营表容量后不再分配）。 */
+	int32 NextTeamId = 1;
+
 	/**
 	 * 在GameState上查找ExperienceComponent并且调用SetCurrentExperience传入ExperienceId，随后ExperienceComponent开始加载Experience
 	 * @param ExperienceId 

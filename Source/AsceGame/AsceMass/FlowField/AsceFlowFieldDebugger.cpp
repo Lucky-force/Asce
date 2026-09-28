@@ -392,8 +392,7 @@ void AAsceFlowFieldDebugger::Tick(float DeltaTime)
 		}
 	}
 
-	// 世界数据时间片更新
-	WorldMapData->UpdateWorld(DeltaTime);
+	// 世界数据时间片更新已挪到 `AAsceWorldMapReplicatorActor::Tick`（两端每帧驱动，debugger 只负责绘制/调试操作）
 
 	// 每 2 秒清理一次无人引用的流场缓存
 	if (GFrameCounter % 120 == 0 && PathFinder)

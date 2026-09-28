@@ -396,6 +396,16 @@ bool AAscePlayerController::ServerCheatAll_Validate(const FString& Msg)
 	return true;
 }
 
+void AAscePlayerController::Server_UpdateViewFocus_Implementation(const FVector_NetQuantize& Focus)
+{
+	// 客户端本地相机是权威（观察者Pawn的位置完全由客户端拖拽决定），服务器这份只给
+	// MassLOD/MassReplication当viewer用：不参与玩法，也不回传给客户端（Pawn不复制移动）。
+	if (APawn* ControlledPawn = GetPawn())
+	{
+		ControlledPawn->SetActorLocation(Focus, /*bSweep=*/false, nullptr, ETeleportType::TeleportPhysics);
+	}
+}
+
 void AAscePlayerController::PreProcessInput(const float DeltaTime, const bool bGamePaused)
 {
 	Super::PreProcessInput(DeltaTime, bGamePaused);

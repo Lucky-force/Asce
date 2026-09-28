@@ -16,8 +16,17 @@ void UAsceCombatSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 {
 	Super::OnWorldBeginPlay(InWorld);
 
-	// Mass 的 processor 是 UObject：必须自己创建、并由本子系统（UPROPERTY）持有
+	// Mass 的 processor 是 UObject：自己创建、自己持有。**必须 CallInitialize 触发 ConfigureQueries**
+	// （否则查询匹配不到任何 archetype，`UE::Mass::Executor::Run` 每次都跑到空查询 ⇒ 战斗完全不生效）
+	UMassEntitySubsystem* MassEntitySubsystem = InWorld.GetSubsystem<UMassEntitySubsystem>();
+	if (!MassEntitySubsystem)
+	{
+		return;
+	}
+
 	CombatProcessor = NewObject<UAsceCombatProcessor>(this);
+	FMassEntityManager& EntityManager = MassEntitySubsystem->GetMutableEntityManager();
+	CombatProcessor->CallInitialize(this, EntityManager.AsShared());
 }
 
 void UAsceCombatSubsystem::Tick(float DeltaTime)

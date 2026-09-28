@@ -19,5 +19,6 @@ class FAsceTransformReplicationCapability : public FAsceReplicationCapabilityBas
 {
 public:
 	virtual void AddRequirements(FMassEntityQuery& EntityQuery) override;
-	virtual void ProcessClientReplication(FMassExecutionContext& Context, FMassReplicationContext& ReplicationContext) override;
+	virtual void ProcessChunk(FMassExecutionContext& Context, FMassReplicationContext& ReplicationContext
+		, const FMassClientHandle& ClientHandle, TArrayView<FMassReplicatedAgentHandle> InOutMarkers) override;
 };

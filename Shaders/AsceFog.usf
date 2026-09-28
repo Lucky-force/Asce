@@ -93,7 +93,11 @@ void MainPS(
     // 反投影深度得世界 XY（UE 反向 Z：天空≈0）。
     // UE5.7 的 View uniform 不能写 `View.xxx`（底层是 View_ 前缀扁平 cbuffer），
     // 通过 PrimaryView（宏 → GetPrimaryView() 返回的 ViewState）访问。
-    int2 PixelCoord = int2(UV * PrimaryView.ViewSizeAndInvSize.xy);
+    //
+    // 注意：UV 是 SceneColor/Depth 纹理的**绝对 UV**（含 view rect 偏移）⇒ 深度 Load 与
+    // SV_Position 反投影必须乘 **BufferSize**；不能用 ViewSize（那只是 view rect 尺寸：
+    // 相机 MaintainX/Y 约束 / letterbox 时 view rect ≠ buffer，乘 ViewSize 会按比例缩放 + 偏移）。
+    int2 PixelCoord = int2(UV * PrimaryView.BufferSizeAndInvSize.xy);
     float Depth = SceneDepthTexture.Load(int3(PixelCoord, 0)).r;
     if (Depth > 0.0f)
     {

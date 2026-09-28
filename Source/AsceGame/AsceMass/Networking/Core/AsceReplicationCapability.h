@@ -2,6 +2,9 @@
 
 #pragma once
 
+#include "Containers/ArrayView.h"
+#include "MassReplicationTypes.h"
+
 struct FMassEntityQuery;
 struct FMassExecutionContext;
 struct FMassReplicationContext;
@@ -26,9 +29,14 @@ struct FMassReplicationContext;
  *     "一个已注册能力的Fragment都没有的entity也会进这个Query白跑一趟"。
  *     Any的语义是"整个Query范围内，只要命中已标记Any的Fragment中的任意一个就算通过"，
  *     所有Capability都用Any，正好等价于"至少命中一个已注册能力才处理这批entity"。
- *   - ProcessClientReplication里动手前，必须先用Context.DoesArchetypeHaveFragment<T>()
+ *   - ProcessChunk里动手前，必须先用Context.DoesArchetypeHaveFragment<T>()
  *     确认这个chunk里的entity真的有自己需要的Fragment（Any只保证"至少有人命中"，
  *     不保证"每个具体Capability都命中"）。
+ *   - "自己bubble里有没有这个entity"只能查自己bubble handler的NetID→Handle表
+ *     （FindAgentHandleByNetID）来判断。不能读引擎的FMassReplicatedAgentFragment::
+ *     AgentData.Handle——那个槽每个实体全局只有一个（所有能力共用），既可能是别的
+ *     能力的handle，也无法用来区分"是哪个能力加的"，详见UAsceUnitReplicator::
+ *     ProcessClientReplication的注释。
  */
 class FAsceReplicationCapabilityBase
 {
@@ -38,6 +46,19 @@ public:
 	/** 对应UMassReplicatorBase::AddRequirements，只管加自己关心的Fragment需求（务必用Any） */
 	virtual void AddRequirements(FMassEntityQuery& EntityQuery) = 0;
 
-	/** 对应UMassReplicatorBase::ProcessClientReplication，内部务必先判断DoesArchetypeHaveFragment */
-	virtual void ProcessClientReplication(FMassExecutionContext& Context, FMassReplicationContext& ReplicationContext) = 0;
+	/**
+	 * 对应UMassReplicatorBase::ProcessClientReplication：由UAsceUnitReplicator对
+	 * "当前client的每个archetype chunk"各调一次（视野过滤后的LOD已经在Context里生效），
+	 * 能力自己遍历chunk里的entity：
+	 *   - LOD < Off ：查自己bubble里有没有这个entity（FindAgentHandleByNetID），
+	 *                 没有就AddEntity，有就ModifyEntity；
+	 *   - LOD >= Off：自己bubble里有时移除。
+	 * InOutMarkers是"该entity是否已经复制给当前client"的per-entity聚合标记：
+	 * Add/Modify成功且该位还没被别的能力写过时才写自己的handle（第一个持有者胜出），
+	 * 不要清除或覆写别人已经写好的值——UAsceUnitReplicator会在所有能力跑完后把它写回
+	 * 引擎的scratch AgentData（引擎靠它判断该entity是否已从该client移除，见
+	 * MassReplicationProcessor.cpp里LOD==Off的checkf）。
+	 */
+	virtual void ProcessChunk(FMassExecutionContext& Context, FMassReplicationContext& ReplicationContext
+		, const FMassClientHandle& ClientHandle, TArrayView<FMassReplicatedAgentHandle> InOutMarkers) = 0;
 };

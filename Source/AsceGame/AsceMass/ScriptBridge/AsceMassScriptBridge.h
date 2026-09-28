@@ -31,21 +31,18 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Mass|RTS")
 	TArray<int64> SpawnEntities(UMassEntityConfigAsset* Config, const TArray<FTransform>& Transforms);
 
-	/** **按实体定义生成**（内部走 `UAsceEntityFactory`；统一生成入口）。`TeamKey` = 归属阵营（生成方决定）。 */
+	/** **按实体定义生成**（内部走 `UAsceEntityFactory`；统一生成入口）。
+	 *  `TeamId` = 归属阵营（**跨端一致**的 TeamId，由生成方决定；内部会打包成本端 TeamKey 写进 fragment）。
+	 *  ⚠️ **仅权威端有效**（客户端调用会打 Warning 并返回空数组：本地生成不走复制 = 幽灵实体）。 */
 	UFUNCTION(BlueprintCallable, Category = "Mass|RTS")
-	TArray<int64> SpawnEntitiesByDef(FName DefRowName, const TArray<FTransform>& Transforms, int32 TeamKey = 0);
+	TArray<int64> SpawnEntitiesByDef(FName DefRowName, const TArray<FTransform>& Transforms, int32 TeamId = 0);
 
 	UFUNCTION(BlueprintCallable, Category = "Mass|RTS")
 	/** 销毁实体：参数是 `SpawnEntities*` 返回的 `int64` 句柄（`FMassEntityHandle::AsNumber()`）。
 	 *  ⚠️ 必须是 `int64`：`AsNumber()` 是 `[Index(low32) | SerialNumber(high32)]` 的原始 64 位，
-	 *  截成 int32 会丢掉 SerialNumber ⇒ `FromNumber` 得到的句柄 `IsEntityValid` 永远为假（拆不掉）。 */
+	 *  截成 int32 会丢掉 SerialNumber ⇒ `FromNumber` 得到的句柄 `IsEntityValid` 永远为假（拆不掉）。
+	 *  ⚠️ **仅权威端有效**（客户端调用会打 Warning 并忽略：本地销毁不走复制）。 */
 	void DestroyEntities(const TArray<int64>& EntityHandles);
-
-	// ── 命令 ────────────────────────────────────────
-
-	UFUNCTION(BlueprintCallable, Category = "Mass|RTS")
-	void MoveOrder(FVector TargetLocation, float AcceptanceRadius = 50.f);
-
 
 protected:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;

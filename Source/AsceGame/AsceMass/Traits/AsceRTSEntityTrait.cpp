@@ -1,13 +1,46 @@
 // AsceRTSEntityTrait.cpp
 #include "AsceRTSEntityTrait.h"
 
-#include "MassEntityTemplateRegistry.h"
 #include "MassCommonFragments.h"
-#include "MassReplicationFragments.h"
+#include "MassReplicationTrait.h"
+#include "MassReplicationFragments.h"   // FMassReplicationParameters（写入调优）
+#include "MassLODTypes.h"               // EMassLOD
+#include "UObject/Package.h"            // GetTransientPackage
 #include "AsceMass/Data/AsceEntityDefLibrary.h"
+#include "AsceMass/Networking/Core/AsceUnitReplicator.h"
+#include "AsceMass/Networking/Capabilities/Transform/AsceTransformReplication.h"
 #include "../Fragments/AsceCoreFragments.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AsceRTSEntityTrait)
+
+namespace
+{
+	/** 把项目调优写进引擎复制参数（ReplicatorClass/BubbleInfoClass 两个类字段固定为项目约定） */
+	void ApplyReplicationTuning(FMassReplicationParameters& Params, const FAsceReplicationTuning& Tuning)
+	{
+		Params.LODDistance[EMassLOD::High] = Tuning.LODDistanceHigh;
+		Params.LODDistance[EMassLOD::Medium] = Tuning.LODDistanceMedium;
+		Params.LODDistance[EMassLOD::Low] = Tuning.LODDistanceLow;
+		Params.LODDistance[EMassLOD::Off] = Tuning.LODDistanceOff;
+
+		Params.BufferHysteresisOnDistancePercentage = Tuning.BufferHysteresisOnDistancePercentage;
+
+		Params.LODMaxCount[EMassLOD::High] = Tuning.LODMaxCountHigh;
+		Params.LODMaxCount[EMassLOD::Medium] = Tuning.LODMaxCountMedium;
+		Params.LODMaxCount[EMassLOD::Low] = Tuning.LODMaxCountLow;
+		Params.LODMaxCount[EMassLOD::Off] = Tuning.LODMaxCountOff;
+
+		Params.LODMaxCountPerViewer[EMassLOD::High] = Tuning.LODMaxCountPerViewerHigh;
+		Params.LODMaxCountPerViewer[EMassLOD::Medium] = Tuning.LODMaxCountPerViewerMedium;
+		Params.LODMaxCountPerViewer[EMassLOD::Low] = Tuning.LODMaxCountPerViewerLow;
+		Params.LODMaxCountPerViewer[EMassLOD::Off] = Tuning.LODMaxCountPerViewerOff;
+
+		Params.UpdateInterval[EMassLOD::High] = Tuning.UpdateIntervalHigh;
+		Params.UpdateInterval[EMassLOD::Medium] = Tuning.UpdateIntervalMedium;
+		Params.UpdateInterval[EMassLOD::Low] = Tuning.UpdateIntervalLow;
+		Params.UpdateInterval[EMassLOD::Off] = Tuning.UpdateIntervalOff;
+	}
+}
 
 void UAsceRTSEntityTrait::BuildTemplate(FMassEntityTemplateBuildContext& BuildContext, const UWorld& World) const
 {
@@ -33,4 +66,18 @@ void UAsceRTSEntityTrait::BuildTemplate(FMassEntityTemplateBuildContext& BuildCo
 	}
 
 	BuildContext.AddTag<FAsceAliveTag>();
+
+	// ── 复制组：**委托引擎 `UMassReplicationTrait`**（等价于手动加那个 trait，但参数由我们填）──
+	// 为什么用瞬态实例代跑：`FMassReplicationParameters` / `FMassReplicationSharedFragment` 的构造函数
+	// 没有导出符号（MassReplication 模块私有），跨模块直接构造会 LNK2019；而 trait 的 `BuildTemplate`
+	// 是导出的，构造与共享 fragment 都在引擎模块内完成。
+	// 单机（Standalone）跳过由引擎 trait 自己判断（它内部会直接 return）。
+	if (bReplicateEntity)
+	{
+		UMassReplicationTrait* RepTrait = NewObject<UMassReplicationTrait>(GetTransientPackage(), NAME_None, RF_Transient);
+		RepTrait->Params.ReplicatorClass = UAsceUnitReplicator::StaticClass();
+		RepTrait->Params.BubbleInfoClass = AAsceTransformClientBubbleInfo::StaticClass();
+		ApplyReplicationTuning(RepTrait->Params, ReplicationTuning);
+		RepTrait->BuildTemplate(BuildContext, World);
+	}
 }

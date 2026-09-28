@@ -11,12 +11,22 @@
  * 实体定义表（`FAsceEntityDefRow`）查询/校验的统一入口（运行时查表只走这里）。
  * 行名 = 数字 ID 字符串（0..65535）。
  */
+class UWorld;
+
 UCLASS()
 class UAsceEntityDefLibrary : public UBlueprintFunctionLibrary
 {
 	GENERATED_BODY()
 
 public:
+	/** 把定义表里所有行的 `EntityTemplate` 在当前 World 预注册（`GetOrCreateEntityTemplate`）。
+	 *  **服务器和客户端都必须跑**：客户端不跑 EntityFactory（生成被权威端拦截），但 Mass 复制
+	 *  在客户端是按 TemplateID 本地 spawn 实体的（bubble PostReplicatedAdd →
+	 *  UMassSpawnerSubsystem::SpawnEntities），客户端没注册模板会命中
+	 *  checkf("SpawnEntities: TemplateID must have been registered!")。
+	 *  模板 id 由 UMassEntityConfigAsset 路径的确定性 GUID 决定，两端一致。
+	 *  @return 成功预注册的模板数（表缺失/行未配模板会跳过并告警）。 */
+	static int32 PreRegisterAllEntityTemplates(UWorld& World);
 	/** 行名 → ID（必须全数字且在 0..65535）；失败返回 false。 */
 	static bool ParseEntityDefId(FName RowName, uint16& OutId);
 

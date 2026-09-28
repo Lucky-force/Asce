@@ -19,7 +19,9 @@ UAsceMovementSteeringProcessor::UAsceMovementSteeringProcessor()
 	// 动态处理器：由 UAsceMassMovementSimulationSubsystem 手动按序跑（调度器是唯一时钟）。
 	// 默认 true 会被 MassSimulation 自动链再跑一份，且绕过世界初始化/loading 门控。
 	bAutoRegisterWithProcessingPhases = false;
-	ExecutionFlags = static_cast<int32>(EProcessorExecutionFlags::AllNetModes);
+	// 只在权威端跑：客户端不跑完整本地模拟（不预测/不写速度），DesiredVelocity 直接吃服务器同步下来的速度
+	// （配合 UMassApplyMovementProcessor 做死推算）。否则这里每帧会把同步下来的 DesiredVelocity 清零、和权威数据打架。
+	ExecutionFlags = static_cast<int32>(EProcessorExecutionFlags::Standalone | EProcessorExecutionFlags::Server);
 	// 挂在Avoidance组：引擎自带的UMassApplyForceProcessor(ApplyForces组)/UMassApplyMovementProcessor
 	// (Movement组)分别声明了ExecuteAfter(Avoidance)/ExecuteAfter(ApplyForces)，
 	// 我们只要占住Avoidance这个组名，就自然排在它们前面，不需要显式声明ExecuteBefore。
@@ -80,16 +82,16 @@ void UAsceMovementSteeringProcessor::Execute(FMassEntityManager& EntityManager, 
 			const FVector2D CurrentLocation2D(CurrentLocation.X, CurrentLocation.Y);
 
 			// 方向选择：
-			// ① 近目标（曼哈顿距离目标 ≤ 一格）→ 无视流场，直接朝目标点直走——
-			//    （流场栅格的"每格固定一个方向"问题：不同进入方的entity跟那格的单一方向可能
-			//     永远够不到格内的具体目标点；直走保证最终到位）
+			// ① 近目标（距目标 ≤ 1.4 个流场格 ≈ 格子对角线）→ 无视流场，直接朝目标点直走——
+			//    （流场栅格的"每格固定一个方向"问题：目标格本身的兜底方向是 P_0(+X)，
+			//     单位在目标格内但没进直走圈时会被往正东推、在格边界来回弹；直走半径必须**盖住整格**）
 			// ② 否则 → 流场方向
 			FVector2D SteeringDirection2D = FVector2D::ZeroVector;
 			const FVector2D TargetLocation2D(Order.TargetLocation.X, Order.TargetLocation.Y);
 			const FVector2D ToTarget2D = TargetLocation2D - CurrentLocation2D;
-			// 曼哈顿距离（无开方，判"是否已在一格内"足够）
-			const float ManhattanDistToTarget = FMath::Abs(ToTarget2D.X) + FMath::Abs(ToTarget2D.Y);
-			if (ManhattanDistToTarget <= GRID_SIZE)   // 100cm（一个流场格）以内直走
+			// 欧氏距离：1.4 ≈ √2，覆盖格子对角线（曼哈顿口径盖不住对角，不能用）
+			constexpr float DirectSteerRadius = GRID_SIZE * 1.4f;
+			if (ToTarget2D.SizeSquared() <= DirectSteerRadius * DirectSteerRadius)
 			{
 				SteeringDirection2D = ToTarget2D;
 			}

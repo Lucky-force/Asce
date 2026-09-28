@@ -75,18 +75,6 @@ FPortal::FPortalIndex FPortal::GetLinkToPortalIndex(const FWorldMapData& WorldMa
 	return FPortal::FPortalIndex();
 }
 
-void FCostFieldReplicated::PreReplicatedRemove(const struct FWorldMapData& InArraySerializer)
-{
-}
-
-void FCostFieldReplicated::PostReplicatedAdd(const struct FWorldMapData& InArraySerializer)
-{
-}
-
-void FCostFieldReplicated::PostReplicatedChange(const struct FWorldMapData& InArraySerializer)
-{
-}
-
 void FWorldMapData::InitWorldMapData(uint8 InSectorCountX, uint8 InSectorCountY)
 {
 	SectorCountX = InSectorCountX;
@@ -112,11 +100,13 @@ void FWorldMapData::InitWorldMapData(uint8 InSectorCountX, uint8 InSectorCountY)
 
 	CostFields.Reset();
 	CostFields.SetNum(GridNum);
-	for (FCostFieldReplicated& Field : CostFields)
+	for (FCostField& Field : CostFields)
 	{
 		Field.Cost = 0;
 	}
-	
+
+	// 复制分发状态（分块复制）：重 init 时清空队列，分块 actor 由 ReplicatorActor 负责销毁/重建
+	ResetReplicatedCostQueue();
 }
 
 FPortal::FPortalIndex FWorldMapData::GetPortalIndexByGridIndex(const uint32 GridIndex, bool* IsPortalGrid) const
@@ -245,23 +235,6 @@ int FWorldMapData::GetEdgeGridStartIndex(const FSector& TargetSector, const FPor
 		case FPortal::EPortalType::Left:  return TargetSector.GetLeftEdgeGridStartIndex();
 		case FPortal::EPortalType::Right: return TargetSector.GetRightEdgeGridStartIndex();
 		default: return 0;
-	}
-}
-
-void FWorldMapData::PreReplicatedRemove(const TArrayView<int32>& RemovedIndices, int32 FinalSize)
-{
-}
-
-void FWorldMapData::PostReplicatedAdd(const TArrayView<int32>& AddedIndices, int32 FinalSize)
-{
-	PostReplicatedChange(AddedIndices, FinalSize);
-}
-
-void FWorldMapData::PostReplicatedChange(const TArrayView<int32>& ChangedIndices, int32 FinalSize)
-{
-	for (int32 ChangedIndex : ChangedIndices)
-	{
-		PendingUpdateCostFields.Add({static_cast<uint32>(ChangedIndex), CostFields[ChangedIndex].Cost});
 	}
 }
 

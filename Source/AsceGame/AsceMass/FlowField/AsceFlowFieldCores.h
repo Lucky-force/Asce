@@ -515,30 +515,6 @@ struct FPortal
 	uint8 RawFlags;
 };
 
-USTRUCT()
-struct FCostFieldReplicated : public FFastArraySerializerItem
-{
-	GENERATED_BODY()
-
-	UPROPERTY()
-	uint8 Cost = 0;
-
-	// 墙判断与FCostField::IsWall同一语义（bit7=1 = 墙，低7位=方向码或代价）
-	ASCE_INLINE bool IsWall() const
-	{
-		return (Cost & 0b10000000) != 0;
-	}
-
-	ASCE_INLINE uint8 GetPushDirection() const
-	{
-		return Cost & 0b01111111;
-	}
-
-	void PreReplicatedRemove(const struct FWorldMapData& InArraySerializer);
-	void PostReplicatedAdd(const struct FWorldMapData& InArraySerializer);
-	void PostReplicatedChange(const struct FWorldMapData& InArraySerializer);
-};
-
 // 墙格簇：由相邻的墙格合并成的一个尽可能大的轴对齐矩形（世界坐标AABB）。
 // 墙的碰撞解算对簇做一次圆-AABB接触即可（法线=圆心到簇最近点，始终朝簇外，
 // 不会像"逐格解算"那样在相邻格交界处把法线算歪、出现朝墙内推的错误）。
@@ -555,7 +531,7 @@ struct FWallCluster
 };
 
 USTRUCT()
-struct FWorldMapData : public FFastArraySerializer
+struct FWorldMapData
 {
 	GENERATED_BODY()
 public:
@@ -693,8 +669,20 @@ public:
 	static int GetEdgeGridStartIndex(const FSector& TargetSector, const FPortal::EPortalType EdgeType);
 
 public:
-	UPROPERTY()
-	TArray<FCostFieldReplicated> CostFields; 
+	// ── 代价场（本地 dense；**不参与复制**，内容由 `AAsceCostFieldChunkActor` 分块复制到客户端）──
+	TArray<FCostField> CostFields;
+
+	/** 是否走"分帧复制队列"：只有**有客户端的权威端**（DS / ListenServer）才开；
+	 *  Standalone / 客户端不需要（本地 dense 已即时写，无网络动作）。 */
+	bool bUsePacedReplication = false;
+
+	/** 分帧队列每帧最多处理多少格（把读档/大范围编辑的洪峰摊到多帧） */
+	int32 ReplicatedUpdatesPerFrame = 256;
+
+	// 分帧队列：待分发的格号（同格合并；顺序按首次入队位置，FIFO）
+	TSet<uint32> PendingReplicatedCells;
+	TArray<uint32> PendingReplicatedOrder;
+	int32 PendingReplicatedHead = 0;
 
 #if WITH_EDITOR
 	// 调试用：代价格子更新时广播（含GridIndex），Debugger增量更新纹理
@@ -703,15 +691,6 @@ public:
 	// 调试用：Portal/Island结构变化时广播，Debugger全量重写纹理
 	FOnWorldMapStructureChanged OnStructureChanged;
 #endif
-
-	bool NetDeltaSerialize(FNetDeltaSerializeInfo& DeltaParms)
-	{
-		return FFastArraySerializer::FastArrayDeltaSerialize<FCostFieldReplicated, FWorldMapData>(CostFields, DeltaParms, *this);
-	}
-
-	void PreReplicatedRemove(const TArrayView<int32>& RemovedIndices, int32 FinalSize);
-	void PostReplicatedAdd(const TArrayView<int32>& AddedIndices, int32 FinalSize);
-	void PostReplicatedChange(const TArrayView<int32>& ChangedIndices, int32 FinalSize);
 
 	void UpdateWorld(float DeltaTime);	
 
@@ -945,15 +924,93 @@ protected:
 	
 	/** Debugger */
 public:
-	// 调试/运行时设置代价的统一入口（模拟复制路径，走 PendingUpdateCostFields → UpdateWorld 时间片处理）
+	// 唯一更新代价场的入口：本地 dense **即时写**（寻路/碰撞/放置校验不等），
+	// 复制分发按模式走：有客户端的权威端进分帧队列（由 ReplicatorActor drain 到分块 actor）；其余端无网络动作
 	void SetCostField(uint32 GridIndex, uint8 NewCost)
 	{
 		if (GridIndex < static_cast<uint32>(CostFields.Num()))
 		{
 			CostFields[GridIndex].Cost = NewCost;
-			MarkItemDirty(CostFields[GridIndex]);
+			PendingUpdateCostFields.Add({GridIndex, NewCost});
+			QueueReplicatedCostField(GridIndex);
+		}
+	}
+
+	/** 客户端收到分块复制的格：写回本地 dense + 进本地处理管线（ProcessCostFields → 扇区/墙簇重建） */
+	void ApplyReplicatedCostCell(uint32 GridIndex, uint8 NewCost)
+	{
+		if (CostFields.IsValidIndex(static_cast<int32>(GridIndex)))
+		{
+			CostFields[GridIndex].Cost = NewCost;
 			PendingUpdateCostFields.Add({GridIndex, NewCost});
 		}
+	}
+
+	/** 复制分发：有客户端的权威端入队列（同格合并）；其余端什么都不做（本地 dense 已即时写好） */
+	void QueueReplicatedCostField(uint32 GridIndex)
+	{
+		if (!bUsePacedReplication)
+		{
+			return;
+		}
+		if (PendingReplicatedCells.Contains(GridIndex))
+		{
+			return;   // 同格合并：已排队；drain 时按**最新值**分发
+		}
+		PendingReplicatedCells.Add(GridIndex);
+		PendingReplicatedOrder.Add(GridIndex);
+	}
+
+	/** 每帧 drain：从队列头部按预算弹出并把格号交给路由（有客户端的权威端，由 ReplicatorActor 的 Tick 驱动）；
+	 *  路由负责把该格分发到对应 `AAsceCostFieldChunkActor`（值从本地 dense 读取） */
+	template<typename FuncType>
+	void DrainReplicatedCostUpdates(FuncType&& ApplyFn)
+	{
+		if (!bUsePacedReplication)
+		{
+			return;
+		}
+		const int32 Remaining = PendingReplicatedOrder.Num() - PendingReplicatedHead;
+		if (Remaining <= 0)
+		{
+			PendingReplicatedCells.Reset();
+			PendingReplicatedOrder.Reset();
+			PendingReplicatedHead = 0;
+			return;
+		}
+
+		const int32 Count = FMath::Min(FMath::Max(1, ReplicatedUpdatesPerFrame), Remaining);
+		for (int32 i = 0; i < Count; ++i)
+		{
+			const uint32 Index = PendingReplicatedOrder[PendingReplicatedHead + i];
+			if (CostFields.IsValidIndex(static_cast<int32>(Index)))
+			{
+				ApplyFn(Index);
+			}
+			PendingReplicatedCells.Remove(Index);
+		}
+		PendingReplicatedHead += Count;
+
+		if (PendingReplicatedHead >= PendingReplicatedOrder.Num())
+		{
+			PendingReplicatedCells.Reset();
+			PendingReplicatedOrder.Reset();
+			PendingReplicatedHead = 0;
+		}
+		else if (PendingReplicatedHead > 1024)
+		{
+			// 摊销头部滑窗（避免每帧 RemoveAt(0) 的 memmove）
+			PendingReplicatedOrder.RemoveAt(0, PendingReplicatedHead, EAllowShrinking::No);
+			PendingReplicatedHead = 0;
+		}
+	}
+
+	/** 清空未分发的复制队列（建图预填后丢弃冗余入队；重 init 时用） */
+	void ResetReplicatedCostQueue()
+	{
+		PendingReplicatedCells.Reset();
+		PendingReplicatedOrder.Reset();
+		PendingReplicatedHead = 0;
 	}
 
 	// 置某格为普通可通行（代价1）：等价 SetCostField(Index, 1)
@@ -1001,13 +1058,4 @@ private:
 	friend FPortal;
 	friend FSector;
 	friend class UPathFinder;
-};
-
-template<>
-struct TStructOpsTypeTraits<FWorldMapData> : public TStructOpsTypeTraitsBase2<FWorldMapData>
-{
-	enum
-	{
-		WithNetDeltaSerializer = true,
-	};
 };

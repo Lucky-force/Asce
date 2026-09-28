@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Engine/DataTable.h"
+#include "StructUtils/InstancedStruct.h"
 
 #include "AsceCombatDef.generated.h"
 
@@ -11,9 +12,9 @@
  * 动作 / 技能定义（数据表行；服务器与客户端共用同一份）。
  *
  * 见 `技能系统设计.md`：
- *  - **攻击 = 内置动作定义**（自动触发、无蓝耗），技能 = 玩家触发的动作定义；
- *    两者共用同一套"占时 → 真正释放 → 结算 → 打断"管线。
- *  - "**真正释放**" = 处理 cost + CD + effect 的那一帧：`Cast` = 前摇结束，`Channel`/`Instant` = 开始。
+ *  - **攻击 = 内置动作定义**（自动触发、无蓝耗；配置在单位 def 的 `AttackCastConfig`），技能 = 玩家触发的动作定义；
+ *    两者共用同一套"占时 → Trigger 结算 → 打断"管线。
+ *  - "**真正释放（Trigger）**" = 处理 cost + CD + effect 的那一帧：普通 = `TriggerTime`；持续 = 前摇结束。
  */
 
 /** 动作状态（唯一真相在服务器；客户端按复制下来的边沿驱动表现） */
@@ -23,18 +24,20 @@ enum class EAsceActionState : uint8
 	Idle    UMETA(DisplayName = "待机"),
 	Move    UMETA(DisplayName = "移动"),
 	Attack  UMETA(DisplayName = "攻击"),
-	Cast    UMETA(DisplayName = "普通施法（前摇）"),
+	// 不能叫 `Cast`：`cast` 是 AngelScript 保留字，注册到 AS 会报 asINVALID_NAME
+	Casting UMETA(DisplayName = "普通施法（前摇）"),
 	Channel UMETA(DisplayName = "持续施法"),
 	Dying   UMETA(DisplayName = "死亡中"),
 };
 
-/** 施法方式 */
+/** 目标关系（仅 `TargetKind == Unit` 时校验）：Enemy = 非同队（含中立）；Friendly = 同队（含自己）；Self = 仅自己 */
 UENUM(BlueprintType)
-enum class EAsceCastKind : uint8
+enum class EAsceTargetRelation : uint8
 {
-	Instant UMETA(DisplayName = "瞬发（无前摇：开始即真正释放）"),
-	Cast    UMETA(DisplayName = "普通施法（有前摇：前摇结束才真正释放）"),
-	Channel UMETA(DisplayName = "持续施法（无前摇：周期结算）"),
+	Enemy    UMETA(DisplayName = "敌方"),
+	Friendly UMETA(DisplayName = "友方"),
+	Self     UMETA(DisplayName = "自身"),
+	Any      UMETA(DisplayName = "任意"),
 };
 
 /** 目标类型（由技能定义决定；客户端不判断，服务器按它挑用 Pos 还是 NetID） */
@@ -71,28 +74,107 @@ enum class EAsceSkillType : uint8
 	Passive UMETA(DisplayName = "被动（v1 只做常驻属性加成）"),
 };
 
-/** 动画段（客户端 VAT 查表：`(ActionId, ActionState)` → 本段）；服务器不用动画资产 */
+/** 动作动画引用：某个动作状态下播哪个**语义 clip 名**（实际烘焙段由单位 AnimSet 解析，见 `AsceAnimDef.h` / §7） */
 USTRUCT(BlueprintType)
-struct FAsceAnimSegment
+struct FAsceActionClipRef
 {
 	GENERATED_BODY()
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Anim")
-	int32 StartFrame = 0;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action")
+	EAsceActionState State = EAsceActionState::Casting;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Anim")
-	int32 EndFrame = 0;
-
-	/** 循环（Idle/Move/Channel = true；Attack/Cast 一次性 = false） */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Anim")
-	bool bLoop = false;
-
-	/** 基准动画速度（实际 PlayRate 由服务器下发；这里是"1.0x"对应的值） */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Anim")
-	float PlayRate = 1.f;
+	/** 语义 clip 名（空 = 走 AnimSet 回退链：Cast_Generic/Channel_Generic/Attack → Idle） */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action")
+	FName ClipName;
 };
 
-/** 动作定义（攻击也是本表里的一行） */
+/**
+ * 动作管线配置（**多态基类**，技能表里用 `FInstancedStruct` 存）。
+ *
+ * **服务器只取时间，客户端只取动画名**——同一份配置两端共读：
+ *   - 普通施法：`TotalCastTime` = 动作总时长（动画尾巴）；`TriggerTime` = 真正结算时刻（可 < 总时长）。
+ *   - 持续施法：`CastTime` 前摇 → 前摇结束=真正释放 → 进入 Channel（循环动画 + 每 TickInterval 结算）→ ChannelDuration。
+ * 见 `技能系统设计.md` §2.1 / §5。
+ */
+USTRUCT(BlueprintType)
+struct FAsceSkillCastConfig
+{
+	GENERATED_BODY()
+
+	virtual ~FAsceSkillCastConfig() = default;
+
+	/** 是否持续施法 */
+	virtual bool IsChannel() const { return false; }
+	/** 前摇/施法动画 clip 名（空 = AnimSet 回退） */
+	virtual FName GetCastAnim() const { return NAME_None; }
+	/** 持续施法动画 clip 名（空 = AnimSet 回退） */
+	virtual FName GetChannelAnim() const { return NAME_None; }
+	/** 真正结算时刻（相对动作开始，秒） */
+	virtual float GetTriggerTime() const { return 0.f; }
+	/** 动作总时长（普通 = 动画尾巴；持续 = 前摇时长，秒） */
+	virtual float GetTotalCastTime() const { return 0.f; }
+	/** 持续施法总时长（秒） */
+	virtual float GetChannelDuration() const { return 0.f; }
+	/** 持续结算间隔（秒） */
+	virtual float GetTickInterval() const { return 0.5f; }
+};
+
+/** 普通施法：`TriggerTime` 结算 → 动作播到 `TotalCastTime` → Idle */
+USTRUCT(BlueprintType)
+struct FAsceNormalCastConfig : public FAsceSkillCastConfig
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action")
+	FName CastAnim;
+
+	/** 动作总时长（动画尾巴，秒） */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action")
+	float TotalCastTime = 1.f;
+
+	/** 真正结算时刻（可 < TotalCastTime：动画播到某个位置就触发；**各算各的，到点硬切**） */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action")
+	float TriggerTime = 1.f;
+
+	virtual FName GetCastAnim() const override { return CastAnim; }
+	virtual float GetTriggerTime() const override { return TriggerTime; }
+	virtual float GetTotalCastTime() const override { return TotalCastTime; }
+};
+
+/** 持续施法：前摇 `CastTime` → 前摇结束=真正释放 → Channel 循环动画 + 周期结算 → `ChannelDuration` */
+USTRUCT(BlueprintType)
+struct FAsceChannelCastConfig : public FAsceSkillCastConfig
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action")
+	FName CastAnim;
+
+	/** 前摇时长（秒） */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action")
+	float CastTime = 1.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action")
+	FName ChannelAnim;
+
+	/** 持续施法总时长（秒） */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action")
+	float ChannelDuration = 3.f;
+
+	/** 周期结算间隔（秒） */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action")
+	float TickInterval = 0.5f;
+
+	virtual bool IsChannel() const override { return true; }
+	virtual FName GetCastAnim() const override { return CastAnim; }
+	virtual FName GetChannelAnim() const override { return ChannelAnim; }
+	virtual float GetTriggerTime() const override { return CastTime; }
+	virtual float GetTotalCastTime() const override { return CastTime; }
+	virtual float GetChannelDuration() const override { return ChannelDuration; }
+	virtual float GetTickInterval() const override { return TickInterval; }
+};
+
+/** 动作定义（技能行；**攻击不入本表**——攻击配置在单位 def 的 `AttackCastConfig`） */
 USTRUCT(BlueprintType)
 struct FAsceActionDef : public FTableRowBase
 {
@@ -106,10 +188,11 @@ struct FAsceActionDef : public FTableRowBase
 	EAsceSkillType SkillType = EAsceSkillType::Active;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action")
-	EAsceCastKind CastKind = EAsceCastKind::Cast;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action")
 	EAsceTargetKind TargetKind = EAsceTargetKind::Unit;
+
+	/** 目标关系（仅 Unit 指向时校验；None = 自身/周围，Point 不校验） */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action")
+	EAsceTargetRelation TargetRelation = EAsceTargetRelation::Enemy;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action")
 	EAsceDelivery Delivery = EAsceDelivery::Instant;
@@ -120,16 +203,6 @@ struct FAsceActionDef : public FTableRowBase
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action")
 	EAsceRangeKind RangeKind = EAsceRangeKind::MeleeSurface;
-
-	/** 前摇时长（= 动作自然时长，秒）；`Instant/Channel` 为 0 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action")
-	float CastTime = 0.f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action")
-	float ChannelDuration = 0.f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action")
-	float ChannelTickInterval = 0.5f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action")
 	float Cooldown = 0.f;
@@ -156,6 +229,11 @@ struct FAsceActionDef : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action")
 	int32 SpawnGroupId = 0;
 
+	/** 动作管线配置（多态：普通 / 持续；**时间字段的唯一来源**） */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action", meta = (BaseStruct = "/Script/AsceGame.AsceSkillCastConfig"))
+	FInstancedStruct CastConfig;
+
+	/** 动画：状态 → 语义 clip 名（空 = 走 AnimSet 回退链，见 `AsceAnimDef.h` / §7） */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action")
-	FAsceAnimSegment Anim;
+	TArray<FAsceActionClipRef> AnimClips;
 };

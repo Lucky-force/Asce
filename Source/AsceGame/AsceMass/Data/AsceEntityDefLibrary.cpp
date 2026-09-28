@@ -3,7 +3,9 @@
 
 #include "DataTableSystem/AsceDataTableSubsystem.h"
 #include "Engine/DataTable.h"
+#include "Engine/World.h"
 #include "HAL/IConsoleManager.h"
+#include "MassEntityConfigAsset.h"
 
 namespace
 {
@@ -91,6 +93,43 @@ bool UAsceEntityDefLibrary::GetEntityDefRow(int32 Id, FAsceEntityDefRow& OutRow)
 bool UAsceEntityDefLibrary::GetEntityDefRowByName(FName RowName, FAsceEntityDefRow& OutRow)
 {
 	return UAsceDataTableSubsystem::GetDefinition<FAsceEntityDefRow>(RowName, OutRow);
+}
+
+int32 UAsceEntityDefLibrary::PreRegisterAllEntityTemplates(UWorld& World)
+{
+	const UDataTable* Table = GetEntityDefTable();
+	if (!Table)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[EntityDef] 模板预注册跳过：实体定义表未登记/未加载"));
+		return 0;
+	}
+
+	int32 RegisteredCount = 0;
+	int32 MissingCount = 0;
+	for (const TPair<FName, uint8*>& Pair : Table->GetRowMap())
+	{
+		if (!Pair.Value)
+		{
+			continue;
+		}
+		const FAsceEntityDefRow* Row = reinterpret_cast<const FAsceEntityDefRow*>(Pair.Value);
+		UMassEntityConfigAsset* Config = Row->EntityTemplate.LoadSynchronous();
+		if (!Config)
+		{
+			++MissingCount;
+			continue;
+		}
+
+		// 同一个 World 内幂等：已注册直接返回现有模板
+		Config->GetOrCreateEntityTemplate(World);
+		++RegisteredCount;
+	}
+
+	if (MissingCount > 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[EntityDef] 模板预注册：%d 行未配 EntityTemplate，已跳过"), MissingCount);
+	}
+	return RegisteredCount;
 }
 
 bool UAsceEntityDefLibrary::GetEtherBuildingDef(int32 Id, FAsceEtherBuildingDef& OutDef)

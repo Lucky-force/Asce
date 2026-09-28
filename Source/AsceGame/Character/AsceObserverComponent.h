@@ -182,9 +182,22 @@ protected:
 	UPROPERTY()
 	FVector CachedLocationToUpdate = FVector::ZeroVector;
 
+	//视角焦点上报的节流状态（仅本端客户端使用）
+	float TimeSinceLastViewFocusUpdate = 0.f;
+	FVector LastSentViewFocus = FVector::ZeroVector;
+	bool bHasSentViewFocus = false;
+
 public:
 	UPROPERTY(EditAnywhere)
 	float MoveSpeed = 100.f;
+
+	/** 视角焦点上报间隔（秒）：服务器端viewer（= 服务器那份Pawn的位置）按此频率跟随本端相机焦点 */
+	UPROPERTY(EditAnywhere, Category = "Asce|Observer")
+	float ViewFocusUpdateInterval = 0.1f;
+
+	/** 焦点相对上次上报移动超过这个距离（cm）才上报；静止不动时不上报 */
+	UPROPERTY(EditAnywhere, Category = "Asce|Observer")
+	float ViewFocusUpdateThreshold = 10.f;
 };
 
 #undef UE_API

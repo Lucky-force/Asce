@@ -82,6 +82,10 @@ class URTSGameHUD : UAsceActivatableWidget
     void TryCachePlayerController()
     {
         APawn Pawn = GetOwningPlayerPawn();
+        if (!IsValid(Pawn))
+        {
+            return;
+        }
 
         CachedController = Cast<APlayerController>(Pawn.GetController());
     }

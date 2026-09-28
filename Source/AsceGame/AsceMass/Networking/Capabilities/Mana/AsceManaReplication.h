@@ -6,8 +6,8 @@
 #include "MassClientBubbleInfoBase.h"
 #include "MassReplicationFragments.h"
 
-#include "AsceMass/Networking/Core/AsceReplicationScalarHandlers.h"
-#include "AsceMass/Networking/Core/AsceScalarReplicationBubbleHandler.h"
+#include "AsceMass/Networking/Core/AsceReplicationValueHandlers.h"
+#include "AsceMass/Networking/Core/AsceValueReplicationBubbleHandler.h"
 #include "AsceMass/Combat/AsceCombatFragments.h"   // FAsceManaFragment
 
 #include "AsceManaReplication.generated.h"
@@ -15,20 +15,27 @@
 class AAsceManaClientBubbleInfo;
 
 /**
- * 蓝量"单标量"复制通道：与 Health 完全同款（见 `AsceHealthReplication.h` 的文件头说明与新增步骤）。
- * 服务器把 `CurrentMana / MaxMana` 归一化后复制（Tolerance 0.01），客户端反算回 `CurrentMana`。
+ * 蓝量同步通道：与 Health 完全同款（见 `AsceHealthReplication.h` 的文件头说明）。
+ * **同步绝对值**（MaxMana + CurrentMana 两个字段）：Max 会随装备/升级/buff 变化，
+ * 静态 def 只是出生初始值 ⇒ 两个值都必须复制。
  */
 USTRUCT()
 struct FAsceManaReplicatedAgent : public FReplicatedAgentBase
 {
 	GENERATED_BODY()
 
-	const FReplicatedScalarData& GetManaRatioData() const { return ManaRatio; }
-	FReplicatedScalarData& GetManaRatioDataMutable() { return ManaRatio; }
+	const FReplicatedValueFloat& GetMaxManaData() const { return MaxMana; }
+	FReplicatedValueFloat& GetMaxManaDataMutable() { return MaxMana; }
+
+	const FReplicatedValueFloat& GetCurrentManaData() const { return CurrentMana; }
+	FReplicatedValueFloat& GetCurrentManaDataMutable() { return CurrentMana; }
 
 private:
 	UPROPERTY(Transient)
-	FReplicatedScalarData ManaRatio;
+	FReplicatedValueFloat MaxMana;
+
+	UPROPERTY(Transient)
+	FReplicatedValueFloat CurrentMana;
 };
 
 /** FastArray 条目（与 MassCrowd 的 `FCrowdFastArrayItem` 同模式） */
@@ -49,36 +56,53 @@ struct FAsceManaFastArrayItem : public FMassFastArrayItemBase
 	FAsceManaReplicatedAgent Agent;
 };
 
-/** 蓝量"比例"策略（服务器侧差量判定 + 客户端回写都由模板 `TAsceScalar*` 驱动） */
-struct FAsceManaRatioPolicy
+/** 蓝量同步策略（服务器侧差量判定 + 客户端回写都由模板 `TAsceValue*` 驱动） */
+struct FAsceManaPolicy
 {
 	typedef FAsceManaFragment FragmentType;
+	using ValueType = float;
+	using FValueData = FReplicatedValueFloat;
 	using FAgentType = FAsceManaReplicatedAgent;
 	using FFastArrayItemType = FAsceManaFastArrayItem;
 	using FBubbleInfoType = AAsceManaClientBubbleInfo;
 
-	static FReplicatedScalarData& GetMutableData(FAsceManaReplicatedAgent& Agent)
+	/** 字段约定：0 = MaxMana、1 = CurrentMana（**顺序即写回顺序**） */
+	static constexpr int32 NumFields = 2;
+
+	static FValueData& GetMutableData(FAsceManaReplicatedAgent& Agent, const int32 FieldIndex)
 	{
-		return Agent.GetManaRatioDataMutable();
+		return (FieldIndex == 0) ? Agent.GetMaxManaDataMutable() : Agent.GetCurrentManaDataMutable();
 	}
-	static const FReplicatedScalarData& GetData(const FAsceManaReplicatedAgent& Agent)
+	static const FValueData& GetData(const FAsceManaReplicatedAgent& Agent, const int32 FieldIndex)
 	{
-		return Agent.GetManaRatioData();
+		return (FieldIndex == 0) ? Agent.GetMaxManaData() : Agent.GetCurrentManaData();
 	}
-	static float ExtractFromFragment(const FAsceManaFragment& Fragment)
+	static float ExtractFromFragment(const FAsceManaFragment& Fragment, const int32 FieldIndex)
 	{
-		return Fragment.MaxMana > KINDA_SMALL_NUMBER
-			? FMath::Clamp(Fragment.CurrentMana / Fragment.MaxMana, 0.f, 1.f)
-			: 0.f;
+		return (FieldIndex == 0) ? Fragment.MaxMana : Fragment.CurrentMana;
 	}
-	static void ApplyToFragment(FAsceManaFragment& Fragment, const float Ratio)
+	static void ApplyToFragment(FAsceManaFragment& Fragment, const int32 FieldIndex, const float Value)
 	{
-		Fragment.CurrentMana = Fragment.MaxMana * Ratio;
+		if (FieldIndex == 0)
+		{
+			Fragment.MaxMana = Value;
+		}
+		else
+		{
+			Fragment.CurrentMana = Value;
+		}
 	}
+
+	// 绝对值变化超过 0.01 才重新标脏
 	static constexpr float Tolerance = 0.01f;
+
+	static bool ValuesDiffer(const float NewValue, const float OldValue, const int32 FieldIndex)
+	{
+		return !FMath::IsNearlyEqual(NewValue, OldValue, Tolerance);
+	}
 };
 
-using FAsceManaClientBubbleHandler = TAsceScalarClientBubbleHandler<FAsceManaFastArrayItem, FAsceManaRatioPolicy>;
+using FAsceManaClientBubbleHandler = TAsceValueClientBubbleHandler<FAsceManaFastArrayItem, FAsceManaPolicy>;
 
 /** 每个客户端一份，走 FastArraySerializer 增量同步（与 Health 同款） */
 USTRUCT()
@@ -89,21 +113,6 @@ struct FAsceManaClientBubbleSerializer : public FMassClientBubbleSerializerBase
 	FAsceManaClientBubbleSerializer()
 	{
 		Bubble.Initialize(Agents, *this);
-	}
-
-	/**
-	 * 通用 handler 模板里有**引用成员**（`TClientBubbleHandlerBase& OwnerHandler`）⇒ 隐式拷贝赋值被删除；
-	 * 而 UHT 为这个 USTRUCT 生成的 CppStructOps 需要 `operator=`（`UE::CoreUObject::Private::Copy`）⇒ 这里手写一个：
-	 * 复制条目数组后**重新 Initialize**（把 handler 的引用重新绑到 this）。
-	 */
-	FAsceManaClientBubbleSerializer& operator=(const FAsceManaClientBubbleSerializer& Other)
-	{
-		if (this != &Other)
-		{
-			Agents = Other.Agents;
-			Bubble.Initialize(Agents, *this);
-		}
-		return *this;
 	}
 
 	bool NetDeltaSerialize(FNetDeltaSerializeInfo& DeltaParams)
@@ -117,6 +126,21 @@ public:
 protected:
 	UPROPERTY(Transient)
 	TArray<FAsceManaFastArrayItem> Agents;
+};
+
+/**
+ * **必须**声明 traits，否则引擎不会调 `NetDeltaSerialize` ⇒ FastArray 标脏不会变成 push-model 属性脏，
+ * 蓝量根本不会复制。`WithCopy = false` 同时解决 handler 引用成员导致的"隐式拷贝赋值被删除"（C2280）
+ * —— 不再需要手写 `operator=`。见 `Health/AsceHealthReplication.h` 同款写法。
+ */
+template<>
+struct TStructOpsTypeTraits<FAsceManaClientBubbleSerializer> : public TStructOpsTypeTraitsBase2<FAsceManaClientBubbleSerializer>
+{
+	enum
+	{
+		WithNetDeltaSerializer = true,
+		WithCopy = false,
+	};
 };
 
 /** 客户端 BubbleInfo Actor：`FBubbleInfoType` 的约定 = 提供 `GetAsceSerializer()`（内含 public `Bubble`） */

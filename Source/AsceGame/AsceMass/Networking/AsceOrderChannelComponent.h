@@ -40,8 +40,8 @@ enum class EAsceOrderRejectReason : uint8
  *   这批entity一个都没处理）和单个entity拒绝（ClientRejectEntityOrder，批里大部分都成功了，
  *   只有个别entity失败）。客户端应该区分这两种情况分别处理：整批拒绝意味着这次下单的本地预测
  *   全部要回滚/暂停；单个拒绝只需要处理那一个entity。
- * - 攻击指令目前仍是"查表+写Fragment"的简单版本，本质上也需要先寻路到目标附近再攻击，
- *   这部分留到后续专门讨论，先不接入本地预测/Executor共享逻辑。
+ * - **没有手动攻击指令**：攻击由自动攻击承接（见 `Combat/技能系统设计.md`）；历史上的
+ *   `ServerRequestAttackOrder` / `FAsceAttackOrderFragment` 已移除，不要再加回来。
  */
 UCLASS(ClassGroup=(Mass), meta=(BlueprintSpawnableComponent))
 class UAsceOrderChannelComponent : public UActorComponent
@@ -54,13 +54,18 @@ public:
 	/** 一次下单最多选中的单位数量，超过直接在_Validate阶段拒绝（防作弊/防止单次请求过大） */
 	static constexpr int32 MaxOrderSelectionCount = 250;
 
+	/** 客户端本地预测开关（默认**关**）：客户端不跑移动模拟/碰撞，位置完全由服务器同步驱动，
+	 *  下单只发 RPC。以后要恢复"点击立刻动"的短窗口预测时打开它（需配套：服务器 ack 后对齐一次、
+	 *  预测窗口内抑制本地碰撞）。 */
+	UPROPERTY(EditAnywhere, Category = "Asce|Order")
+	bool bEnableClientPrediction = false;
+
 	/**
 	 * 客户端本地入口（非RPC）：传入本地选中的entity（客户端自己Mass EntityManager里的Handle，
 	 * 不是NetID——这是本地selection的自然产物，不需要反查），内部负责：
 	 * 1）读取每个entity的FMassNetworkIDFragment.NetID，拼成数组，调用ServerRequestMoveOrder；
-	 * 2）如果Owner不是Authority（真正的纯客户端），额外立即在本地EntityManager+PathFinder上
-	 *    跑一遍FAsceMoveOrderExecutor::ApplyMergedMoveOrder做客户端预测，不等服务器确认——
-	 *    这样单位能立刻响应玩家点击，若干帧后服务器的确认/拒绝到达时再做一致性处理。
+	 * 2）本地预测默认**关闭**（`bEnableClientPrediction=false`）：客户端不跑移动模拟/碰撞，
+	 *    位置完全由服务器同步驱动；打开该开关时才会走下面的旧预测逻辑（需配套 ack 对齐）。
 	 *    Standalone/ListenServer下Owner本身就是Authority，RPC会在本地同步直接跑到
 	 *    _Implementation，这里就不再重复执行一遍，避免PathPlan被多Acquire一次导致引用计数泄漏。
 	 */
@@ -89,16 +94,12 @@ public:
 	UFUNCTION(Server, Reliable, WithValidation)
 	void ServerRequestMoveOrder(const TArray<FMassNetworkID>& SelectedNetIDs, FVector2D GoalWorldLocation, float AcceptanceRadiusSquared, int32 OrderSequence);
 
-	/** 客户端框选N个单位后发起攻击指令，目标同样用NetID寻址（见AsceOrderFragments.h的说明）。
-	 * 攻击指令的本地预测/Executor共享逻辑留到后续讨论，目前只是单纯的服务器权威写入。 */
-	UFUNCTION(Server, Reliable, WithValidation)
-	void ServerRequestAttackOrder(const TArray<FMassNetworkID>& SelectedNetIDs, FMassNetworkID TargetNetID, int32 OrderSequence);
-
 	/** `S` 停止指令（服务器权威）：逐单位清移动命令 + 取消施法 */
 	UFUNCTION(Server, Reliable, WithValidation)
 	void ServerRequestStopOrder(const TArray<FMassNetworkID>& SelectedNetIDs, int32 OrderSequence);
 
-	/** 配置技能槽位（服务器权威）：逐单位校验"该单位确实有这个技能"，再写入/交换槽位 */
+	/** 配置技能槽位（服务器权威）：**槽位即"拥有"**（没有独立的技能拥有清单）——
+	 *  校验技能在动作表里存在且为主动技能 + `NotOwned`，然后写入/交换槽位 */
 	UFUNCTION(Server, Reliable, WithValidation)
 	void ServerRequestSetSkillSlot(const TArray<FMassNetworkID>& SelectedNetIDs, int32 SlotIndex, int32 ActionId, int32 OrderSequence);
 
@@ -126,8 +127,6 @@ private:
 	bool ServerRequestMoveOrder_Validate(const TArray<FMassNetworkID>& SelectedNetIDs, FVector2D GoalWorldLocation, float AcceptanceRadiusSquared, int32 OrderSequence);
 	void ServerRequestMoveOrder_Implementation(const TArray<FMassNetworkID>& SelectedNetIDs, FVector2D GoalWorldLocation, float AcceptanceRadiusSquared, int32 OrderSequence);
 
-	bool ServerRequestAttackOrder_Validate(const TArray<FMassNetworkID>& SelectedNetIDs, FMassNetworkID TargetNetID, int32 OrderSequence);
-	void ServerRequestAttackOrder_Implementation(const TArray<FMassNetworkID>& SelectedNetIDs, FMassNetworkID TargetNetID, int32 OrderSequence);
 
 	bool ServerRequestStopOrder_Validate(const TArray<FMassNetworkID>& SelectedNetIDs, int32 OrderSequence);
 	void ServerRequestStopOrder_Implementation(const TArray<FMassNetworkID>& SelectedNetIDs, int32 OrderSequence);

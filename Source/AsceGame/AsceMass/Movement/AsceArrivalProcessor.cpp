@@ -22,9 +22,8 @@ UAsceArrivalProcessor::UAsceArrivalProcessor()
 	// 动态处理器：由 UAsceMassMovementSimulationSubsystem 手动按序跑（调度器是唯一时钟）；
 	// 默认 true 会被 MassSimulation 自动链再跑一份，且绕过 world init/loading 门控。
 	bAutoRegisterWithProcessingPhases = false;
-	// 两端都跑：Client本地预测也要标记到达（和移动/碰撞解算一样，两端各自独立模拟，
-	// 纯几何规则保证两端结果一致；没有时间量所以不会随时间漂移）。
-	ExecutionFlags = static_cast<int32>(EProcessorExecutionFlags::AllNetModes);
+	// 只在权威端跑：客户端没有订单/plan（不预测），到达判定只服务本地模拟，客户端不需要。
+	ExecutionFlags = static_cast<int32>(EProcessorExecutionFlags::Standalone | EProcessorExecutionFlags::Server);
 	ExecutionOrder.ExecuteAfter.Add(UE::Mass::ProcessorGroupNames::Movement);
 }
 
@@ -208,7 +207,11 @@ void UAsceArrivalProcessor::Execute(FMassEntityManager& EntityManager, FMassExec
 			bool bArrived = false;
 
 			// 路径1：自己走到了目标点。无条件、与别人是否到达无关。
-			if (DistSqToTarget <= Orders[i].AcceptanceRadiusSquared)
+			// 接受半径 = **实体自身半径**（中心进半径圈 = 身体贴住目标点）：固定值小于半径时，
+			// 会出现"身体已经压住点、但中心永远进不了固定小圈"→在格边界反复弹（见
+			// AsceMovementSteeringProcessor 的直走圈注释）。1cm 兜底防 0 半径实体永远到不了。
+			const float AcceptanceRadius = FMath::Max(Radii[i].Radius, 1.f);
+			if (DistSqToTarget <= AcceptanceRadius * AcceptanceRadius)
 			{
 				bArrived = true;
 			}

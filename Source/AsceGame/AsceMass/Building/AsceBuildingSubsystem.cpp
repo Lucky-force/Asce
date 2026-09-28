@@ -455,14 +455,14 @@ FMassEntityHandle UAsceBuildingSubsystem::CreateConstructingBuilding(const FAsce
 		UnitDef->UniqueTypeId = DefNumericId;
 	}
 
-	// 阵营（归属由摆放数据决定）：Placement.TeamId 是**跨端一致的 TeamId**，
-	// 写进 fragment 的 TeamKey 要打包上**本端** index（GameState 本端阵营表）
+	// 阵营（归属由摆放数据决定）：Placement.TeamId 是**跨端一致的 TeamId**。实体创建是**登记点**
+	// （中立 0 不登记，非中立首见分配本端 index），用 GetOrAssignTeamKey 打包成本端 TeamKey
 	FAsceTeamFragment* Team = EntityManager.GetFragmentDataPtr<FAsceTeamFragment>(Entity);
 	ensureMsgf(Team, TEXT("[Building] EntityTemplate 缺 FAsceTeamFragment：建筑 def '%s' 的模板必须包含 UAsceRTSEntityTrait"), *DefIdForLog.ToString());
 	if (Team)
 	{
-		const AAsceGameState* GameState = World->GetGameState<AAsceGameState>();
-		Team->TeamKey = GameState ? GameState->GetTeamKey(Placement.TeamId) : 0;
+		AAsceGameState* GameState = World->GetGameState<AAsceGameState>();
+		Team->TeamKey = GameState ? GameState->GetOrAssignTeamKey(Placement.TeamId) : 0;
 	}
 
 	// **建造中**：实体只带 `FAsceConstructingFragment`（**不写 footprint**）⇒ costfield/视野/Ether 的观察者

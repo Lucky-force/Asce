@@ -339,6 +339,10 @@
 		{
 			"Name": "AsceRTS",
 			"Enabled": true
+		},
+		{
+			"Name": "AnimToTexture",
+			"Enabled": true
 		}
 	]
 }

@@ -6,6 +6,7 @@
 #include "AsceLogChannels.h"
 #include "AsceObserverComponent.h"
 #include "AscePawnExtensionComponent.h"
+#include "AsceMass/Networking/AsceOrderChannelComponent.h"
 #include "Camera/AsceCameraComponent.h"
 #include "Net/UnrealNetwork.h"
 #include "Player/AscePlayerController.h"
@@ -29,6 +30,8 @@ AAsceRTSObserverPawn::AAsceRTSObserverPawn(const FObjectInitializer& ObjectIniti
 	CameraComponent->SetRelativeLocation(FVector(-300.0f, 0.0f, 75.0f));
 	
 	ObserverComponent = CreateDefaultSubobject<UAsceObserverComponent>(TEXT("ObserverComponent"));
+	// 指令通道：客户端走 Server RPC + 本地预测；缺了的话 Commander 会退化成本地直写（只有本端能看到移动）
+	OrderChannelComponent = CreateDefaultSubobject<UAsceOrderChannelComponent>(TEXT("OrderChannelComponent"));
 }
 
 AAscePlayerController* AAsceRTSObserverPawn::GetAscePlayerController() const
@@ -145,6 +148,23 @@ void AAsceRTSObserverPawn::UninitAndDestroy()
 	SetActorHiddenInGame(true);
 }
 
+void AAsceRTSObserverPawn::ApplyLocalPlayerInputSetup(APlayerController* PlayerController)
+{
+	if (!PlayerController || !PlayerController->IsLocalController())
+	{
+		return;
+	}
+
+	//修改这个Pawn的鼠标设置
+	PlayerController->SetShowMouseCursor(true);
+	PlayerController->bEnableClickEvents = true;
+	PlayerController->bEnableMouseOverEvents = true;
+
+	FInputModeGameAndUI InputMode;
+	InputMode.SetHideCursorDuringCapture(false);
+	PlayerController->SetInputMode(InputMode);
+}
+
 void AAsceRTSObserverPawn::PossessedBy(AController* NewController)
 {
 	const FGenericTeamId OldTeamID = MyTeamID;
@@ -156,14 +176,7 @@ void AAsceRTSObserverPawn::PossessedBy(AController* NewController)
 	
 	if (APlayerController* PlayerController = Cast<APlayerController>(NewController))
 	{
-		//修改这个Pawn的鼠标设置
-		PlayerController->SetShowMouseCursor(true);
-		PlayerController->bEnableClickEvents = true;
-		PlayerController->bEnableMouseOverEvents = true;
-
-		FInputModeGameAndUI InputMode;
-		InputMode.SetHideCursorDuringCapture(false);
-		PlayerController->SetInputMode(InputMode);
+		ApplyLocalPlayerInputSetup(PlayerController);
 	}
 	
 	// 绑定队伍改变的回调
@@ -174,6 +187,18 @@ void AAsceRTSObserverPawn::PossessedBy(AController* NewController)
 		ControllerAsTeamProvider->GetTeamChangedDelegateChecked().AddDynamic(this, &ThisClass::OnControllerChangedTeam);
 	}
 	ConditionalBroadcastTeamChanged(this, OldTeamID, MyTeamID);
+
+	// 本地玩家的黑雾渲染队伍行：队伍可能早于附身就已设好（设队时 OnRep 不会再触发），这里兜一次
+	if (const APlayerController* PC = Cast<APlayerController>(NewController))
+	{
+		if (PC->IsLocalController())
+		{
+			if (AAscePlayerState* AscePS = GetPlayerState<AAscePlayerState>())
+			{
+				AscePS->RefreshLocalFogTeamKey();
+			}
+		}
+	}
 }
 
 void AAsceRTSObserverPawn::UnPossessed()
@@ -202,6 +227,24 @@ void AAsceRTSObserverPawn::OnRep_Controller()
 {
 	Super::OnRep_Controller();
 	PawnExtComponent->HandleControllerChanged();
+
+	// 客户端本地玩家的鼠标/输入模式：客户端 possession 不会走 PossessedBy，在这里补
+	if (APlayerController* PlayerController = Cast<APlayerController>(GetController()))
+	{
+		ApplyLocalPlayerInputSetup(PlayerController);
+	}
+
+	// 客户端：控制器复制过来时补一次本地迷雾队伍行（本地玩家）
+	if (const APlayerController* PC = Cast<APlayerController>(GetController()))
+	{
+		if (PC->IsLocalController())
+		{
+			if (AAscePlayerState* AscePS = GetPlayerState<AAscePlayerState>())
+			{
+				AscePS->RefreshLocalFogTeamKey();
+			}
+		}
+	}
 }
 
 void AAsceRTSObserverPawn::OnRep_PlayerState()

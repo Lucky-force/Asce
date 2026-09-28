@@ -16,6 +16,10 @@ struct FMassEntityQuery;
  *
  * 对所有entity无差别处理（不区分bRunFullSimulation），因为它只是"读当前Velocity朝向"。
  * 速度接近0时保留上一帧朝向（不归零/不乱转），避免站定时的抖动。
+ *
+ * 动作朝向优先：单位处于 Attack/Casting/Channel（`FAsceCombatVisualFragment`，由动作态复制通道
+ * 下发）时，朝向改为向 `FacingYaw` 限速转向，速度朝向让位——否则站桩攻击时速度≈0，
+ * 客户端永远不会转身（服务器端该fragment保持默认Idle，行为不变）。
  */
 UCLASS()
 class UAsceMovementOrientationProcessor : public UMassProcessor

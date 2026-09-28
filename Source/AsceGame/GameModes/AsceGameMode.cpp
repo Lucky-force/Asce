@@ -516,6 +516,35 @@ void AAsceGameMode::GenericPlayerInitialization(AController* NewPlayer)
 {
 	Super::GenericPlayerInitialization(NewPlayer);
 
+	// 给玩家分配**跨端一致的 TeamId**（从 1 开始；超出本端阵营表容量就不分，视为中立/观战）。
+	// 只在服务器执行；客户端靠 PlayerState 复制 + OnRep 得到同样的 TeamId。
+	if (HasAuthority())
+	{
+		if (AAscePlayerState* PlayerState = NewPlayer ? NewPlayer->GetPlayerState<AAscePlayerState>() : nullptr)
+		{
+			if (PlayerState->GetGenericTeamId() == FGenericTeamId::NoTeam)
+			{
+				if (NextTeamId <= AsceMaxTeams)
+				{
+					const uint8 TeamId = static_cast<uint8>(NextTeamId++);
+					PlayerState->SetGenericTeamId(FGenericTeamId(TeamId));
+
+					// 服务器本端阵营表立即登记（AddPlayerState 的 seed 跑在"设队"之前，等不到下次 seed）
+					if (AAsceGameState* GS = GetGameState<AAsceGameState>())
+					{
+						GS->GetOrAssignTeamIndex(TeamId);
+					}
+				}
+				else
+				{
+					UE_LOG(LogAsceTeams, Warning,
+						TEXT("[Asce] 本端阵营表已满（%d 队），玩家 %s 不分配队伍（中立）"),
+						AsceMaxTeams, *GetNameSafe(PlayerState));
+				}
+			}
+		}
+	}
+
 	OnGameModePlayerInitialized.Broadcast(this, NewPlayer);
 }
 

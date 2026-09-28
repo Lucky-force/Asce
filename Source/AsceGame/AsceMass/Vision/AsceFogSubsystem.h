@@ -9,12 +9,14 @@
 #include "Containers/Map.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "MassExternalSubsystemTraits.h"
+#include "MassEntityHandle.h"
 #include "AsceVisionDefines.h"
 #include "AsceVisionHeightMap.h"
 #include "AsceFogSubsystem.generated.h"
 
 class UAsceFogProcessor;
 class UMassEntitySubsystem;
+struct FMassEntityManager;
 
 // ══════════════════════════════════════════════════════════════════════════════
 // MOD-POINT 2026-09-09 17:20:39
@@ -270,6 +272,10 @@ public:
 	bool IsCellVisible(int32 TeamKey, const FIntVector2& VisionCell) const;
 	bool IsCellVisibleAtWorld(int32 TeamKey, const FVector2D& WorldPos) const;
 	bool IsEntityVisible(int32 TeamKey, const FAsceVisionEntityGeometry& Geometry) const;
+
+	/** 便捷版"对本队可见"：从实体 fragment 自取队伍/几何（友方恒可见；无队伍信息视为可见；高度场未就绪视为可见）。
+	 *  供**选择过滤 / 表现隐藏**这类"单实体"消费者用（复制过滤是批量路径，见 `AsceUnitReplicator`）。 */
+	bool IsEntityVisibleToLocalTeam(const FMassEntityManager& EntityManager, FMassEntityHandle Entity, int32 LocalTeamKey) const;
 
 #if !UE_BUILD_SHIPPING
 	// 调试统计

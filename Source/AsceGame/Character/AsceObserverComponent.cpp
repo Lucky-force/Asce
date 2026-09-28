@@ -41,9 +41,10 @@ namespace
 		{
 			return false;
 		}
-		// 命中叶子是 SViewport ⇒ 指针在世界里；命中叶子是 UMG/Slate 控件 ⇒ 在 UI 上
-		const TSharedRef<SWidget>& Leaf = WidgetPath.GetLastWidget();
-		return !Leaf->GetType().IsEqual(TEXT("SViewport"));
+		// 命中叶子是 SViewport（打包/编辑器视口）或 SPIEViewport（独立 PIE 窗口的编辑器包装层）⇒ 指针在世界里；
+		// 命中叶子是 UMG/Slate 控件 ⇒ 在 UI 上
+		const FName LeafType = WidgetPath.GetLastWidget()->GetType();
+		return !(LeafType.IsEqual(TEXT("SViewport")) || LeafType.IsEqual(TEXT("SPIEViewport")));
 	}
 }
 
@@ -321,9 +322,38 @@ void UAsceObserverComponent::TickComponent(float DeltaTime, enum ELevelTick Tick
 	{
 		Pawn->SetActorLocation(GetActorLocation());
 	}
-	
-	AController* Controller = Pawn->GetController();
-	Controller->SetControlRotation(Pawn->GetActorRotation());
+
+	// 观察者 Pawn 可能已被生成但还没被 Controller 附身（RTS 流程里是后接管的）⇒ 没 Controller 时跳过
+	if (AController* Controller = Pawn->GetController())
+	{
+		Controller->SetControlRotation(Pawn->GetActorRotation());
+	}
+
+	// 视角焦点低频上报（仅本端客户端）：MassLOD/MassReplication在服务器上用"服务器那份Pawn的位置"
+	// 当viewer（Config/DefaultMass.ini: bUsePlayerPawnLocationInsteadOfCamera=True；远端玩家在
+	// 服务器上没有相机更新，默认的GetPlayerViewPoint是死值）。客户端本地相机权威，服务器那份
+	// 只当viewer载体，且Pawn不复制移动，不会被服务器位置回传打断。
+	if (Pawn->IsLocallyControlled() && !Pawn->HasAuthority())
+	{
+		TimeSinceLastViewFocusUpdate += DeltaTime;
+		if (TimeSinceLastViewFocusUpdate >= ViewFocusUpdateInterval)
+		{
+			TimeSinceLastViewFocusUpdate = 0.f;
+
+			const FVector Focus = Pawn->GetActorLocation();
+			if (!bHasSentViewFocus
+				|| FVector::DistSquared(Focus, LastSentViewFocus) > FMath::Square(ViewFocusUpdateThreshold))
+			{
+				bHasSentViewFocus = true;
+				LastSentViewFocus = Focus;
+
+				if (AAscePlayerController* AscePC = Cast<AAscePlayerController>(Pawn->GetController()))
+				{
+					AscePC->Server_UpdateViewFocus(Focus);
+				}
+			}
+		}
+	}
 }
 
 void UAsceObserverComponent::InitializePlayerInput(UInputComponent* PlayerInputComponent)

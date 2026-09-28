@@ -11,9 +11,12 @@
 #include "Components/GameFrameworkComponentManager.h"
 #include "Engine/World.h"
 #include "GameFramework/GameplayMessageSubsystem.h"
+#include "GameFramework/PlayerController.h"
 #include "GameModes/AsceExperienceManagerComponent.h"
 //@TODO: Would like to isolate this a bit better to get the pawn data in here without this having to know about other stuff
 #include "GameModes/AsceGameMode.h"
+#include "GameModes/AsceGameState.h"
+#include "AsceMass/Vision/AsceFogRenderSubsystem.h"
 #include "AsceLogChannels.h"
 #include "AscePlayerController.h"
 #include "Messages/AsceVerbMessage.h"
@@ -268,6 +271,7 @@ void AAscePlayerState::SetGenericTeamId(const FGenericTeamId& NewTeamID)
 		MARK_PROPERTY_DIRTY_FROM_NAME(ThisClass, MyTeamID, this);
 		MyTeamID = NewTeamID;
 		ConditionalBroadcastTeamChanged(this, OldTeamID, NewTeamID);
+		RefreshLocalFogTeamKey();
 	}
 	else
 	{
@@ -288,6 +292,30 @@ FOnAsceTeamIndexChangedDelegate* AAscePlayerState::GetOnTeamIndexChangedDelegate
 void AAscePlayerState::OnRep_MyTeamID(FGenericTeamId OldTeamID)
 {
 	ConditionalBroadcastTeamChanged(this, OldTeamID, MyTeamID);
+	RefreshLocalFogTeamKey();
+}
+
+void AAscePlayerState::RefreshLocalFogTeamKey()
+{
+	// 本端阵营表登记：客户端也要（否则本地 index 解析全部落在 0 列/行）
+	AAsceGameState* GameState = GetWorld() ? GetWorld()->GetGameState<AAsceGameState>() : nullptr;
+	if (GameState)
+	{
+		GameState->GetOrAssignTeamIndex(GenericTeamIdToInteger(MyTeamID));
+	}
+
+	// 黑雾渲染只关心**本地玩家**的队伍行：远端 PlayerState 复制过来也会走这里，必须按本地控制器过滤
+	const APlayerController* PC = Cast<APlayerController>(GetOwningController());
+	if (!PC || !PC->IsLocalController())
+	{
+		return;
+	}
+
+	if (UAsceFogRenderSubsystem* FogRender = GetWorld() ? GetWorld()->GetSubsystem<UAsceFogRenderSubsystem>() : nullptr)
+	{
+		const int32 PackedTeamKey = GameState ? GameState->GetTeamKey(GenericTeamIdToInteger(MyTeamID)) : 0;
+		FogRender->SetLocalTeamKey(PackedTeamKey);
+	}
 }
 
 void AAscePlayerState::OnRep_MySquadID()

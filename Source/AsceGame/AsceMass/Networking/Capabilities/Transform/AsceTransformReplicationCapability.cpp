@@ -3,7 +3,7 @@
 #include "AsceTransformReplicationCapability.h"
 
 #include "AsceTransformReplication.h"
-#include "AsceMass/Networking/Core/AsceUnitReplicator.h"
+#include "MassReplicationProcessor.h"
 #include "MassCommonFragments.h"
 #include "MassEntityQuery.h"
 #include "MassExecutionContext.h"
@@ -14,7 +14,8 @@ void FAsceTransformReplicationCapability::AddRequirements(FMassEntityQuery& Enti
 	FAsceReplicationProcessorPositionHandler::AddRequirements(EntityQuery);
 }
 
-void FAsceTransformReplicationCapability::ProcessClientReplication(FMassExecutionContext& Context, FMassReplicationContext& ReplicationContext)
+void FAsceTransformReplicationCapability::ProcessChunk(FMassExecutionContext& Context, FMassReplicationContext& ReplicationContext
+	, const FMassClientHandle& ClientHandle, TArrayView<FMassReplicatedAgentHandle> InOutMarkers)
 {
 #if UE_REPLICATION_COMPILE_SERVER_CODE
 
@@ -26,43 +27,66 @@ void FAsceTransformReplicationCapability::ProcessClientReplication(FMassExecutio
 		return;
 	}
 
+	// 本能力自己的 Bubble 实例：按类型从 UMassReplicationSubsystem 查（shared fragment 里只有"代表类"那一个）
+	UMassReplicationSubsystem& RepSubsystem = ReplicationContext.ReplicationSubsystem;
+	const FMassBubbleInfoClassHandle BubbleClassHandle =
+		RepSubsystem.GetBubbleInfoClassHandle(AAsceTransformClientBubbleInfo::StaticClass());
+	if (!BubbleClassHandle.IsValid())
+	{
+		// 配置错误：BubbleInfoClass 没在 bootstrap 里注册（继续走会命中引擎 check 崩）
+		ensureMsgf(false, TEXT("[Replication] BubbleInfoClass 未注册：%s"), *AAsceTransformClientBubbleInfo::StaticClass()->GetName());
+		return;
+	}
+
+	FAsceTransformClientBubbleHandler& Bubble =
+		RepSubsystem.GetTypedClientBubbleChecked<AAsceTransformClientBubbleInfo>(BubbleClassHandle, ClientHandle)
+			->GetAsceSerializer().Bubble;
+
 	FAsceReplicationProcessorPositionHandler PositionHandler;
-	FMassReplicationSharedFragment* RepSharedFrag = nullptr;
+	PositionHandler.CacheFragmentViews(Context);
 
-	auto CacheViewsCallback = [&RepSharedFrag, &PositionHandler](FMassExecutionContext& Context)
+	const TConstArrayView<FMassNetworkIDFragment> NetworkIDList = Context.GetFragmentView<FMassNetworkIDFragment>();
+	const TConstArrayView<FReplicationTemplateIDFragment> TemplateIDList = Context.GetFragmentView<FReplicationTemplateIDFragment>();
+	const TConstArrayView<FMassReplicationLODFragment> LODList = Context.GetFragmentView<FMassReplicationLODFragment>();
+
+	const int32 NumEntities = Context.GetNumEntities();
+	for (int32 EntityIdx = 0; EntityIdx < NumEntities; ++EntityIdx)
 	{
-		PositionHandler.CacheFragmentViews(Context);
-		RepSharedFrag = &Context.GetMutableSharedFragment<FMassReplicationSharedFragment>();
-		check(RepSharedFrag);
-	};
+		// 是否已经在**本能力自己的bubble**里：查自己handler的NetID表，
+		// 不能看引擎共用的 AgentData.Handle（那是所有能力共享的单槽）
+		const FMassReplicatedAgentHandle ExistingHandle = Bubble.FindAgentHandleByNetID(NetworkIDList[EntityIdx].NetID);
 
-	auto AddEntityCallback = [&RepSharedFrag, &PositionHandler](FMassExecutionContext& Context, const int32 EntityIdx, FAsceTransformReplicatedAgent& InReplicatedAgent, const FMassClientHandle ClientHandle) -> FMassReplicatedAgentHandle
-	{
-		AAsceTransformClientBubbleInfo& BubbleInfo = RepSharedFrag->GetTypedClientBubbleInfoChecked<AAsceTransformClientBubbleInfo>(ClientHandle);
+		if (LODList[EntityIdx].LOD < EMassLOD::Off)
+		{
+			if (!ExistingHandle.IsValid())
+			{
+				FAsceTransformReplicatedAgent ReplicatedAgent;
+				ReplicatedAgent.SetNetID(NetworkIDList[EntityIdx].NetID);
+				ReplicatedAgent.SetTemplateID(TemplateIDList[EntityIdx].ID);
+				PositionHandler.AddEntity(EntityIdx, ReplicatedAgent.GetReplicatedPositionDataMutable());
 
-		PositionHandler.AddEntity(EntityIdx, InReplicatedAgent.GetReplicatedPositionDataMutable());
-
-		return BubbleInfo.GetAsceSerializer().Bubble.AddAgent(Context.GetEntity(EntityIdx), InReplicatedAgent);
-	};
-
-	auto ModifyEntityCallback = [&RepSharedFrag, &PositionHandler](FMassExecutionContext& Context, const int32 EntityIdx, const EMassLOD::Type LOD, const double Time, const FMassReplicatedAgentHandle Handle, const FMassClientHandle ClientHandle)
-	{
-		AAsceTransformClientBubbleInfo& BubbleInfo = RepSharedFrag->GetTypedClientBubbleInfoChecked<AAsceTransformClientBubbleInfo>(ClientHandle);
-		auto& Bubble = BubbleInfo.GetAsceSerializer().Bubble;
-
-		// 周期坐标同步：每次Replicator轮到这个entity都会走到这里，是否真的重新广播由
-		// SetPositionFromFragment内部按位置容差判断，不是无脑每帧发。
-		// TODO：如果以后要按LOD进一步降频（比如低LOD的entity几秒才发一次），可以在这里用
-		// LOD/Time加一层节流；目前实测下来容差判断已经够用，暂不做。
-		PositionHandler.ModifyEntity(Handle, EntityIdx, Bubble);
-	};
-
-	auto RemoveEntityCallback = [&RepSharedFrag](FMassExecutionContext& Context, const FMassReplicatedAgentHandle Handle, const FMassClientHandle ClientHandle)
-	{
-		AAsceTransformClientBubbleInfo& BubbleInfo = RepSharedFrag->GetTypedClientBubbleInfoChecked<AAsceTransformClientBubbleInfo>(ClientHandle);
-		BubbleInfo.GetAsceSerializer().Bubble.RemoveAgentChecked(Handle);
-	};
-
-	UAsceUnitReplicator::CallCalculateClientReplication<FAsceTransformFastArrayItem>(Context, ReplicationContext, CacheViewsCallback, AddEntityCallback, ModifyEntityCallback, RemoveEntityCallback);
+				const FMassReplicatedAgentHandle NewHandle = Bubble.AddAgent(Context.GetEntity(EntityIdx), ReplicatedAgent);
+				if (!InOutMarkers[EntityIdx].IsValid())
+				{
+					InOutMarkers[EntityIdx] = NewHandle;
+				}
+			}
+			else
+			{
+				// 周期坐标同步：是否真的重新广播由SetPositionFromFragment内部按位置容差判断，
+				// 不是无脑每帧发。TODO：如果以后要按LOD进一步降频（比如低LOD的entity几秒才发一次），
+				// 可以在这里用LOD加一层节流；目前实测下来容差判断已经够用，暂不做。
+				PositionHandler.ModifyEntity(ExistingHandle, EntityIdx, Bubble);
+				if (!InOutMarkers[EntityIdx].IsValid())
+				{
+					InOutMarkers[EntityIdx] = ExistingHandle;
+				}
+			}
+		}
+		else if (ExistingHandle.IsValid())
+		{
+			Bubble.RemoveAgent(ExistingHandle);
+		}
+	}
 #endif // UE_REPLICATION_COMPILE_SERVER_CODE
 }

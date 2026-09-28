@@ -46,7 +46,10 @@ namespace
 		{
 			Combat->AttackRange = Def.AttackRange;
 			Combat->AttackDamage = Def.AttackDamage;
-			Combat->BaseAttackTime = FMath::Max(Def.BaseAttackTime, 0.05f);
+			// 攻击时间线：单位 def 的 AttackCastConfig（NormalCast，1.0x 基准）；缺省 Total=1s / Trigger=Total
+			const FAsceNormalCastConfig* AttackConfig = Def.AttackCastConfig.GetPtr<FAsceNormalCastConfig>();
+			Combat->AttackTotalTime = FMath::Max(AttackConfig ? AttackConfig->TotalCastTime : 1.f, 0.05f);
+			Combat->AttackTriggerTime = FMath::Clamp(AttackConfig ? AttackConfig->TriggerTime : Combat->AttackTotalTime, 0.f, Combat->AttackTotalTime);
 			Combat->AttackSpeed = Def.AttackSpeed;
 			Combat->bAutoAttack = Def.bAutoAttackDefault;
 			Combat->bProjectile = Def.bProjectile;
@@ -92,9 +95,20 @@ TArray<int64> UAsceEntityFactory::SpawnEntitiesByDef(UObject* WorldContextObject
 		return Result;
 	}
 
-	// 阵营：入参是**跨端一致的 TeamId**，写进 fragment 的 TeamKey 要打包上**本端** index（GameState 本端阵营表）
-	const AAsceGameState* GameState = World->GetGameState<AAsceGameState>();
-	const int32 PackedTeamKey = GameState ? GameState->GetTeamKey(TeamId) : 0;
+	// **实体生成必须服务器权威**：客户端本地生成不走复制，只会得到"幽灵实体"（自己屏幕上有、别人没有）。
+	// 常见踩法：脚本在 BeginPlay 里生成（两端都会执行）⇒ 这里直接拦掉，客户端返回空数组。
+	if (World->GetNetMode() == NM_Client)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[EntityFactory] SpawnEntitiesByDef 只能在权威端调用（当前为 NM_Client），已忽略：行 '%s'（%d 个）"),
+			*DefRowName.ToString(), Transforms.Num());
+		return Result;
+	}
+
+	// 阵营：入参是**跨端一致的 TeamId**。这里用 `GetOrAssignTeamKey`：实体创建是**登记点**
+	// （中立 0 不登记；非中立首见分配本端 index，避免和别的队挤在 0 列），打包成本端 TeamKey。
+	AAsceGameState* GameState = World->GetGameState<AAsceGameState>();
+	const int32 PackedTeamKey = GameState ? GameState->GetOrAssignTeamKey(TeamId) : 0;
 
 	FAsceEntityDefRow Row;
 	if (!UAsceEntityDefLibrary::GetEntityDefRowByName(DefRowName, Row))

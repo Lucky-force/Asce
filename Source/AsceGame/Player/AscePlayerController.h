@@ -4,6 +4,7 @@
 
 //#include "Camera/AsceCameraAssistInterface.h"
 #include "CommonPlayerController.h"
+#include "Engine/NetSerialization.h"
 #include "Teams/AsceTeamAgentInterface.h"
 
 #include "AscePlayerController.generated.h"
@@ -65,6 +66,14 @@ public:
 	// 在服务器上为所有玩家调用作弊指令
 	UFUNCTION(Reliable, Server, WithValidation)
 	UE_API void ServerCheatAll(const FString& Msg);
+
+	/** 客户端→服务器：低频上报视角焦点（本端Pawn位置；相机以固定偏移挂在Pawn上）。
+	 *  服务器端这份观察者Pawn不参与玩法、只当MassLOD/MassReplication的viewer载体
+	 *  （Config/DefaultMass.ini 里 bUsePlayerPawnLocationInsteadOfCamera=True 时 viewer 取Pawn位置；
+	 *  远端玩家在服务器上没有相机更新，默认的GetPlayerViewPoint是死值）。
+	 *  Unreliable：丢包下一拍覆盖即可，不需要重传。 */
+	UFUNCTION(Unreliable, Server)
+	UE_API void Server_UpdateViewFocus(const FVector_NetQuantize& Focus);
 
 	//~AActor interface
 	UE_API virtual void PreInitializeComponents() override;

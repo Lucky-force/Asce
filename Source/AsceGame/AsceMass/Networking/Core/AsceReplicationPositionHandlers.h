@@ -7,6 +7,7 @@
 #include "MassEntityQuery.h"
 #include "MassExecutionContext.h"
 #include "MassCommonFragments.h"
+#include "MassReplicationSubsystem.h"
 #include "AsceMass/Fragments/AsceMovementFragments.h"
 #include "AsceReplicationPositionHandlers.generated.h"
 
@@ -51,10 +52,16 @@ private:
 };
 
 /**
- * 通用"位置"同步的客户端Bubble Handler模板，跟AsceReplicationScalarHandlers.h/
- * AsceScalarReplicationBubbleHandler.h里的TAsceScalarClientBubbleHandler是同一个思路：
+ * 通用"位置"同步的客户端Bubble Handler模板，跟AsceReplicationValueHandlers.h/
+ * AsceValueReplicationBubbleHandler.h里的TAsceValueClientBubbleHandler是同一个思路：
  * 直接继承TClientBubbleHandlerBase<AgentArrayItem>，才能访问AgentHandleManager/
  * AgentLookupArray/Agents/Serializer这些protected成员。
+ *
+ * **它同时是项目多bubble架构里的 owner bubble**：所有复制实体都有FTransformFragment
+ * （UAsceRTSEntityTrait保证），所以只有它走引擎的实体生成/销毁路径
+ * （FindAndUpdateOrAddMassEntityInfo / SetEntity / ResetEntityIfValid），
+ * 负责客户端实体的生命周期与共享EntityInfoMap的ID维护；Velocity/Health/Mana/Team
+ * 等bubble派生自 TAscePassiveClientBubbleHandler（只写值、不生成不销毁）。
  *
  * 要求AgentArrayItem::FReplicatedAgentType（即FAsceXxxReplicatedAgent）提供：
  *   const FReplicatedAgentPositionData& GetReplicatedPositionData() const;
@@ -90,6 +97,15 @@ public:
 			this->Serializer->MarkItemDirty(Item);
 		}
 	}
+
+	/** 本客户端bubble里是否已经有这个NetID的Agent（有则返回其handle，没有返回无效handle）。
+	 *  服务器侧能力靠它判断 Add 还是 Modify——引擎per-entity的AgentData.Handle是所有能力
+	 *  共用的单槽，没法用来区分"这个能力自己的bubble里有没有"。 */
+	FMassReplicatedAgentHandle FindAgentHandleByNetID(const FMassNetworkID NetID) const
+	{
+		const FMassReplicatedAgentHandle* Found = this->NetworkIDToAgentHandleMap.Find(NetID);
+		return Found ? *Found : FMassReplicatedAgentHandle();
+	}
 #endif // UE_REPLICATION_COMPILE_SERVER_CODE
 
 protected:
@@ -122,16 +138,58 @@ protected:
 
 		TransformList = TArrayView<FTransformFragment>();
 		CorrectionList = TArrayView<FAscePositionCorrectionFragment>();
+
+		// 诊断：add 处理完仍"当前ID但无实体"的 NetID = 客户端实体没生成成功（模板未注册/生成失败）。
+		// 这种状态下的后续 change 会让引擎构造空句柄的 EntityView 崩溃（见下面 PostReplicatedChange 注释）。
+		UMassReplicationSubsystem* ReplicationSubsystem = this->Serializer->GetReplicationSubsystem();
+		if (ReplicationSubsystem)
+		{
+			for (const int32 Idx : AddedIndices)
+			{
+				const AgentArrayItem& Item = (*this->Agents)[Idx];
+				const FMassReplicationEntityInfo* EntityInfo = ReplicationSubsystem->FindMassEntityInfo(Item.Agent.GetNetID());
+				if (EntityInfo && EntityInfo->ReplicationID == Item.ReplicationID && !EntityInfo->Entity.IsSet())
+				{
+					UE_LOG(LogTemp, Warning,
+						TEXT("[Replication] 位置add后仍无实体：NetID=%s RepID=%d（模板未注册/生成失败？后续change会被跳过并告警）"),
+						*Item.Agent.GetNetID().Describe(), Item.ReplicationID);
+				}
+			}
+		}
 	}
 
 	virtual void PostReplicatedChange(const TArrayView<int32> ChangedIndices, int32 FinalSize) override
 	{
-		auto SetModifiedEntityData = [](const FMassEntityView& EntityView, const FAgentType& Item)
+		// **不走引擎的 PostReplicatedChangeHelper**：它只 ensure ReplicationID 相等，然后无条件用
+		// `EntityInfo->Entity` 构造 FMassEntityView（MassClientBubbleHandler.h:584-598）。
+		// 当实体已被移除（ResetEntityIfValid 置空句柄但保留表项）或从未生成成功时，
+		// 空/失效句柄会直接在 FMassArchetypeHelper::ArchetypeDataFromHandleChecked 的 check 崩掉。
+		// 这里自己查共享表做完整校验：表项存在 + 本条item的ID就是当前ID + 实体已生成且有效。
+		UMassReplicationSubsystem* ReplicationSubsystem = this->Serializer->GetReplicationSubsystem();
+		if (!ReplicationSubsystem)
 		{
-			ApplyToFragment(EntityView.GetFragmentData<FTransformFragment>(), EntityView.GetFragmentData<FAscePositionCorrectionFragment>(), Item.GetReplicatedPositionData());
-		};
+			return;
+		}
+		FMassEntityManager& EntityManager = this->Serializer->GetEntityManagerChecked();
 
-		this->PostReplicatedChangeHelper(ChangedIndices, SetModifiedEntityData);
+		for (const int32 Idx : ChangedIndices)
+		{
+			const AgentArrayItem& Item = (*this->Agents)[Idx];
+			const FMassReplicationEntityInfo* EntityInfo = ReplicationSubsystem->FindMassEntityInfo(Item.Agent.GetNetID());
+			if (!EntityInfo || EntityInfo->ReplicationID != Item.ReplicationID)
+			{
+				continue;   // 过期数据：实体已被移除/重加，本条item不是当前item
+			}
+			if (!EntityInfo->Entity.IsSet() || !EntityManager.IsEntityValid(EntityInfo->Entity))
+			{
+				UE_LOG(LogTemp, Warning, TEXT("[Replication] 位置change跳过：NetID=%s 实体未生成或已销毁（RepID=%d）"),
+					*Item.Agent.GetNetID().Describe(), Item.ReplicationID);
+				continue;
+			}
+
+			FMassEntityView EntityView(EntityManager, EntityInfo->Entity);
+			ApplyToFragment(EntityView.GetFragmentData<FTransformFragment>(), EntityView.GetFragmentData<FAscePositionCorrectionFragment>(), Item.Agent.GetReplicatedPositionData());
+		}
 	}
 
 	/**

@@ -24,8 +24,9 @@ UAsceMassCollisionSolverProcessor::UAsceMassCollisionSolverProcessor()
 	// 默认 true 会被 MassSimulation 自动链再跑一份，且在 world init/loading 门控之外
 	// （开局墙簇表未就绪时的断言就是这个自动份造成的）。
 	bAutoRegisterWithProcessingPhases = false;
-	// Server和Client都要做：双方独立模拟单位位置（Client本地预测），碰撞修正要在两端一致生效
-	ExecutionFlags = static_cast<int32>(EProcessorExecutionFlags::AllNetModes);
+	// 只在权威端跑：碰撞解算直接写位置，客户端再算一份必然会和服务器结果分叉（谁推谁、谁又推回来）。
+	// 客户端不模拟，位置完全由服务器同步驱动。
+	ExecutionFlags = static_cast<int32>(EProcessorExecutionFlags::Standalone | EProcessorExecutionFlags::Server);
 	ExecutionOrder.ExecuteAfter.Add(UE::Mass::ProcessorGroupNames::Movement);
 }
 

@@ -17,8 +17,11 @@ UAsceNetIDRegistryAddProcessor::UAsceNetIDRegistryAddProcessor()
 	ObservedOperations = EMassObservedOperationFlags::Add;
 	ExecutionFlags = static_cast<int32>(EProcessorExecutionFlags::Standalone | EProcessorExecutionFlags::Server);
 
-	// 必须在引擎给NetID赋真实值之后执行，否则读到的是默认无效NetID
-	ExecutionOrder.ExecuteAfter.Add(UMassNetworkIDFragmentInitializer::StaticClass()->GetFName());
+	// 必须在引擎 UMassNetworkIDFragmentInitializer（给NetID赋真实值）之后执行，否则读到默认无效 NetID、
+	// RegisterEntity 会跳过，而且不会再有第二次 Add 事件 ⇒ 注册表永远为空。
+	// 注意：**观察者管线的排序只认数值 ExecutionPriority**（FMassRuntimePipeline::SortByExecutionPriority
+	// 按降序排），不认 ExecutionOrder.ExecuteAfter！初始化器默认 Priority=0，所以这里用负数排到它后面。
+	ExecutionPriority = -1;
 }
 
 void UAsceNetIDRegistryAddProcessor::ConfigureQueries(const TSharedRef<FMassEntityManager>& EntityManager)
@@ -36,9 +39,19 @@ void UAsceNetIDRegistryAddProcessor::Execute(FMassEntityManager& EntityManager, 
 		const TConstArrayView<FMassEntityHandle> Handles = Context.GetEntities();
 
 		const int32 NumEntities = Context.GetNumEntities();
+		int32 InvalidCount = 0;
 		for (int32 i = 0; i < NumEntities; ++i)
 		{
+			if (!NetIDs[i].NetID.IsValid())
+			{
+				++InvalidCount;
+			}
 			Registry.RegisterEntity(NetIDs[i].NetID, Handles[i]);
+		}
+		if (InvalidCount > 0)
+		{
+			// 正常不应该出现：说明本观察器排到了 UMassNetworkIDFragmentInitializer 之前（见构造函数注释）
+			UE_LOG(LogTemp, Warning, TEXT("[NetIDRegistry] Add observer：%d 个实体里有 %d 个 NetID 无效，注册被跳过"), NumEntities, InvalidCount);
 		}
 	});
 }

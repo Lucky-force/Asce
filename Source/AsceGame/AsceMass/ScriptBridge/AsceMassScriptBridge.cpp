@@ -49,7 +49,7 @@ UAsceMassScriptBridge* UAsceMassScriptBridge::Get(UObject* ContextObject)
 
 TArray<int64> UAsceMassScriptBridge::SpawnEntities(UMassEntityConfigAsset* Config, const TArray<FTransform>& Transforms)
 {
-	UE_LOG(LogTemp, Warning, TEXT("[MassBridge] SpawnEntities(Config, ...) 已弃用：它不查实体定义表，fragment 全是 trait 默认值（半径/速度/血量等不会按表覆盖）。请改用 SpawnEntitiesByDef(DefRowName, Transforms, TeamKey)"));
+	UE_LOG(LogTemp, Warning, TEXT("[MassBridge] SpawnEntities(Config, ...) 已弃用：它不查实体定义表，fragment 全是 trait 默认值（半径/速度/血量等不会按表覆盖）。请改用 SpawnEntitiesByDef(DefRowName, Transforms, TeamId)"));
 
 	TArray<int64> Result;
 	if (!Config || !IsValid(SpawnerSubsystem) || Transforms.Num() == 0 || !IsValid(SpatialGridSubsystem) || !IsValid(EntitySubsystem))
@@ -93,9 +93,9 @@ TArray<int64> UAsceMassScriptBridge::SpawnEntities(UMassEntityConfigAsset* Confi
 	return Result;
 }
 
-TArray<int64> UAsceMassScriptBridge::SpawnEntitiesByDef(FName DefRowName, const TArray<FTransform>& Transforms, int32 TeamKey)
+TArray<int64> UAsceMassScriptBridge::SpawnEntitiesByDef(FName DefRowName, const TArray<FTransform>& Transforms, int32 TeamId)
 {
-	return UAsceEntityFactory::SpawnEntitiesByDef(this, DefRowName, Transforms, TeamKey);
+	return UAsceEntityFactory::SpawnEntitiesByDef(this, DefRowName, Transforms, TeamId);
 }
 
 void UAsceMassScriptBridge::DestroyEntities(const TArray<int64>& EntityHandles){
@@ -103,6 +103,17 @@ void UAsceMassScriptBridge::DestroyEntities(const TArray<int64>& EntityHandles){
 	{
 		return;
 	}
+
+	// **销毁必须服务器权威**：客户端本地销毁不会走复制（服务器/别的端还留着，变成各端不一致的幽灵）
+	const UWorld* World = GetWorld();
+	if (World && World->GetNetMode() == NM_Client)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[MassBridge] DestroyEntities 只能在权威端调用（当前为 NM_Client），已忽略：%d 个句柄"),
+			EntityHandles.Num());
+		return;
+	}
+
 	FMassEntityManager& EntityManager = EntitySubsystem->GetMutableEntityManager();
 
 	// 句柄是 `AsNumber()` 的原始 64 位（Index 低 32 + SerialNumber 高 32）⇒ 必须用 int64 还原
@@ -116,10 +127,3 @@ void UAsceMassScriptBridge::DestroyEntities(const TArray<int64>& EntityHandles){
 	}
 }
 
-void UAsceMassScriptBridge::MoveOrder(FVector TargetLocation, float AcceptanceRadius)
-{
-	// **未实现**（占位接口）：移动指令目前走 `UAsceRTSCommanderComponent::IssueMoveOrder`（
-	// `AsceOrderChannelComponent::RequestMoveOrder` → Server RPC）那条链路；这里要接的话就转发过去。
-	ensureMsgf(false, TEXT("[MassBridge] MoveOrder 尚未实现：请走 UAsceRTSCommanderComponent::IssueMoveOrder（Target=%s, Acceptance=%.0f）"),
-		*TargetLocation.ToString(), AcceptanceRadius);
-}

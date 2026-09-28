@@ -2,8 +2,7 @@
 
 #pragma once
 
-#include "MassClientBubbleHandler.h"
-#include "MassEntityView.h"
+#include "AscePassiveClientBubbleHandler.h"
 #include "MassEntityQuery.h"
 #include "MassExecutionContext.h"
 #include "MassMovementFragments.h"
@@ -78,15 +77,18 @@ private:
  * （AsceReplicationPositionHandlers.h）是同一个思路，只是写回的Fragment/字段不同：
  * 这里写的是FMassDesiredMovementFragment.DesiredVelocity，而不是FTransformFragment的位置。
  *
+ * 客户端侧走**被动bubble**（见 TAscePassiveClientBubbleHandler 注释）：实体生成/销毁由
+ * owner bubble（Transform）负责，这里只负责把收到的Agent写回DesiredVelocity。
+ *
  * 要求AgentArrayItem::FReplicatedAgentType（即FAsceXxxReplicatedAgent）提供：
  *   const FReplicatedAgentVelocityData& GetReplicatedVelocityData() const;
  *   FReplicatedAgentVelocityData& GetReplicatedVelocityDataMutable();
  */
 template<typename AgentArrayItem>
-class TAsceVelocityClientBubbleHandler : public TClientBubbleHandlerBase<AgentArrayItem>
+class TAsceVelocityClientBubbleHandler : public TAscePassiveClientBubbleHandler<AgentArrayItem>
 {
 public:
-	using Super = TClientBubbleHandlerBase<AgentArrayItem>;
+	using Super = TAscePassiveClientBubbleHandler<AgentArrayItem>;
 	using FAgentType = typename AgentArrayItem::FReplicatedAgentType;
 
 #if UE_REPLICATION_COMPILE_SERVER_CODE
@@ -107,45 +109,23 @@ public:
 			this->Serializer->MarkItemDirty(Item);
 		}
 	}
+
+	/** 本客户端bubble里是否已经有这个NetID的Agent（有则返回其handle，没有返回无效handle）。
+	 *  服务器侧能力靠它判断 Add 还是 Modify——引擎per-entity的AgentData.Handle是所有能力
+	 *  共用的单槽，没法用来区分"这个能力自己的bubble里有没有"。 */
+	FMassReplicatedAgentHandle FindAgentHandleByNetID(const FMassNetworkID NetID) const
+	{
+		const FMassReplicatedAgentHandle* Found = this->NetworkIDToAgentHandleMap.Find(NetID);
+		return Found ? *Found : FMassReplicatedAgentHandle();
+	}
 #endif // UE_REPLICATION_COMPILE_SERVER_CODE
 
 protected:
 #if UE_REPLICATION_COMPILE_CLIENT_CODE
-	virtual void PostReplicatedAdd(const TArrayView<int32> AddedIndices, int32 FinalSize) override
+	/** 被动bubble：把整包Agent写回Fragment（实体由owner bubble生成，见基类注释） */
+	virtual void ApplyAgentToEntity(const FMassEntityView& EntityView, const FAgentType& Agent) const override
 	{
-		auto AddRequirementsForSpawnQuery = [](FMassEntityQuery& InQuery)
-		{
-			InQuery.AddRequirement<FMassDesiredMovementFragment>(EMassFragmentAccess::ReadWrite);
-		};
-
-		auto CacheFragmentViewsForSpawnQuery = [this](FMassExecutionContext& InExecContext)
-		{
-			DesiredMovementList = InExecContext.GetMutableFragmentView<FMassDesiredMovementFragment>();
-		};
-
-		auto SetSpawnedEntityData = [this](const FMassEntityView& EntityView, const FAgentType& ReplicatedEntity, const int32 EntityIdx)
-		{
-			ApplyToFragment(DesiredMovementList[EntityIdx], ReplicatedEntity.GetReplicatedVelocityData());
-		};
-
-		auto SetModifiedEntityData = [](const FMassEntityView& EntityView, const FAgentType& Item)
-		{
-			ApplyToFragment(EntityView.GetFragmentData<FMassDesiredMovementFragment>(), Item.GetReplicatedVelocityData());
-		};
-
-		this->PostReplicatedAddHelper(AddedIndices, AddRequirementsForSpawnQuery, CacheFragmentViewsForSpawnQuery, SetSpawnedEntityData, SetModifiedEntityData);
-
-		DesiredMovementList = TArrayView<FMassDesiredMovementFragment>();
-	}
-
-	virtual void PostReplicatedChange(const TArrayView<int32> ChangedIndices, int32 FinalSize) override
-	{
-		auto SetModifiedEntityData = [](const FMassEntityView& EntityView, const FAgentType& Item)
-		{
-			ApplyToFragment(EntityView.GetFragmentData<FMassDesiredMovementFragment>(), Item.GetReplicatedVelocityData());
-		};
-
-		this->PostReplicatedChangeHelper(ChangedIndices, SetModifiedEntityData);
+		ApplyToFragment(EntityView.GetFragmentData<FMassDesiredMovementFragment>(), Agent.GetReplicatedVelocityData());
 	}
 
 	/**
@@ -160,9 +140,6 @@ protected:
 		DesiredMovementFragment.DesiredVelocity = Data.GetVelocity();
 	}
 #endif // UE_REPLICATION_COMPILE_CLIENT_CODE
-
-protected:
-	TArrayView<FMassDesiredMovementFragment> DesiredMovementList;
 };
 
 /**

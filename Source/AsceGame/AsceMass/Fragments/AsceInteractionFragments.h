@@ -34,7 +34,7 @@ struct FAsceInteractionOrderFragment : public FMassFragment
 {
 	GENERATED_BODY()
 
-	// 交互目标用NetID寻址，理由同FAsceAttackOrderFragment
+	// 交互目标用 NetID 寻址：EntityHandle 是每个 MassEntityManager 实例私有的编号，不能跨端传（见架构文档4.1节）
 	UPROPERTY()
 	FMassNetworkID TargetNetID;
 

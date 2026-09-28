@@ -10,9 +10,13 @@
 #include "HAL/PlatformMisc.h"
 #include "MassEntitySubsystem.h"
 #include "MassEntityManagerStorage.h"
+#include "MassEntityManager.h"
 #include "MassExecutor.h"
 #include "MassProcessingContext.h"
+#include "MassCommonFragments.h"
 #include "AsceMass/Common/AsceGridLOSUtils.h"
+#include "AsceMass/Fragments/AsceCoreFragments.h"
+#include "AsceMass/Fragments/AsceFootprintFragment.h"
 #include "AsceFogProcessor.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AsceFogSubsystem)
@@ -1060,6 +1064,53 @@ bool UAsceFogSubsystem::IsEntityVisible(int32 TeamKey, const FAsceVisionEntityGe
 		}
 	}
 	return false;
+}
+
+bool UAsceFogSubsystem::IsEntityVisibleToLocalTeam(const FMassEntityManager& EntityManager, FMassEntityHandle Entity, int32 LocalTeamKey) const
+{
+	if (!EntityManager.IsEntityValid(Entity))
+	{
+		return false;
+	}
+	if (!HeightMap.IsValid())
+	{
+		return true;   // 高度场未就绪：不裁（安全默认）
+	}
+
+	// 友方（同队，含建筑）恒可见；没有队伍信息的实体（装饰/环境）也视为可见
+	const FAsceTeamFragment* Team = EntityManager.GetFragmentDataPtr<FAsceTeamFragment>(Entity);
+	if (!Team || AsceTeamId(Team->TeamKey) == AsceTeamId(LocalTeamKey))
+	{
+		return true;
+	}
+
+	const FTransformFragment* Transform = EntityManager.GetFragmentDataPtr<FTransformFragment>(Entity);
+	if (!Transform)
+	{
+		return false;
+	}
+
+	FAsceVisionEntityGeometry Geometry;
+	if (const FAsceGridFootprintFragment* Footprint = EntityManager.GetFragmentDataPtr<FAsceGridFootprintFragment>(Entity))
+	{
+		// 建筑：footprint（按流场格计）→ 视野格矩形（与 AsceFogProcessor / 复制过滤同一口径）
+		const int32 Scale = FMath::RoundToInt32(AsceVision::FlowFieldGridSizeCm / HeightMap.GetCellSizeCm());
+		Geometry.bUseFootprint = true;
+		Geometry.FootprintX0 = Footprint->OriginGridLocation.X * Scale;
+		Geometry.FootprintY0 = Footprint->OriginGridLocation.Y * Scale;
+		Geometry.FootprintX1 = Geometry.FootprintX0 + Footprint->SizeX * Scale - 1;
+		Geometry.FootprintY1 = Geometry.FootprintY0 + Footprint->SizeY * Scale - 1;
+	}
+	else
+	{
+		// 单位：位置 + 物理覆盖半径（无 AgentRadius 时退化为 0 → 只看中心所在格）
+		const FVector Loc = Transform->GetTransform().GetLocation();
+		Geometry.CenterWorld = FVector2D(Loc.X, Loc.Y);
+		const FAgentRadiusFragment* Radius = EntityManager.GetFragmentDataPtr<FAgentRadiusFragment>(Entity);
+		Geometry.CoverageRadiusCm = Radius ? Radius->Radius : 0.f;
+	}
+
+	return IsEntityVisible(LocalTeamKey, Geometry);
 }
 
 #if !UE_BUILD_SHIPPING

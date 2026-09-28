@@ -8,9 +8,10 @@
 #include "Components/GameFrameworkInitStateInterface.h"
 #include "AsceRTSCommanderComponent.generated.h"
 #define UE_API ASCEGAME_API
+class APlayerController;
 class UAsceObserverComponent;
-class UAsceMassScriptBridge;
 class UAsceSpatialGridSubsystem;
+class UAsceFogSubsystem;
 
 DECLARE_MULTICAST_DELEGATE(FOnSelectionChanged)
 
@@ -58,9 +59,6 @@ public:
     void IssueMoveOrder(const FVector& WorldTarget, const float AcceptanceRadius);
 
     UFUNCTION(BlueprintCallable)
-    void IssueAttackOrder(int64 Target);
-
-    UFUNCTION(BlueprintCallable)
     void IssueStopOrder();
 
 protected:
@@ -100,6 +98,14 @@ private:
     // 选中状态变化统一出口：打印当前选中 + 广播OnSelectionChanged（调用方改完SelectedEntities后调）
     void BroadcastSelectionChanged();
 
+    // 选中状态统一入口（过滤无效 handle + 去重 → 最后统一 BroadcastSelectionChanged）：
+    // 输入回调与程序化选中 API（SelectEntities/AddictiveSelectEntities）共用，避免各处漏去重/漏广播。
+    void ReplaceSelection(const TArray<FMassEntityHandle>& Handles);
+    void AppendSelection(const TArray<FMassEntityHandle>& Handles);
+
+    // int64（`FMassEntityHandle::AsNumber()`）批量转成本端 handle，过滤本端无效实体
+    void ConvertEntityNumbersToHandles(const TArray<int64>& EntityNumbers, TArray<FMassEntityHandle>& OutHandles) const;
+
     // 本地玩家**团队身份**（跨端一致，来自 Controller 的 GenericTeamId；NoTeam/非法 → 0 中立）
     // 敌我/指挥权限比较一律用它
     int32 GetLocalTeamId();
@@ -110,12 +116,18 @@ private:
     // 框选回退：屏幕矩形内"离 Start 屏幕坐标最近的非己方"（框里只有敌人时当点选用；找不到 → 无效 handle）
     FMassEntityHandle FindNearestOtherTeamEntityInScreenRect(const FVector2D& Start, const FVector2D& End);
 
+    // ── 本地视野过滤（选择侧；B1）──
+    /** 本端是否需要按迷雾过滤交互查询：客户端不需要（实体已被复制裁剪）；standalone/听服 host 需要。
+     *  成功时输出 Fog 与本地队伍 Key（打包 TeamKey）。 */
+    bool BuildLocalVisionFilter(UAsceFogSubsystem*& OutFog, int32& OutTeamKey);
+    /** 点选：取"对本队可见"的最近命中（雾里的敌人会被跳过、继续找后面的候选）。 */
+    FMassEntityHandle PickVisibleEntityAtScreenPoint(const FVector2D& ScreenPos, APlayerController* Controller);
+    /** 框选：带可选视野过滤的屏幕矩形查询（TeamFilter 语义同网格 API）。 */
+    void QueryVisibleEntitiesInScreenRect(const FVector2D& Start, const FVector2D& End, APlayerController* Controller, int32 TeamFilter, TArray<FMassEntityHandle>& OutResult);
+
     // ── 缓存 ──
     UPROPERTY()
     TWeakObjectPtr<UAsceObserverComponent> ObserverComp;
-
-    UPROPERTY()
-    TWeakObjectPtr<UAsceMassScriptBridge> ScriptBridge;
 
     UPROPERTY()
     TWeakObjectPtr<UAsceSpatialGridSubsystem> SpatialGrid;

@@ -4,8 +4,8 @@
 
 #include "Net/UnrealNetwork.h"
 
-// PostReplicatedAdd/PostReplicatedChange/SetScalarFromFragment现在全部收在
-// TAsceScalarClientBubbleHandler模板里了（见Core/AsceScalarReplicationBubbleHandler.h），
+// PostReplicatedAdd/PostReplicatedChange/SetValueFromFragment现在全部收在
+// TAsceValueClientBubbleHandler模板里了（见Core/AsceValueReplicationBubbleHandler.h），
 // 这个.cpp只剩下BubbleInfo Actor本身必须手写的两块样板（构造函数注册Serializer、声明Replicated属性）。
 
 AAsceHealthClientBubbleInfo::AAsceHealthClientBubbleInfo(const FObjectInitializer& ObjectInitializer)

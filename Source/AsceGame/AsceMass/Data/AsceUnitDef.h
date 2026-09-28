@@ -2,8 +2,11 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "StructUtils/InstancedStruct.h"
 #include "AsceMass/Data/AsceEntityDefTypes.h"
 #include "AsceUnitDef.generated.h"
+
+class UAsceAnimSet;
 
 /**
  * RTS 单位类型定义（实体定义表行 `Def` 的一种）：只放"同一结构、数值不同"的每类型数据。
@@ -56,9 +59,9 @@ struct FAsceRTSUnitDef : public FAsceEntityDefBase
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Combat")
 	float AttackDamage = 10.f;
 
-	/** 攻击动作自然时长（秒） */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Combat")
-	float BaseAttackTime = 1.f;
+	/** 攻击的动作管线配置（NormalCast；时间按 1.0x 配，运行时由 AttackSpeed 缩放；空 = 默认 Total=1s / Trigger=1s） */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Combat", meta = (BaseStruct = "/Script/AsceGame.AsceNormalCastConfig"))
+	FInstancedStruct AttackCastConfig;
 
 	/** 攻击速度；PlayRate = AttackSpeed / 200 + 0.1（180 → 1.0x） */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Combat")
@@ -80,4 +83,8 @@ struct FAsceRTSUnitDef : public FAsceEntityDefBase
 	 *  运行时换槽由"配置槽位"指令改，这里只是出生时的初始配置 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
 	TArray<int32> SkillSlots;
+
+	/** 该单位类型的动画集（Bone 模式；客户端通过复制的 UniqueTypeId 查本行解析动画）。见 `Combat/AsceAnimDef.h` */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
+	TSoftObjectPtr<UAsceAnimSet> AnimSet;
 };

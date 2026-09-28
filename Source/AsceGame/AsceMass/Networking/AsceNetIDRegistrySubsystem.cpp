@@ -49,6 +49,7 @@ FMassEntityHandle UAsceNetIDRegistrySubsystem::FindEntity(const FMassNetworkID& 
 	{
 		return *Found;
 	}
+	UE_LOG(LogTemp, Warning, TEXT("[NetIDRegistry] 未命中 NetID=%s（表内 %d 条）"), *NetID.Describe(), NetIDToEntityHandle.Num());
 	return FMassEntityHandle();
 }
 

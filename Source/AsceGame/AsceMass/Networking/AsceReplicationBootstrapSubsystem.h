@@ -19,4 +19,5 @@ class UAsceReplicationBootstrapSubsystem : public UWorldSubsystem
 
 public:
 	virtual void PostInitialize() override;
+	virtual void OnWorldBeginPlay(UWorld& InWorld) override;
 };

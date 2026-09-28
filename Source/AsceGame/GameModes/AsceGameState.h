@@ -80,8 +80,13 @@ public:
 	/** 只读（并行安全）：TeamId → 本端 index；未登记/中立 → 0 */
 	UE_API int32 FindTeamIndex(int32 RawTeamId) const;
 
-	/** 只读（并行安全）：TeamId → 打包 TeamKey（未登记/中立 → 0） */
+	/** 只读（并行安全）：TeamId → 打包 TeamKey（未登记/中立 → 0）。
+	 *  只查不登记 —— 登记走 `GetOrAssignTeamKey`（实体创建）或 `GetOrAssignTeamIndex`（PlayerState 到达） */
 	UE_API int32 GetTeamKey(int32 RawTeamId) const;
+
+	/** **GameThread：登记 + 打包**（实体创建路径用）：非中立 TeamId 首见即分配本端 index，
+	 *  返回打包 TeamKey；中立/非法 → 0。表满 → 归 0 列并报警一次。 */
+	UE_API int32 GetOrAssignTeamKey(int32 RawTeamId);
 
 	/** 把 PlayerArray 里所有 PlayerState 的 TeamId 先登记（玩家 index 稳定，不随 AI 出现顺序抖动） */
 	UE_API void SeedLocalTeamsFromPlayers();

@@ -16,6 +16,7 @@
 #include "AsceMass/Networking/AsceNetIDRegistrySubsystem.h"
 #include "AsceMass/FlowField/AscePathFindingSubsystem.h"
 #include "AsceMass/FlowField/AscePathFinder.h"
+#include "AsceMass/Vision/AsceFogSubsystem.h"   // 施法可见性兜底（防篡改客户端隔雾点人）
 #include "AsceMass/Fragments/AsceOrderFragments.h"
 #include "AsceMass/Combat/AsceCombatFragments.h"   // FAsceActionFragment/FAsceSkillSlotsFragment（停止与技能槽位）
 #include "AsceMass/Combat/AsceActionDefLibrary.h"  // 技能（动作定义）查表校验
@@ -35,8 +36,8 @@ namespace
 {
 	/** 单个实体的"停止"效果（客户端入口与服务器实现共用）：
 	 *  - **清移动命令**：项目惯用法 = `FAsceMoveOrderFragment::bHasOrder = false`；
-	 *  - **取消动作**：施法（`Cast`/`Channel`）与攻击都回 `Idle`。
-	 *    `Cast` 未到"真正释放"⇒ 完全不付费；`Channel` 已生效效果保留、蓝/CD 不返还；
+	 *  - **取消动作**：施法（`Casting`/`Channel`）与攻击都回 `Idle`。
+	 *    `Casting` 未到"真正释放"⇒ 完全不付费；`Channel` 已生效效果保留、蓝/CD 不返还；
 	 *    攻击清零后会由扫描按"自动攻击开关"重新起手（**停止不影响自动攻击开关**）。 */
 	void ApplyStopToEntity(FMassEntityManager& EntityManager, const FMassEntityHandle Handle)
 	{
@@ -105,9 +106,15 @@ void UAsceOrderChannelComponent::RequestMoveOrder(const TArray<FMassEntityHandle
 
 	ServerRequestMoveOrder(NetIDs, GoalWorldLocation, AcceptanceRadiusSquared, OrderSequence);
 
-	// 本地预测：只有真正的纯客户端才需要——Standalone/ListenServer下Owner本身就是Authority，
-	// 上面这行RPC调用会在本地同步直接跑到_Implementation，这里如果也执行一遍会让PathPlan
-	// 被多Acquire一次，造成引用计数泄漏，所以要用HasAuthority()挡住。
+	// 本地预测默认关闭：客户端不跑移动模拟/碰撞，位置完全由服务器同步驱动（见架构决策）。
+	// 要恢复"点击立刻动"时打开 bEnableClientPrediction，并配套处理 ack 对齐与预测期碰撞抑制。
+	if (!bEnableClientPrediction)
+	{
+		return;
+	}
+
+	// Standalone/ListenServer下Owner本身就是Authority：上面这行RPC调用会在本地同步直接跑到_Implementation，
+	// 这里如果也执行一遍会让PathPlan被多Acquire一次，造成引用计数泄漏，所以要用HasAuthority()挡住。
 	if (Owner->HasAuthority())
 	{
 		return;
@@ -250,6 +257,16 @@ void UAsceOrderChannelComponent::ServerRequestMoveOrder_Implementation(const TAr
 			continue;
 		}
 
+		// 施法中（Casting/Channel）不能被移动打断（设计 §4：施法期间单位静止）⇒ 本批静默跳过该单位。
+		// 之后做"玩家可配置是否允许移动打断施法"时，这里按配置分支（统一设置功能时再加）。
+		if (const FAsceActionFragment* Action = EntityManager.GetFragmentDataPtr<FAsceActionFragment>(Handle))
+		{
+			if (Action->ActionState == EAsceActionState::Casting || Action->ActionState == EAsceActionState::Channel)
+			{
+				continue;
+			}
+		}
+
 		const FVector CurrentLocation = TransformFragment->GetTransform().GetLocation();
 		ValidHandles.Add(Handle);
 		EntityWorldLocations2D.Add(FVector2D(CurrentLocation.X, CurrentLocation.Y));
@@ -264,78 +281,6 @@ void UAsceOrderChannelComponent::ServerRequestMoveOrder_Implementation(const TAr
 	// 第二轮：Server和Client本地预测共用同一份写入逻辑，真正利用"Mergeable"能力——
 	// 这一批entity共享同一个目标，只发起一次A*请求。
 	FAsceMoveOrderExecutor::ApplyMergedMoveOrder(EntityManager, *PathFinder, ValidHandles, EntityWorldLocations2D, GoalWorldLocation, AcceptanceRadiusSquared, OrderSequence);
-}
-
-// ──────────────────────────────────────────
-// ServerRequestAttackOrder
-// ──────────────────────────────────────────
-
-bool UAsceOrderChannelComponent::ServerRequestAttackOrder_Validate(const TArray<FMassNetworkID>& SelectedNetIDs, FMassNetworkID TargetNetID, int32 OrderSequence)
-{
-	if (SelectedNetIDs.Num() == 0 || SelectedNetIDs.Num() > MaxOrderSelectionCount)
-	{
-		return false;
-	}
-	return true;
-}
-
-void UAsceOrderChannelComponent::ServerRequestAttackOrder_Implementation(const TArray<FMassNetworkID>& SelectedNetIDs, FMassNetworkID TargetNetID, int32 OrderSequence)
-{
-	const UWorld* World = GetWorld();
-	if (!IsValid(World))
-	{
-		return;
-	}
-
-	UAsceNetIDRegistrySubsystem* Registry = UAsceNetIDRegistrySubsystem::Get(this);
-	UMassEntitySubsystem* MassEntitySubsystem = World->GetSubsystem<UMassEntitySubsystem>();
-	if (!Registry || !MassEntitySubsystem)
-	{
-		ClientRejectWholeOrder(OrderSequence, EAsceOrderRejectReason::InvalidTarget);
-		return;
-	}
-
-	FMassEntityManager& EntityManager = MassEntitySubsystem->GetMutableEntityManager();
-
-	// 攻击目标本身也要能查到，查不到直接整批拒绝（跟移动指令不同，移动指令目标是坐标，
-	// 不存在"目标entity失效"这一档；攻击指令一旦目标失效，整批指令没有意义）。
-	const FMassEntityHandle TargetHandle = Registry->FindEntity(TargetNetID);
-	if (!EntityManager.IsEntityValid(TargetHandle))
-	{
-		ClientRejectWholeOrder(OrderSequence, EAsceOrderRejectReason::InvalidTarget);
-		return;
-	}
-
-	const int32 RequesterTeamId = GetRequesterTeamId();
-
-	for (const FMassNetworkID& NetID : SelectedNetIDs)
-	{
-		const FMassEntityHandle Handle = Registry->FindEntity(NetID);
-		if (!EntityManager.IsEntityValid(Handle))
-		{
-			ClientRejectEntityOrder(OrderSequence, NetID, EAsceOrderRejectReason::EntityNotFound);
-			continue;
-		}
-
-		// ownership：只能指挥自己阵营的实体（点选可以选中敌方来查看，但不能指挥它去打人）
-		const FAsceTeamFragment* TeamFragment = EntityManager.GetFragmentDataPtr<FAsceTeamFragment>(Handle);
-		if (!TeamFragment || AsceTeamId(TeamFragment->TeamKey) != RequesterTeamId)
-		{
-			ClientRejectEntityOrder(OrderSequence, NetID, EAsceOrderRejectReason::NotOwned);
-			continue;
-		}
-
-		FAsceAttackOrderFragment* AttackOrder = EntityManager.GetFragmentDataPtr<FAsceAttackOrderFragment>(Handle);
-		if (!AttackOrder)
-		{
-			ClientRejectEntityOrder(OrderSequence, NetID, EAsceOrderRejectReason::MissingOrderFragment);
-			continue;
-		}
-
-		AttackOrder->TargetNetID = TargetNetID;
-		AttackOrder->bHasOrder = true;
-		AttackOrder->OrderSequence = OrderSequence;
-	}
 }
 
 // ──────────────────────────────────────────
@@ -414,6 +359,9 @@ void UAsceOrderChannelComponent::ServerRequestSkillOrder_Implementation(const TA
 	const AAsceGameState* GameState = World->GetGameState<AAsceGameState>();
 	const double Now = GameState ? GameState->GetServerWorldTimeSeconds() : World->GetTimeSeconds();
 	const int32 RequesterTeamId = GetRequesterTeamId();
+	// 可见性兜底用的迷雾键（与战斗扫描同一套：TeamId → 本端打包 TeamKey）
+	const UAsceFogSubsystem* Fog = World->GetSubsystem<UAsceFogSubsystem>();
+	const int32 FogKey = GameState ? GameState->GetTeamKey(RequesterTeamId) : 0;
 
 	// 指向性技能的目标（客户端只能点到"已复制到自己这里"的单位 ⇒ 天然不会隔雾点人；服务器照样兜底校验）
 	FMassEntityHandle TargetHandle;
@@ -454,6 +402,10 @@ void UAsceOrderChannelComponent::ServerRequestSkillOrder_Implementation(const TA
 		{
 			continue;   // 技能表查不到（配置错误）
 		}
+		if (!ActionDef.CastConfig.IsValid())
+		{
+			continue;   // 没有动作管线配置（配置错误）：只停不放
+		}
 		if (Slots->Slots[SlotId].NextReadyServerTime > Now)
 		{
 			continue;   // CD 中
@@ -476,9 +428,29 @@ void UAsceOrderChannelComponent::ServerRequestSkillOrder_Implementation(const TA
 		if (ActionDef.TargetKind == EAsceTargetKind::Unit)
 		{
 			// 指向性：没点到有效单位 ⇒ 什么都不发生（只停）
-			if (!TargetHandle.IsValid() || !EntityManager.IsEntityValid(TargetHandle) || TargetHandle == Handle)
+			if (!TargetHandle.IsValid() || !EntityManager.IsEntityValid(TargetHandle))
 			{
 				continue;
+			}
+			const bool bTargetSelf = (TargetHandle == Handle);
+			if (bTargetSelf != (ActionDef.TargetRelation == EAsceTargetRelation::Self))
+			{
+				continue;   // Self 技能只能点自己；非 Self 技能不能点自己
+			}
+			if (!bTargetSelf && ActionDef.TargetRelation != EAsceTargetRelation::Any)
+			{
+				// 目标关系（Enemy = 非同队含中立；Friendly = 同队含自己）
+				const FAsceTeamFragment* TargetTeam = EntityManager.GetFragmentDataPtr<FAsceTeamFragment>(TargetHandle);
+				const int32 TargetTeamId = TargetTeam ? AsceTeamId(TargetTeam->TeamKey) : AsceNeutralTeamId;
+				const bool bFriendly = (RequesterTeamId != AsceNeutralTeamId) && (TargetTeamId == RequesterTeamId);
+				if (ActionDef.TargetRelation == EAsceTargetRelation::Enemy && bFriendly)
+				{
+					continue;
+				}
+				if (ActionDef.TargetRelation == EAsceTargetRelation::Friendly && !bFriendly)
+				{
+					continue;
+				}
 			}
 			if (const FTransformFragment* TargetTransform = EntityManager.GetFragmentDataPtr<FTransformFragment>(TargetHandle))
 			{
@@ -510,41 +482,45 @@ void UAsceOrderChannelComponent::ServerRequestSkillOrder_Implementation(const TA
 			continue;
 		}
 
-		// ── ③ 进动作（技能优先级最高：可顶掉攻击与施法；Cast 未到释放点 ⇒ 不结算，Channel 已生效保留）──
-		// ⚠️ 施法推进（前摇结束 = **真正释放**：扣蓝/落 CD/effect 入队；Channel 周期结算）在**下一步的 processor** 里；
-		//    在它落地前，单位进了 Cast/Channel **不会自动结束** —— 接线前先别实际放技能。
+		// 可见性兜底：不对雾内目标/落点施法（客户端只能点到已复制的单位，这里是防篡改客户端的服务器校验；
+		// 与战斗扫描同口径；`None`（自身/周围）不需要检查，放完由目标扫描各自校验）
+		if (Fog && Fog->IsReady() && ActionDef.TargetKind != EAsceTargetKind::None
+			&& !Fog->IsCellVisibleAtWorld(FogKey, FVector2D(AimLocation.X, AimLocation.Y)))
+		{
+			continue;   // 不可见：只停不放
+		}
+
+		// ── ③ 进动作（技能优先级最高：可顶掉攻击与施法；Trigger 前被打断 ⇒ 不结算，Trigger 后 ⇒ 保留）──
+		// 施法推进（Trigger：扣蓝/落 CD/effect 入队；持续施法进 Channel 后周期结算）在 `UAsceCombatProcessor` 里。
 		FAsceActionFragment* Action = EntityManager.GetFragmentDataPtr<FAsceActionFragment>(Handle);
 		if (!Action)
 		{
 			continue;
 		}
+		const FAsceSkillCastConfig* CastConfig = ActionDef.CastConfig.GetPtr<FAsceSkillCastConfig>();
+		const bool bChannel = (CastConfig && CastConfig->IsChannel());
+		const float TriggerDelay = FMath::Max(CastConfig ? CastConfig->GetTriggerTime() : 0.f, 0.f);
+		const float TotalTime = FMath::Max(CastConfig ? CastConfig->GetTotalCastTime() : 0.f, 0.f);
+
 		const float FacingYaw = FMath::RadiansToDegrees(FMath::Atan2(AimLocation.Y - Location.Y, AimLocation.X - Location.X));
-		const bool bChannel = (ActionDef.CastKind == EAsceCastKind::Channel);
-		Action->ActionState = bChannel ? EAsceActionState::Channel : EAsceActionState::Cast;
+		Action->ActionState = EAsceActionState::Casting;   // 持续施法也先走前摇
 		Action->ActionDefId = Slots->Slots[SlotId].ActionId;
 		Action->ActionTarget = TargetHandle;
 		Action->ActionTargetPos = FVector2D(AimLocation.X, AimLocation.Y);
 		Action->FacingYaw = FacingYaw;
-		Action->ActionEndTime = Now + (bChannel ? ActionDef.ChannelDuration : FMath::Max(ActionDef.CastTime, 0.f));
-		Action->NextTickTime = bChannel ? (Now + FMath::Max(ActionDef.ChannelTickInterval, 0.01f)) : 0.0;
+		Action->TriggerTime = Now + TriggerDelay;
+		Action->ActionEndTime = Now + TotalTime;
+		Action->bTriggered = false;
+		Action->NextTickTime = 0.0;   // 进入 Channel 时才设
 		++Action->Counter;
 
-		// **`Channel` 无前摇 ⇒ 进入那一刻就是"真正释放"**：立刻扣蓝 + 落 CD（槽位）。
-		// `Cast` 的 cost/CD 在"施法推进"里、前摇结束那一帧才处理（见 `Combat/技能系统设计.md` §5）
-		if (bChannel)
-		{
-			if (FAsceManaFragment* Mana = EntityManager.GetFragmentDataPtr<FAsceManaFragment>(Handle))
-			{
-				Mana->CurrentMana = FMath::Max(0.f, Mana->CurrentMana - ActionDef.ManaCost);
-			}
-			Slots->Slots[SlotId].NextReadyServerTime = Now + ActionDef.Cooldown;
-		}
+		// cost / CD 在 **Trigger** 那一刻处理（见 `Combat/技能系统设计.md` §5）——这里不付费。
 
 		// 动作开始时对齐朝向（服务器权威朝向；客户端表现靠动作态通道的 FacingQ）
 		Transform->GetMutableTransform().SetRotation(FRotator(0.f, FacingYaw, 0.f).Quaternion());
 
-		UE_LOG(LogTemp, Verbose, TEXT("[Skill] %lld 开始施法：技能 %d（槽 %d，CastKind %d）"),
-			static_cast<int64>(Handle.AsNumber()), Action->ActionDefId, SlotId, static_cast<int32>(ActionDef.CastKind));
+		UE_LOG(LogTemp, Verbose, TEXT("[Skill] %lld 开始施法：技能 %d（槽 %d，%s）"),
+			static_cast<int64>(Handle.AsNumber()), Action->ActionDefId, SlotId, bChannel ? TEXT("Channel") : TEXT("NormalCast"));
 	}
 }
 
@@ -785,6 +761,8 @@ void UAsceOrderChannelComponent::ServerRequestStopOrder_Implementation(const TAr
 
 void UAsceOrderChannelComponent::ClientRejectWholeOrder_Implementation(int32 OrderSequence, EAsceOrderRejectReason Reason)
 {
+	UE_LOG(LogTemp, Warning, TEXT("[Order] Client 收到整批拒绝：seq=%d, reason=%d"), OrderSequence, static_cast<int32>(Reason));
+
 	TArray<FMassEntityHandle> Handles;
 	if (!PendingLocalOrders.RemoveAndCopyValue(OrderSequence, Handles))
 	{
@@ -835,6 +813,8 @@ void UAsceOrderChannelComponent::ClientRejectWholeOrder_Implementation(int32 Ord
 
 void UAsceOrderChannelComponent::ClientRejectEntityOrder_Implementation(int32 OrderSequence, FMassNetworkID UnitNetID, EAsceOrderRejectReason Reason)
 {
+	UE_LOG(LogTemp, Warning, TEXT("[Order] Client 收到单实体拒绝：seq=%d, reason=%d"), OrderSequence, static_cast<int32>(Reason));
+
 	TArray<FMassEntityHandle>* HandlesPtr = PendingLocalOrders.Find(OrderSequence);
 	if (!HandlesPtr)
 	{
