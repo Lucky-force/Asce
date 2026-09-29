@@ -6,6 +6,7 @@
 #include "MassClientBubbleInfoBase.h"
 #include "AsceMass/Networking/Core/AsceReplicationValueHandlers.h"
 #include "AsceMass/Networking/Core/AsceValueReplicationBubbleHandler.h"
+#include "AsceMass/Networking/Core/AsceLightReplicatedAgent.h"
 #include "AsceMass/Fragments/AsceCoreFragments.h"
 #include "AsceHealthReplication.generated.h"
 
@@ -25,7 +26,7 @@ class AAsceHealthClientBubbleInfo;
 
 /** 生命值同步的Agent数据（两个绝对值字段：0 = MaxHealth、1 = CurrentHealth） */
 USTRUCT()
-struct FAsceHealthReplicatedAgent : public FReplicatedAgentBase
+struct FAsceHealthReplicatedAgent : public FAsceLightReplicatedAgentBase
 {
 	GENERATED_BODY()
 

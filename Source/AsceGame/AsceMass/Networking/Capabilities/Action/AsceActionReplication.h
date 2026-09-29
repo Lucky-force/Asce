@@ -5,17 +5,21 @@
 #include "MassClientBubbleHandler.h"
 #include "MassClientBubbleInfoBase.h"
 #include "AsceMass/Networking/Core/AsceReplicationActionHandlers.h"
+#include "AsceMass/Networking/Core/AsceLightReplicatedAgent.h"
 #include "AsceActionReplication.generated.h"
 
 /**
  * "动作态同步"能力Bubble：挂 `FAsceActionFragment` 的entity（当前 = 所有单位）自动同步动作态/朝向。
  *
- * payload = `FReplicatedActionStateData`（5 个 uint8：ActionState/ActionDefId/Counter/PlayRateQ/FacingQ），
+ * payload = `FReplicatedActionStateData`（5×uint8：ActionState/ActionDefId/Counter/PlayRateQ/FacingQ；
+ * **不含 UnitTypeId** —— 单位类型由模板自带，见 `AsceReplicationActionHandlers.h`），
  * 客户端写回 `FAsceCombatVisualFragment`（转身 + 后续 VAT 动画）。详见
  * `AsceReplicationActionHandlers.h` 与 `技能系统设计.md` §6.1。
+ *
+ * 基类用**被动通道专用**的 `FAsceLightReplicatedAgentBase`（`TemplateID` 不复制）——见其文件头 + `Networking/Mass复制设计.md`。
  */
 USTRUCT()
-struct FAsceActionReplicatedAgent : public FReplicatedAgentBase
+struct FAsceActionReplicatedAgent : public FAsceLightReplicatedAgentBase
 {
 	GENERATED_BODY()
 

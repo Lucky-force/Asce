@@ -12,6 +12,7 @@
 #include "AsceMass/Combat/AsceCombatFragments.h"
 #include "AsceMass/Combat/AsceActionDefLibrary.h"   // 施法推进要读技能定义
 #include "AsceMass/Spawn/AsceSpawnQueueSubsystem.h" // 生成物入队（结算只入队，帧末创建）
+#include "AsceMass/Lifecycle/AsceDestroyQueueSubsystem.h" // 死亡入队（帧首限流 drain）
 #include "AsceMass/Fragments/AsceCoreFragments.h"
 #include "AsceMass/Fragments/AsceOrderFragments.h"
 #include "AsceMass/SpatialGrid/AsceSpatialGridSubsystem.h"
@@ -39,6 +40,8 @@ void UAsceCombatProcessor::ConfigureQueries(const TSharedRef<FMassEntityManager>
 	// 血量/移动命令用 Optional：没有的不参与（不能因为缺一个 fragment 就让单位从战斗查询里消失）
 	EntityQuery.AddRequirement<FAsceHealthFragment>(EMassFragmentAccess::ReadWrite, EMassFragmentPresence::Optional);
 	EntityQuery.AddRequirement<FAsceMoveOrderFragment>(EMassFragmentAccess::ReadOnly, EMassFragmentPresence::Optional);
+	// 生命周期（Dying/DestroyRequested）：死亡现场要写它（置 Dying），也要读它（跳过已死亡）
+	EntityQuery.AddRequirement<FAsceLifecycleFragment>(EMassFragmentAccess::ReadWrite, EMassFragmentPresence::Optional);
 }
 
 void UAsceCombatProcessor::Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context)
@@ -69,10 +72,49 @@ void UAsceCombatProcessor::Execute(FMassEntityManager& EntityManager, FMassExecu
 		const TConstArrayView<FAgentRadiusFragment> Radii = Ctx.GetFragmentView<FAgentRadiusFragment>();
 		const TArrayView<FAsceHealthFragment> Healths = Ctx.GetMutableFragmentView<FAsceHealthFragment>();
 		const TConstArrayView<FAsceMoveOrderFragment> MoveOrders = Ctx.GetFragmentView<FAsceMoveOrderFragment>();
+		const TArrayView<FAsceLifecycleFragment> Lifecycles = Ctx.GetMutableFragmentView<FAsceLifecycleFragment>();
 		const TConstArrayView<FMassEntityHandle> Entities = Ctx.GetEntities();
 		const int32 Num = Ctx.GetNumEntities();
 
 		TArray<FMassEntityHandle> Candidates;   // 复用（每个 chunk 一次分配）
+
+		// 死亡处理：HP ≤ 0 ⇒ 标记 Dying（去重，别处据此跳过）+ 停行动 + 入销毁队列（帧首限流 drain）。
+		// 注意：受害者不一定是本 chunk 的实体 ⇒ 一律走 `EntityManager.GetFragmentDataPtr`（不能用 chunk 视图）。
+		auto HandleDeath = [&](const FMassEntityHandle Victim)
+		{
+			if (!EntityManager.IsEntityValid(Victim))
+			{
+				return;
+			}
+			FAsceLifecycleFragment* VictimLifecycle = EntityManager.GetFragmentDataPtr<FAsceLifecycleFragment>(Victim);
+			if (!VictimLifecycle || VictimLifecycle->IsDying())
+			{
+				return;
+			}
+			const FAsceHealthFragment* VictimHealth = EntityManager.GetFragmentDataPtr<FAsceHealthFragment>(Victim);
+			if (!VictimHealth || VictimHealth->CurrentHealth > 0.f)
+			{
+				return;
+			}
+
+			VictimLifecycle->SetDying(true);
+			// 停行动：清移动命令 + 取消当前动作（不再攻击/施法；动画表现由客户端本地死亡特效负责）
+			if (FAsceMoveOrderFragment* VictimMoveOrder = EntityManager.GetFragmentDataPtr<FAsceMoveOrderFragment>(Victim))
+			{
+				VictimMoveOrder->bHasOrder = false;
+			}
+			if (FAsceActionFragment* VictimAction = EntityManager.GetFragmentDataPtr<FAsceActionFragment>(Victim))
+			{
+				VictimAction->ActionState = EAsceActionState::Idle;
+				VictimAction->ActionTarget.Reset();
+				++VictimAction->Counter;
+			}
+			if (UAsceDestroyQueueSubsystem* DestroyQueue = GetWorld() ? GetWorld()->GetSubsystem<UAsceDestroyQueueSubsystem>() : nullptr)
+			{
+				DestroyQueue->Enqueue(Victim);
+			}
+			UE_LOG(LogTemp, Verbose, TEXT("[Death] %lld HP≤0 ⇒ 入销毁队列"), static_cast<int64>(Victim.AsNumber()));
+		};
 
 		for (int32 i = 0; i < Num; ++i)
 		{
@@ -85,6 +127,12 @@ void UAsceCombatProcessor::Execute(FMassEntityManager& EntityManager, FMassExecu
 			const int32 MyTeamId = AsceTeamId(Teams[i].TeamKey);
 			// 移动中（有移动命令）⇒ 不扫描、且攻击会被打断（打断不结算）
 			const bool bMoving = MoveOrders.Num() > 0 && MoveOrders[i].bHasOrder;
+
+			// 已死亡（等销毁队列处理）：停一切行动；动画表现由客户端本地死亡特效负责
+			if (Lifecycles.Num() == Num && Lifecycles[i].IsDying())
+			{
+				continue;
+			}
 
 			// 播放速度：AttackSpeed 180 → 1.0x（见 `技能系统设计.md`）
 			const float PlayRate = FMath::Max(Combat.AttackSpeed / 200.f + 0.1f, KINDA_SMALL_NUMBER);
@@ -148,6 +196,7 @@ void UAsceCombatProcessor::Execute(FMassEntityManager& EntityManager, FMassExecu
 						if (FAsceHealthFragment* TargetHealth = EntityManager.GetFragmentDataPtr<FAsceHealthFragment>(Action.ActionTarget))
 						{
 							TargetHealth->CurrentHealth = FMath::Max(0.f, TargetHealth->CurrentHealth - ActionDef.Damage);
+							HandleDeath(Action.ActionTarget);
 							UE_LOG(LogTemp, Verbose, TEXT("[Skill] %lld → %lld 伤害 %.1f（剩余 HP %.1f）"),
 								static_cast<int64>(Self.AsNumber()), static_cast<int64>(Action.ActionTarget.AsNumber()),
 								ActionDef.Damage, TargetHealth->CurrentHealth);
@@ -272,6 +321,7 @@ void UAsceCombatProcessor::Execute(FMassEntityManager& EntityManager, FMassExecu
 									if (FAsceHealthFragment* TargetHealth = EntityManager.GetFragmentDataPtr<FAsceHealthFragment>(Action.ActionTarget))
 									{
 										TargetHealth->CurrentHealth = FMath::Max(0.f, TargetHealth->CurrentHealth - Combat.AttackDamage);
+										HandleDeath(Action.ActionTarget);
 										bApplied = true;
 										UE_LOG(LogTemp, Verbose, TEXT("[Combat] 结算：%lld → %lld 伤害 %.1f（剩余 HP %.1f）"),
 											static_cast<int64>(Self.AsNumber()), static_cast<int64>(Action.ActionTarget.AsNumber()),
@@ -342,6 +392,14 @@ void UAsceCombatProcessor::Execute(FMassEntityManager& EntityManager, FMassExecu
 				if (!CandidateTeam || AsceTeamId(CandidateTeam->TeamKey) == MyTeamId)
 				{
 					continue;   // 只打非己方
+				}
+				// 跳过已死亡（等销毁）的候选
+				if (const FAsceLifecycleFragment* CandidateLifecycle = EntityManager.GetFragmentDataPtr<FAsceLifecycleFragment>(Candidate))
+				{
+					if (CandidateLifecycle->IsDying())
+					{
+						continue;
+					}
 				}
 				const FTransformFragment* CandidateTransform = EntityManager.GetFragmentDataPtr<FTransformFragment>(Candidate);
 				if (!CandidateTransform)

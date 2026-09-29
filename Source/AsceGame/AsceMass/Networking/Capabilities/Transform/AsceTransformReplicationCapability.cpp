@@ -3,6 +3,8 @@
 #include "AsceTransformReplicationCapability.h"
 
 #include "AsceTransformReplication.h"
+#include "AsceMass/Fragments/AsceCoreFragments.h"   // FAsceLifecycleFragment
+#include "AsceMass/Networking/Core/AsceReplicationInterval.h"
 #include "MassReplicationProcessor.h"
 #include "MassCommonFragments.h"
 #include "MassEntityQuery.h"
@@ -38,9 +40,9 @@ void FAsceTransformReplicationCapability::ProcessChunk(FMassExecutionContext& Co
 		return;
 	}
 
-	FAsceTransformClientBubbleHandler& Bubble =
-		RepSubsystem.GetTypedClientBubbleChecked<AAsceTransformClientBubbleInfo>(BubbleClassHandle, ClientHandle)
-			->GetAsceSerializer().Bubble;
+	AAsceTransformClientBubbleInfo* BubbleActor =
+		RepSubsystem.GetTypedClientBubbleChecked<AAsceTransformClientBubbleInfo>(BubbleClassHandle, ClientHandle);
+	FAsceTransformClientBubbleHandler& Bubble = BubbleActor->GetAsceSerializer().Bubble;
 
 	FAsceReplicationProcessorPositionHandler PositionHandler;
 	PositionHandler.CacheFragmentViews(Context);
@@ -48,6 +50,18 @@ void FAsceTransformReplicationCapability::ProcessChunk(FMassExecutionContext& Co
 	const TConstArrayView<FMassNetworkIDFragment> NetworkIDList = Context.GetFragmentView<FMassNetworkIDFragment>();
 	const TConstArrayView<FReplicationTemplateIDFragment> TemplateIDList = Context.GetFragmentView<FReplicationTemplateIDFragment>();
 	const TConstArrayView<FMassReplicationLODFragment> LODList = Context.GetFragmentView<FMassReplicationLODFragment>();
+	const TConstArrayView<FTransformFragment> TransformList = Context.GetFragmentView<FTransformFragment>();
+
+	// 按距离的更新间隔（近快远慢）：viewer = 该客户端 bubble 的 Owner PC 的 Pawn（被客户端相机焦点驱动）
+	FVector ViewerLocation = FVector::ZeroVector;
+	const bool bHasViewer = UE::AsceMass::Replication::ResolveViewerLocationFromBubbleOwner(BubbleActor, ViewerLocation);
+
+	// 生命周期（服务端）：Add/Remove 成功时增减 bubble 引用计数
+	TArrayView<FAsceLifecycleFragment> Lifecycles;
+	if (Context.DoesArchetypeHaveFragment<FAsceLifecycleFragment>())
+	{
+		Lifecycles = Context.GetMutableFragmentView<FAsceLifecycleFragment>();
+	}
 
 	const int32 NumEntities = Context.GetNumEntities();
 	for (int32 EntityIdx = 0; EntityIdx < NumEntities; ++EntityIdx)
@@ -60,23 +74,38 @@ void FAsceTransformReplicationCapability::ProcessChunk(FMassExecutionContext& Co
 		{
 			if (!ExistingHandle.IsValid())
 			{
-				FAsceTransformReplicatedAgent ReplicatedAgent;
-				ReplicatedAgent.SetNetID(NetworkIDList[EntityIdx].NetID);
-				ReplicatedAgent.SetTemplateID(TemplateIDList[EntityIdx].ID);
-				PositionHandler.AddEntity(EntityIdx, ReplicatedAgent.GetReplicatedPositionDataMutable());
-
-				const FMassReplicatedAgentHandle NewHandle = Bubble.AddAgent(Context.GetEntity(EntityIdx), ReplicatedAgent);
-				if (!InOutMarkers[EntityIdx].IsValid())
+				// Add：先查"待加入票"（flapping 保护）再扣额度；不满足 ⇒ 本帧不 Add（下帧重试）
+				if (Bubble.TryReserveForAdd(NetworkIDList[EntityIdx].NetID))
 				{
-					InOutMarkers[EntityIdx] = NewHandle;
+					FAsceTransformReplicatedAgent ReplicatedAgent;
+					ReplicatedAgent.SetNetID(NetworkIDList[EntityIdx].NetID);
+					ReplicatedAgent.SetTemplateID(TemplateIDList[EntityIdx].ID);
+					PositionHandler.AddEntity(EntityIdx, ReplicatedAgent.GetReplicatedPositionDataMutable());
+					Bubble.CommitAdd(NetworkIDList[EntityIdx].NetID, ReplicatedAgent, Bubble.GetNowSeconds());
+
+					const FMassReplicatedAgentHandle NewHandle = Bubble.AddAgent(Context.GetEntity(EntityIdx), ReplicatedAgent);
+					if (Lifecycles.Num() == NumEntities)
+					{
+						Lifecycles[EntityIdx].IncBubbleRefCount();
+					}
+					if (!InOutMarkers[EntityIdx].IsValid())
+					{
+						InOutMarkers[EntityIdx] = NewHandle;
+					}
 				}
 			}
 			else
 			{
-				// 周期坐标同步：是否真的重新广播由SetPositionFromFragment内部按位置容差判断，
-				// 不是无脑每帧发。TODO：如果以后要按LOD进一步降频（比如低LOD的entity几秒才发一次），
-				// 可以在这里用LOD加一层节流；目前实测下来容差判断已经够用，暂不做。
-				PositionHandler.ModifyEntity(ExistingHandle, EntityIdx, Bubble);
+				// 额度已满 ⇒ 本帧不再算距离/发 Modify（省 CPU）；仍标记"在 bubble 里"
+				if (!Bubble.IsFrameBudgetExhausted())
+				{
+					// 周期坐标同步："值变了没" + "按距离的更新间隔" + "公平分帧/预算" 都由 SetPositionFromFragment 内部判断，不是无脑每帧发。
+					const float Interval = bHasViewer
+						? UE::AsceMass::Replication::ComputeIntervalFromDistSq(
+							FVector::DistSquared(TransformList[EntityIdx].GetTransform().GetLocation(), ViewerLocation))
+						: 0.f;
+					PositionHandler.ModifyEntity(ExistingHandle, EntityIdx, Bubble, Interval);
+				}
 				if (!InOutMarkers[EntityIdx].IsValid())
 				{
 					InOutMarkers[EntityIdx] = ExistingHandle;
@@ -85,7 +114,15 @@ void FAsceTransformReplicationCapability::ProcessChunk(FMassExecutionContext& Co
 		}
 		else if (ExistingHandle.IsValid())
 		{
-			Bubble.RemoveAgent(ExistingHandle);
+			if (Bubble.TryReserveForRemove())
+			{
+				Bubble.SavePendingTicketForHandle(ExistingHandle);
+				Bubble.RemoveAgent(ExistingHandle);
+				if (Lifecycles.Num() == NumEntities)
+				{
+					Lifecycles[EntityIdx].DecBubbleRefCount();
+				}
+			}
 		}
 	}
 #endif // UE_REPLICATION_COMPILE_SERVER_CODE

@@ -17,6 +17,10 @@ class UAsceCameraMode;
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnDragSelect, const FVector2D&, const FVector2D&)
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnSelect, const FVector2D&);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnMoveOrder, const FVector2D&);
+//技能指令：槽位号（0/1/2 ↔ Q/W/E）+ 鼠标屏幕坐标
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnSkillOrder, int32, const FVector2D&);
+//停止指令（S）：无参数
+DECLARE_MULTICAST_DELEGATE(FOnStopOrder);
 
 /**
  * 给观察者使用的组件，提供鼠标拖拽屏幕移动视角, 框选单位等rts操作的功能
@@ -92,6 +96,13 @@ protected:
 	UE_API void Input_Select_Stop(const FInputActionValue& InputActionValue);
 	UE_API void Input_Select_Cancel(const FInputActionValue& InputActionValue);
 	UE_API void Input_Order_Move(const FInputActionValue& InputActionValue);
+	UE_API void Input_Skill1(const FInputActionValue& InputActionValue);
+	UE_API void Input_Skill2(const FInputActionValue& InputActionValue);
+	UE_API void Input_Skill3(const FInputActionValue& InputActionValue);
+	UE_API void Input_Stop(const FInputActionValue& InputActionValue);
+
+	//Q/W/E 共用：取鼠标屏幕坐标后广播技能指令
+	UE_API void BroadcastSkillOrder(int32 SlotId);
 	
 public:
 	//在对应事件触发的时候，通过委托进行广播
@@ -103,6 +114,10 @@ public:
 	FOnSelect OnControlSelect;
 	//右键下发移动指令（带屏幕坐标，世界坐标由消费方反投影——见AsceRTSCommanderComponent）
 	FOnMoveOrder OnMoveOrder;
+	//技能指令（带槽位号 + 屏幕坐标，目标由消费方解析——见AsceRTSCommanderComponent）
+	FOnSkillOrder OnSkillOrder;
+	//停止指令（S）
+	FOnStopOrder OnStopOrder;
 	
 protected:
 	//是否处于按键shifting状态(按着shift)

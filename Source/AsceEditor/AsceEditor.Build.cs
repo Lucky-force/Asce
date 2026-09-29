@@ -33,6 +33,8 @@ public class AsceEditor : ModuleRules
 				"GameplayAbilitiesEditor",
 				"StudioTelemetry",
 				"AsceGame",
+		"AnimToTexture",          // 烘焙工具：建临时 DA / 调 AnimationToTexture / 读回段表
+		"AnimToTextureEditor",
             }
         );
 

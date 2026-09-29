@@ -6,6 +6,7 @@
 #include "MassClientBubbleInfoBase.h"
 #include "AsceMass/Networking/Core/AsceReplicationValueHandlers.h"
 #include "AsceMass/Networking/Core/AsceValueReplicationBubbleHandler.h"
+#include "AsceMass/Networking/Core/AsceLightReplicatedAgent.h"
 #include "AsceMass/Fragments/AsceCoreFragments.h"
 #include "AsceTeamReplication.generated.h"
 
@@ -23,7 +24,7 @@ class AAsceTeamClientBubbleInfo;
  * （`AAsceGameState::FindTeamIndex/GetTeamKey`）按 TeamId 重新映射，不依赖写入方的 index。
  */
 USTRUCT()
-struct FAsceTeamReplicatedAgent : public FReplicatedAgentBase
+struct FAsceTeamReplicatedAgent : public FAsceLightReplicatedAgentBase
 {
 	GENERATED_BODY()
 

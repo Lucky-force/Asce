@@ -139,16 +139,12 @@ struct FAsceCombatVisualFragment : public FMassFragment
 	/** 本次动作朝向（度；动作开始定死，动作期间不变） */
 	UPROPERTY()
 	float FacingYaw = 0.f;
-
-	/** 单位类型 id（= 实体定义表数字行名；客户端用它查单位 def → AnimSet 解析动画） */
-	UPROPERTY()
-	uint16 UnitTypeId = 0;
 };
 
 /**
  * **客户端/本地**动画播放状态（表现 processor 维护；服务器/客户端都可能有，不复制）。
  *
- * 动作边沿（`Counter`/`ActionState` 变化）时解析一次 clip（AnimSet 查询 + 回退链），
+ * 动作边沿（`Counter`/`ActionState` 变化）时解析一次动画（状态 → 动画资产 → AnimSet 的 `Clips`；没配就不播），
  * 之后每帧按 `StartTime/FrameRate/PlayRate` 推进帧，写进 ISM per-instance custom data。
  */
 USTRUCT()
@@ -195,9 +191,26 @@ struct FAsceSkillSlot
 	int32 ActionId = 0;
 
 	/** 下次可释放的**服务器世界时间**（CD）；客户端用 `GetServerWorldTimeSeconds()` 对比做倒计时 */
+	// 【两端语义不同】服务器侧 = 绝对服务器世界时间（CD，0 = 就绪）；
+	// 客户端侧 = 复制通道写成的"CD 百分秒回绕值"（0..65535），使用方（UI/预测）按回绕值解释。
+	// 见 `Networking/Capabilities/SkillPanel/*`
 	UPROPERTY(BlueprintReadWrite, Category = "Asce|Skill")
 	double NextReadyServerTime = 0.0;
 };
+
+/** 客户端 CD 判定（`技能系统设计.md` §6.2）：客户端侧 `FAsceSkillSlot::NextReadyServerTime` 存的是
+ *  **CD 百分秒回绕值**（0 = 未落 CD/就绪），用服务器世界时间对比。回绕安全：`now` 落在 `nextReady`
+ * 之后（半圈 = 32768 百分秒 ≈ 5.5 分钟内）即视为就绪。UI 与客户端预测共用这一份。 */
+FORCEINLINE bool AsceClientIsSkillCooldownReady(const double ClientNextReadyWrapped, const double ServerWorldTimeSeconds)
+{
+	if (ClientNextReadyWrapped <= 0.0)
+	{
+		return true;
+	}
+	const int32 NextReadyQ = static_cast<int32>(ClientNextReadyWrapped);
+	const int32 NowQ = static_cast<int32>(FMath::Fmod(ServerWorldTimeSeconds * 100.0, 65536.0));
+	return ((NowQ - NextReadyQ) & 0xFFFF) < 0x8000;
+}
 
 /** 3 个技能槽位（1/2/3 ↔ Q/W/E）；技能运行时状态随槽位（换槽 = 技能连同 CD 一起换位） */
 USTRUCT()

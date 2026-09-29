@@ -8,6 +8,7 @@
 
 #include "AsceMass/Networking/Core/AsceReplicationValueHandlers.h"
 #include "AsceMass/Networking/Core/AsceValueReplicationBubbleHandler.h"
+#include "AsceMass/Networking/Core/AsceLightReplicatedAgent.h"
 #include "AsceMass/Combat/AsceCombatFragments.h"   // FAsceManaFragment
 
 #include "AsceManaReplication.generated.h"
@@ -20,7 +21,7 @@ class AAsceManaClientBubbleInfo;
  * 静态 def 只是出生初始值 ⇒ 两个值都必须复制。
  */
 USTRUCT()
-struct FAsceManaReplicatedAgent : public FReplicatedAgentBase
+struct FAsceManaReplicatedAgent : public FAsceLightReplicatedAgentBase
 {
 	GENERATED_BODY()
 

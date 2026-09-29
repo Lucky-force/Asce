@@ -4,6 +4,7 @@
 
 #include "AscePassiveClientBubbleHandler.h"
 #include "AsceReplicationValueHandlers.h"
+#include "AsceServeWindow.h"
 
 /**
  * 通用"值同步"客户端 Bubble Handler 模板（支持一个 Agent 多字段），跟服务器侧的
@@ -44,23 +45,38 @@ public:
 		AgentArrayItem& Item = (*this->Agents)[AgentsIdx];
 		checkf(Item.Agent.GetNetID().IsValid(), TEXT("值同步不应该在Agent还没Add的时候更新"));
 
+		// ① 先判断有没有变化（没变就不占用名额/服务号）
 		bool bAnyChanged = false;
 		for (int32 FieldIndex = 0; FieldIndex < FieldPolicy::NumFields; ++FieldIndex)
 		{
-			typename FieldPolicy::FValueData& ReplicatedData = FieldPolicy::GetMutableData(Item.Agent, FieldIndex);
 			const typename FieldPolicy::ValueType NewValue = FieldPolicy::ExtractFromFragment(Fragment, FieldIndex);
-
-			if (FieldPolicy::ValuesDiffer(NewValue, ReplicatedData.GetValue(), FieldIndex))
+			if (FieldPolicy::ValuesDiffer(NewValue, FieldPolicy::GetData(Item.Agent, FieldIndex).GetValue(), FieldIndex))
 			{
-				ReplicatedData.SetValue(NewValue);
 				bAnyChanged = true;
+				break;
 			}
 		}
-
-		if (bAnyChanged)
+		if (!bAnyChanged)
 		{
-			this->Serializer->MarkItemDirty(Item);
+			return;
 		}
+
+		// ② 公平分帧 + 单帧硬预算（见 `AsceServeWindow.h`）：本轮已服务过 / 名额用满 ⇒ 跳过。
+		//    跳过 = **不写影子副本** ⇒ 下帧比较仍不等 ⇒ 仍是候选（不丢、下轮补）。（值通道无按距离的 interval ⇒ 传 0）
+		const float Now = this->GetNowSeconds();
+		if (!this->TryReserveForSend(Item.Agent, 0.f, Now))
+		{
+			return;
+		}
+
+		// ③ 写字段 + 标脏 + 记时间/服务号
+		for (int32 FieldIndex = 0; FieldIndex < FieldPolicy::NumFields; ++FieldIndex)
+		{
+			FieldPolicy::GetMutableData(Item.Agent, FieldIndex)
+				.SetValue(FieldPolicy::ExtractFromFragment(Fragment, FieldIndex));
+		}
+		this->Serializer->MarkItemDirty(Item);
+		this->MarkSent(Item.Agent, Now);
 	}
 
 	/** 本客户端bubble里是否已经有这个NetID的Agent（有则返回其handle，没有返回无效handle）。
@@ -71,6 +87,7 @@ public:
 		const FMassReplicatedAgentHandle* Found = this->NetworkIDToAgentHandleMap.Find(NetID);
 		return Found ? *Found : FMassReplicatedAgentHandle();
 	}
+	// TryReserveForAdd()/IsFrameBudgetExhausted() 由基类 `TAsceServeWindowHandler` 提供
 #endif // UE_REPLICATION_COMPILE_SERVER_CODE
 
 protected:
@@ -83,4 +100,5 @@ protected:
 #endif // UE_REPLICATION_COMPILE_CLIENT_CODE
 
 	FValueHandler ValueHandler;
+	// ServeWindow 由基类 `TAsceServeWindowHandler` 提供
 };

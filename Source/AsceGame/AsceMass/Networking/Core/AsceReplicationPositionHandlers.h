@@ -8,7 +8,9 @@
 #include "MassExecutionContext.h"
 #include "MassCommonFragments.h"
 #include "MassReplicationSubsystem.h"
+#include "Engine/World.h"
 #include "AsceMass/Fragments/AsceMovementFragments.h"
+#include "AsceServeWindow.h"
 #include "AsceReplicationPositionHandlers.generated.h"
 
 namespace UE::AsceMass::Replication
@@ -72,15 +74,30 @@ private:
  * （AsceMass/Fragments/AsceMovementFragments.h）和UAsceMovementCorrectionProcessor的注释。
  */
 template<typename AgentArrayItem>
-class TAscePositionClientBubbleHandler : public TClientBubbleHandlerBase<AgentArrayItem>
+class TAscePositionClientBubbleHandler : public TAsceServeWindowHandler<AgentArrayItem>, public TClientBubbleHandlerBase<AgentArrayItem>
 {
 public:
 	using Super = TClientBubbleHandlerBase<AgentArrayItem>;
 	using FAgentType = typename AgentArrayItem::FReplicatedAgentType;
 
+	/** 服务器侧：当前世界时间（秒）——"按距离的更新间隔"用。 */
+	float GetNowSeconds() const
+	{
+		const UWorld* World = this->Serializer ? this->Serializer->GetWorld() : nullptr;
+		return World ? World->GetRealTimeSeconds() : 0.f;
+	}
+
+	/** Remove 前调用：把该 item 的票收回"待加入表"，让"再进来"时仍被窗口挡住。 */
+	void SavePendingTicketForHandle(const FMassReplicatedAgentHandle Handle)
+	{
+		const FMassAgentLookupData& Lookup = this->AgentLookupArray[Handle.GetIndex()];
+		const AgentArrayItem& Item = (*this->Agents)[Lookup.AgentsIdx];
+		this->SavePendingTicket(Lookup.NetID, Item.Agent.GetLastServedTicket());
+	}
+
 #if UE_REPLICATION_COMPILE_SERVER_CODE
-	/** 服务器侧：Fragment变化时，判断位置是否超过容差，超过就写进Agent+标脏 */
-	void SetPositionFromFragment(const FMassReplicatedAgentHandle Handle, const FTransform& Transform)
+	/** 服务器侧：Fragment变化时，判断位置是否超过容差，超过就写进Agent+标脏（含"按距离的更新间隔"门控） */
+	void SetPositionFromFragment(const FMassReplicatedAgentHandle Handle, const FTransform& Transform, const float IntervalSeconds)
 	{
 		check(this->AgentHandleManager.IsValidHandle(Handle));
 		const int32 AgentsIdx = this->AgentLookupArray[Handle.GetIndex()].AgentsIdx;
@@ -91,11 +108,21 @@ public:
 		FReplicatedAgentPositionData& ReplicatedData = Item.Agent.GetReplicatedPositionDataMutable();
 		const FVector NewPosition = Transform.GetLocation();
 
-		if (!NewPosition.Equals(ReplicatedData.GetPosition(), UE::AsceMass::Replication::PositionReplicateTolerance))
+		if (NewPosition.Equals(ReplicatedData.GetPosition(), UE::AsceMass::Replication::PositionReplicateTolerance))
 		{
-			ReplicatedData.SetPosition(NewPosition);
-			this->Serializer->MarkItemDirty(Item);
+			return;
 		}
+
+		// 三步门控（见 `Core/AsceServeWindow.h`）：按距离的 interval → 票据窗口 → 单帧预算；不过就跳过（不写影子 ⇒ 下帧仍是候选）
+		const float Now = this->GetNowSeconds();
+		if (!this->TryReserveForSend(Item.Agent, IntervalSeconds, Now))
+		{
+			return;
+		}
+
+		ReplicatedData.SetPosition(NewPosition);
+		this->Serializer->MarkItemDirty(Item);
+		this->MarkSent(Item.Agent, Now);
 	}
 
 	/** 本客户端bubble里是否已经有这个NetID的Agent（有则返回其handle，没有返回无效handle）。
@@ -106,6 +133,8 @@ public:
 		const FMassReplicatedAgentHandle* Found = this->NetworkIDToAgentHandleMap.Find(NetID);
 		return Found ? *Found : FMassReplicatedAgentHandle();
 	}
+
+	// TryReserveForAdd()/IsFrameBudgetExhausted() 由基类 `TAsceServeWindowHandler` 提供
 #endif // UE_REPLICATION_COMPILE_SERVER_CODE
 
 protected:
@@ -233,6 +262,7 @@ protected:
 protected:
 	TArrayView<FTransformFragment> TransformList;
 	TArrayView<FAscePositionCorrectionFragment> CorrectionList;
+	// ServeWindow / TryReserveForAdd / ... 由基类 `TAsceServeWindowHandler` 提供
 };
 
 /**
@@ -258,9 +288,9 @@ public:
 	}
 
 	template<typename BubbleHandlerType>
-	void ModifyEntity(const FMassReplicatedAgentHandle Handle, const int32 EntityIdx, BubbleHandlerType& Bubble) const
+	void ModifyEntity(const FMassReplicatedAgentHandle Handle, const int32 EntityIdx, BubbleHandlerType& Bubble, const float IntervalSeconds) const
 	{
-		Bubble.SetPositionFromFragment(Handle, TransformList[EntityIdx].GetTransform());
+		Bubble.SetPositionFromFragment(Handle, TransformList[EntityIdx].GetTransform(), IntervalSeconds);
 	}
 
 protected:

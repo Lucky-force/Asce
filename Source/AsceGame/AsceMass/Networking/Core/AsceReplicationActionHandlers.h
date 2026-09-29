@@ -3,6 +3,7 @@
 #pragma once
 
 #include "AscePassiveClientBubbleHandler.h"
+#include "AsceServeWindow.h"
 #include "MassEntityView.h"
 #include "MassEntityQuery.h"
 #include "MassExecutionContext.h"
@@ -43,6 +44,9 @@ namespace UE::AsceMass::Replication
  * 5 个字段放**同一个** struct：状态与朝向一次到达，不依赖跨通道顺序
  * （否则会出现"服务器已停+攻击，但速度/位置通道还慢一帧，客户端以为自己在 Move"）。
  * 全部由服务器发（Idle/Move 也是），客户端只读。
+ *
+ * **不含 `UnitTypeId`**：单位类型是模板常量（`UAsceRTSEntityTrait::UniqueType` →
+ * `FAsceUnitDefFragment.UniqueTypeId`），客户端 spawn 时由实体模板自带，不必每条动作消息重发。
  */
 USTRUCT()
 struct FReplicatedActionStateData
@@ -61,15 +65,8 @@ public:
 	uint8 GetCounter() const { return Counter; }
 	uint8 GetPlayRateQ() const { return PlayRateQ; }
 	uint8 GetFacingQ() const { return FacingQ; }
-	uint16 GetUnitTypeId() const { return UnitTypeId; }
-
-	void SetUnitTypeId(const uint16 InValue) { UnitTypeId = InValue; }
 
 private:
-	/** 单位类型 id（= 实体定义表数字行名；客户端用它查单位 def → AnimSet 解析动画） */
-	UPROPERTY(Transient)
-	uint16 UnitTypeId = 0;
-
 	/** `EAsceActionState` 的数值 */
 	UPROPERTY(Transient)
 	uint8 ActionState = 0;
@@ -118,7 +115,7 @@ public:
 
 	/** 服务器侧：动作态变化就写进 Agent + 标脏（字段全等则不标，不是每帧推） */
 	void SetActionStateFromFragment(const FMassReplicatedAgentHandle Handle, const uint8 ActionState, const uint8 ActionDefId
-		, const uint8 Counter, const uint8 PlayRateQ, const uint8 FacingQ, const uint16 UnitTypeId)
+		, const uint8 Counter, const uint8 PlayRateQ, const uint8 FacingQ)
 	{
 		check(this->AgentHandleManager.IsValidHandle(Handle));
 		const int32 AgentsIdx = this->AgentLookupArray[Handle.GetIndex()].AgentsIdx;
@@ -127,21 +124,31 @@ public:
 		checkf(Item.Agent.GetNetID().IsValid(), TEXT("动作态不应该在Agent还没Add的时候更新"));
 
 		FReplicatedActionStateData& Data = Item.Agent.GetReplicatedActionStateDataMutable();
-		if (Data.GetActionState() != ActionState
+		const bool bChanged = Data.GetActionState() != ActionState
 			|| Data.GetActionDefId() != ActionDefId
 			|| Data.GetCounter() != Counter
 			|| Data.GetPlayRateQ() != PlayRateQ
-			|| Data.GetFacingQ() != FacingQ
-			|| Data.GetUnitTypeId() != UnitTypeId)
+			|| Data.GetFacingQ() != FacingQ;
+		if (!bChanged)
 		{
-			Data.SetActionState(ActionState);
-			Data.SetActionDefId(ActionDefId);
-			Data.SetCounter(Counter);
-			Data.SetPlayRateQ(PlayRateQ);
-			Data.SetFacingQ(FacingQ);
-			Data.SetUnitTypeId(UnitTypeId);
-			this->Serializer->MarkItemDirty(Item);
+			return;
 		}
+
+		// 公平分帧 + 单帧硬预算（见 `Core/AsceServeWindow.h`）：本轮已服务过 / 名额用满 ⇒ 跳过（不写影子 ⇒ 下帧仍是候选）
+		// （动作通道无按距离的 interval ⇒ 传 0）
+		const float Now = this->GetNowSeconds();
+		if (!this->TryReserveForSend(Item.Agent, 0.f, Now))
+		{
+			return;
+		}
+
+		Data.SetActionState(ActionState);
+		Data.SetActionDefId(ActionDefId);
+		Data.SetCounter(Counter);
+		Data.SetPlayRateQ(PlayRateQ);
+		Data.SetFacingQ(FacingQ);
+		this->Serializer->MarkItemDirty(Item);
+		this->MarkSent(Item.Agent, Now);
 	}
 #endif // UE_REPLICATION_COMPILE_SERVER_CODE
 
@@ -168,7 +175,7 @@ protected:
 		Visual->Counter = Data.GetCounter();
 		Visual->PlayRate = UE::AsceMass::Replication::DequantizeActionPlayRate(Data.GetPlayRateQ());
 		Visual->FacingYaw = UE::AsceMass::Replication::DequantizeActionFacing(Data.GetFacingQ());
-		Visual->UnitTypeId = Data.GetUnitTypeId();
 	}
 #endif // UE_REPLICATION_COMPILE_CLIENT_CODE
+	// ServeWindow / TryReserveForAdd / ... 由基类 `TAsceServeWindowHandler`（经被动基类）提供
 };

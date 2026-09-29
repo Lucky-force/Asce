@@ -30,9 +30,25 @@ struct FAsceTransformReplicatedAgent : public FReplicatedAgentBase
 	const FReplicatedAgentPositionData& GetReplicatedPositionData() const { return Position; }
 	FReplicatedAgentPositionData& GetReplicatedPositionDataMutable() { return Position; }
 
+	/** 公平分帧调度用：上次真正发出去时的服务号（0 = 从未服务）。见 `Networking/Core/AsceServeWindow.h` */
+	uint32 GetLastServedTicket() const { return LastServedTicket; }
+	uint32& GetLastServedTicketMutable() { return LastServedTicket; }
+
+	/** 按距离的更新间隔用：上次真正发出去时的世界时间（秒）。见 `Networking/Core/AsceReplicationInterval.h` */
+	float GetLastUpdateTime() const { return LastUpdateTime; }
+	void SetLastUpdateTime(const float InTime) { LastUpdateTime = InTime; }
+
 private:
 	UPROPERTY(Transient)
 	FReplicatedAgentPositionData Position;
+
+	/** 上次真正发出去时的服务号（0 = 从未服务）；纯服务器本地调度用，不复制 */
+	UPROPERTY(NotReplicated)
+	uint32 LastServedTicket = 0;
+
+	/** 上次真正发出去时的世界时间（秒；0 = 从未服务）；纯服务器本地调度用，不复制 */
+	UPROPERTY(NotReplicated)
+	float LastUpdateTime = 0.f;
 };
 
 /** FastArray Item，仿照MassCrowd的FCrowdFastArrayItem */

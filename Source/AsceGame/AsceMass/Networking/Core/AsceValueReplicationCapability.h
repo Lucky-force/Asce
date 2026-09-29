@@ -4,6 +4,7 @@
 
 #include "AsceReplicationCapability.h"
 #include "AsceReplicationValueHandlers.h"
+#include "AsceMass/Fragments/AsceCoreFragments.h"   // FAsceLifecycleFragment
 #include "MassReplicationProcessor.h"
 #include "MassExecutionContext.h"
 
@@ -73,6 +74,13 @@ public:
 		const TConstArrayView<FReplicationTemplateIDFragment> TemplateIDList = Context.GetFragmentView<FReplicationTemplateIDFragment>();
 		const TConstArrayView<FMassReplicationLODFragment> LODList = Context.GetFragmentView<FMassReplicationLODFragment>();
 
+		// 生命周期（服务端）：Add/Remove 成功时增减 bubble 引用计数，销毁阶段据此判断"真的全移除了"
+		TArrayView<FAsceLifecycleFragment> Lifecycles;
+		if (Context.DoesArchetypeHaveFragment<FAsceLifecycleFragment>())
+		{
+			Lifecycles = Context.GetMutableFragmentView<FAsceLifecycleFragment>();
+		}
+
 		const int32 NumEntities = Context.GetNumEntities();
 		for (int32 EntityIdx = 0; EntityIdx < NumEntities; ++EntityIdx)
 		{
@@ -84,15 +92,24 @@ public:
 			{
 				if (!ExistingHandle.IsValid())
 				{
-					FAgentType ReplicatedAgent;
-					ReplicatedAgent.SetNetID(NetworkIDList[EntityIdx].NetID);
-					ReplicatedAgent.SetTemplateID(TemplateIDList[EntityIdx].ID);
-					Handler.AddEntity(EntityIdx, ReplicatedAgent);
-
-					const FMassReplicatedAgentHandle NewHandle = Bubble.AddAgent(Context.GetEntity(EntityIdx), ReplicatedAgent);
-					if (!InOutMarkers[EntityIdx].IsValid())
+					// Add：先查"待加入票"（flapping 保护：不在窗口内才给加）再扣额度；不满足 ⇒ 本帧不 Add（下帧重试）
+					if (Bubble.TryReserveForAdd(NetworkIDList[EntityIdx].NetID))
 					{
-						InOutMarkers[EntityIdx] = NewHandle;
+						FAgentType ReplicatedAgent;
+						ReplicatedAgent.SetNetID(NetworkIDList[EntityIdx].NetID);
+						ReplicatedAgent.SetTemplateID(TemplateIDList[EntityIdx].ID);
+						Handler.AddEntity(EntityIdx, ReplicatedAgent);
+						Bubble.CommitAdd(NetworkIDList[EntityIdx].NetID, ReplicatedAgent, Bubble.GetNowSeconds());
+
+						const FMassReplicatedAgentHandle NewHandle = Bubble.AddAgent(Context.GetEntity(EntityIdx), ReplicatedAgent);
+						if (Lifecycles.Num() == NumEntities)
+						{
+							Lifecycles[EntityIdx].IncBubbleRefCount();
+						}
+						if (!InOutMarkers[EntityIdx].IsValid())
+						{
+							InOutMarkers[EntityIdx] = NewHandle;
+						}
 					}
 				}
 				else
@@ -106,7 +123,16 @@ public:
 			}
 			else if (ExistingHandle.IsValid())
 			{
-				Bubble.RemoveAgent(ExistingHandle);
+				// Remove 也走共用预算（每项只写一个 ID ≈ 4B）；额度满 ⇒ 下帧重试（实体仍在 bubble、LOD 仍 Off，自愈）
+				if (Bubble.TryReserveForRemove())
+				{
+					Bubble.SavePendingTicketForHandle(ExistingHandle);
+					Bubble.RemoveAgent(ExistingHandle);
+					if (Lifecycles.Num() == NumEntities)
+					{
+						Lifecycles[EntityIdx].DecBubbleRefCount();
+					}
+				}
 			}
 		}
 #endif // UE_REPLICATION_COMPILE_SERVER_CODE

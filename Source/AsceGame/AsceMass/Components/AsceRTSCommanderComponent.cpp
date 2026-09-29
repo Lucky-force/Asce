@@ -16,6 +16,7 @@
 #include "AsceMass/FlowField/AscePathFindingSubsystem.h"
 #include "AsceMass/Movement/AsceMoveOrderExecutor.h"
 #include "AsceMass/Networking/AsceOrderChannelComponent.h"
+#include "MassReplicationFragments.h"   // FMassNetworkIDFragment / FMassNetworkID（技能目标 NetID）
 #include "AsceMass/SpatialGrid/AsceSpatialGridSubsystem.h"
 #include "AsceMass/Vision/AsceFogSubsystem.h"
 #include "AsceMass/Fragments/AsceCoreFragments.h"
@@ -217,6 +218,8 @@ void UAsceRTSCommanderComponent::BindToObserverComponent()
     OnAdditiveSelectDelegateHandle = ObserverComp->OnAdditiveSelect.AddUObject(this, &UAsceRTSCommanderComponent::OnAdditiveClickSelect);
     OnAdditiveDragSelectDelegateHandle = ObserverComp->OnAdditiveDragSelect.AddUObject(this, &UAsceRTSCommanderComponent::OnAdditiveDragSelect);
     OnMoveOrderDelegateHandle = ObserverComp->OnMoveOrder.AddUObject(this, &UAsceRTSCommanderComponent::OnMoveOrder);
+    OnSkillOrderDelegateHandle = ObserverComp->OnSkillOrder.AddUObject(this, &UAsceRTSCommanderComponent::OnSkillOrder);
+    OnStopOrderDelegateHandle = ObserverComp->OnStopOrder.AddUObject(this, &UAsceRTSCommanderComponent::IssueStopOrder);
 }
 
 void UAsceRTSCommanderComponent::UnbindFromObserverComponent()
@@ -231,6 +234,8 @@ void UAsceRTSCommanderComponent::UnbindFromObserverComponent()
     ObserverComp->OnAdditiveSelect.Remove(OnAdditiveSelectDelegateHandle);
     ObserverComp->OnAdditiveDragSelect.Remove(OnAdditiveDragSelectDelegateHandle);
     ObserverComp->OnMoveOrder.Remove(OnMoveOrderDelegateHandle);
+    ObserverComp->OnSkillOrder.Remove(OnSkillOrderDelegateHandle);
+    ObserverComp->OnStopOrder.Remove(OnStopOrderDelegateHandle);
 }
 
 // ── 委托回调 ──────────────────────────────────
@@ -547,6 +552,92 @@ void UAsceRTSCommanderComponent::IssueStopOrder()
             OrderChannel->RequestStopOrder(SelectedEntities);
         }
     }
+}
+
+void UAsceRTSCommanderComponent::IssueSkillOrder(const int32 SlotId)
+{
+    // BP/UI 入口：取当前鼠标屏幕坐标后走同一条路径
+    APawn* Pawn = GetPawn<APawn>();
+    APlayerController* PC = Pawn ? Pawn->GetController<APlayerController>() : nullptr;
+    if (!PC)
+    {
+        return;
+    }
+    FVector2D MousePosition;
+    if (!PC->GetMousePosition(MousePosition.X, MousePosition.Y))
+    {
+        return;
+    }
+    OnSkillOrder(SlotId, MousePosition);
+}
+
+void UAsceRTSCommanderComponent::OnSkillOrder(const int32 SlotId, const FVector2D& ScreenPos)
+{
+    APawn* Pawn = GetPawn<APawn>();
+    APlayerController* PC = Pawn ? Pawn->GetController<APlayerController>() : nullptr;
+    UWorld* World = GetWorld();
+    if (!PC || !World || !EntityManager.IsValid())
+    {
+        return;
+    }
+
+    // ① 屏幕点 → 世界点（与移动指令同一套物理射线；没打到地面/阻挡物就不下发）
+    FVector RayOrigin;
+    FVector RayDirection;
+    if (!PC->DeprojectScreenPositionToWorld(ScreenPos.X, ScreenPos.Y, RayOrigin, RayDirection))
+    {
+        return;
+    }
+    FHitResult HitResult;
+    const FVector RayEnd = RayOrigin + RayDirection * 100000.f;
+    if (!World->LineTraceSingleByChannel(HitResult, RayOrigin, RayEnd, ECC_Visibility))
+    {
+        return;
+    }
+    const FVector2D TargetPos(HitResult.ImpactPoint.X, HitResult.ImpactPoint.Y);
+
+    // ② 光标下的单位（带本地视野过滤）→ TargetNetID：指向技能用它，非指向技能服务器会忽略
+    FMassNetworkID TargetNetID;
+    const FMassEntityHandle TargetHandle = PickVisibleEntityAtScreenPoint(ScreenPos, PC);
+    if (TargetHandle.IsValid())
+    {
+        if (const FMassNetworkIDFragment* NetIDFragment = EntityManager->GetFragmentDataPtr<FMassNetworkIDFragment>(TargetHandle))
+        {
+            TargetNetID = NetIDFragment->NetID;
+        }
+    }
+
+    // ③ 只对**自己方**单位下发（点选查看的敌方单位不能指挥；服务器 RPC 侧还有 NotOwned 兜底）
+    const int32 MyTeamId = GetLocalTeamId();
+    TArray<FMassEntityHandle> OwnedEntities;
+    OwnedEntities.Reserve(SelectedEntities.Num());
+    for (const FMassEntityHandle Handle : SelectedEntities)
+    {
+        if (!EntityManager->IsEntityValid(Handle))
+        {
+            continue;
+        }
+        const FAsceTeamFragment* Team = EntityManager->GetFragmentDataPtr<FAsceTeamFragment>(Handle);
+        if (!Team || AsceTeamId(Team->TeamKey) != MyTeamId)
+        {
+            continue;
+        }
+        OwnedEntities.Add(Handle);
+    }
+    if (OwnedEntities.Num() == 0)
+    {
+        return;
+    }
+
+    if (UAsceOrderChannelComponent* OrderChannel = Pawn->FindComponentByClass<UAsceOrderChannelComponent>())
+    {
+        // TargetHandle（本端实体句柄）也传进去：客户端预测要按它做目标/射程校验（客户端没有全局 NetID 反查表）
+        OrderChannel->RequestSkillOrder(OwnedEntities, SlotId, TargetPos, TargetNetID, TargetHandle);
+        return;
+    }
+
+    // 纯客户端没有 OrderChannel 时指令无法下发到服务器
+    UE_LOG(LogTemp, Warning, TEXT("[Order] 纯客户端 Pawn(%s) 上没有 UAsceOrderChannelComponent，技能指令被忽略"), *GetNameSafe(Pawn));
 }
 
 void UAsceRTSCommanderComponent::OnRegister()

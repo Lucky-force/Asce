@@ -24,6 +24,10 @@
 #include "ReplaySubsystem.h"
 #include "Development/AsceDeveloperSettings.h"
 #include "GameMapsSettings.h"
+#include "MassEntityManager.h"
+#include "MassEntitySubsystem.h"
+#include "MassReplicationSubsystem.h"
+#include "AsceMass/Lifecycle/AsceDeathPresentation.h"
 #if WITH_RPC_REGISTRY
 #include "Tests/AsceGameplayRpcRegistrationComponent.h"
 #include "HttpServerModule.h"
@@ -404,6 +408,33 @@ void AAscePlayerController::Server_UpdateViewFocus_Implementation(const FVector_
 	{
 		ControlledPawn->SetActorLocation(Focus, /*bSweep=*/false, nullptr, ETeleportType::TeleportPhysics);
 	}
+}
+
+void AAscePlayerController::Client_NotifyDeaths_Implementation(const TArray<FMassNetworkID>& NetIDs)
+{
+#if UE_REPLICATION_COMPILE_CLIENT_CODE
+	UWorld* World = GetWorld();
+	UMassReplicationSubsystem* ReplicationSubsystem = World ? World->GetSubsystem<UMassReplicationSubsystem>() : nullptr;
+	UMassEntitySubsystem* MassSubsystem = World ? World->GetSubsystem<UMassEntitySubsystem>() : nullptr;
+	if (!ReplicationSubsystem || !MassSubsystem)
+	{
+		return;
+	}
+	FMassEntityManager& EntityManager = MassSubsystem->GetMutableEntityManager();
+
+	for (const FMassNetworkID& NetID : NetIDs)
+	{
+		// RPC 先于属性复制到达 ⇒ 实体通常还在；若本端本来没有（被视野裁掉/已移除）则跳过
+		const FMassEntityHandle Entity = ReplicationSubsystem->FindEntity(NetID);
+		if (!EntityManager.IsEntityValid(Entity))
+		{
+			continue;
+		}
+
+		// 本地死亡表现（隐藏 + 死亡特效）：与权威端 host 走同一入口，见 `AsceDeathPresentation.h`
+		AsceDeath::PlayLocalDeath(*World, Entity);
+	}
+#endif // UE_REPLICATION_COMPILE_CLIENT_CODE
 }
 
 void AAscePlayerController::PreProcessInput(const float DeltaTime, const bool bGamePaused)

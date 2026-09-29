@@ -112,6 +112,13 @@ public class AsceGame : ModuleRules
 			PublicDefinitions.Add("WITH_HTTPSERVER_LISTENERS=1");
 		}
 
+		// VAT 烘焙工具（`UAsceAnimSet::RebuildFromSources`，见 `Combat/技能系统设计.md` §7.1）：
+		// 只在**编辑器构建**里链接插件（`AnimToTexture` = runtime 模块类型/BP 库；`AnimToTextureEditor` = 烘焙 API；`AssetRegistry` = 注册新建资产）
+		if (Target.bBuildEditor)
+		{
+			PrivateDependencyModuleNames.AddRange(new string[] { "AnimToTexture", "AnimToTextureEditor", "AssetRegistry" });
+		}
+
 		SetupGameplayDebuggerSupport(Target);
 		SetupIrisSupport(Target);
 	}

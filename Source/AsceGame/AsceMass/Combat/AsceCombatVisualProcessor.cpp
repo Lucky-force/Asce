@@ -37,6 +37,9 @@ UAsceCombatVisualProcessor::UAsceCombatVisualProcessor()
 	// 且在 UMassUpdateISMProcessor 之前（它会在末尾消费/改写 PrevLODSignificance，我们镜像范围要先读旧值）。
 	ExecutionOrder.ExecuteInGroup = UE::Mass::ProcessorGroupNames::Representation;
 	ExecutionOrder.ExecuteAfter.Add(UMassVisualizationProcessor::StaticClass()->GetFName());
+	// 必须显式声明"在 UMassUpdateISMProcessor 之前"：它会在处理末尾消费/改写 PrevLODSignificance，
+	// 我们镜像"当前范围 + prev 范围"必须先读到旧值（仅靠 ExecuteAfter 不保证同组内的相对顺序）
+	ExecutionOrder.ExecuteBefore.Add(UMassUpdateISMProcessor::StaticClass()->GetFName());
 }
 
 void UAsceCombatVisualProcessor::ConfigureQueries(const TSharedRef<FMassEntityManager>& EntityManager)
@@ -69,7 +72,7 @@ UAsceAnimSet* UAsceCombatVisualProcessor::FindOrLoadAnimSet(const uint16 UnitTyp
 	}
 
 	UAsceAnimSet* AnimSet = nullptr;
-	FName AttackClip;
+	FAsceUnitAnimRefs Refs;
 
 	// 按数字类型 id 查实体定义表行（见 `FAsceUnitDefFragment` / 实体定义表约定）
 	FAsceEntityDefRow Row;
@@ -78,116 +81,85 @@ UAsceAnimSet* UAsceCombatVisualProcessor::FindOrLoadAnimSet(const uint16 UnitTyp
 		if (const FAsceRTSUnitDef* UnitDef = Row.Def.GetPtr<FAsceRTSUnitDef>())
 		{
 			AnimSet = UnitDef->AnimSet.LoadSynchronous();
+			Refs.Idle = UnitDef->IdleAnim;
+			Refs.Move = UnitDef->MoveAnim;
+			Refs.Dying = UnitDef->DyingAnim;
+			// 攻击动画跟攻击的 CastConfig 走（与技能一致，不再单列 AttackAnim）
 			if (const FAsceNormalCastConfig* AttackConfig = UnitDef->AttackCastConfig.GetPtr<FAsceNormalCastConfig>())
 			{
-				AttackClip = AttackConfig->CastAnim;
+				Refs.Attack = AttackConfig->CastAnim;
 			}
 		}
 	}
 
 	AnimSetCache.Add(Key, AnimSet);
-	AttackClipCache.Add(Key, AttackClip);
+	AnimRefCache.Add(Key, Refs);
 	return AnimSet;
 }
 
-FName UAsceCombatVisualProcessor::FindAttackClipName(const uint16 UnitTypeId) const
+TSoftObjectPtr<UAnimSequence> UAsceCombatVisualProcessor::ResolveClipRef(const uint8 ActionState, const int32 ActionDefId, const uint16 UnitTypeId) const
 {
-	const FName* Found = AttackClipCache.Find(static_cast<int32>(UnitTypeId));
-	return (Found && !Found->IsNone()) ? *Found : AsceAnimClipNames::Attack;
-}
+	const EAsceActionState State = static_cast<EAsceActionState>(ActionState);
 
-FName UAsceCombatVisualProcessor::ResolveClipName(const uint8 ActionState, const int32 ActionDefId, const uint16 UnitTypeId) const
-{
-	switch (static_cast<EAsceActionState>(ActionState))
-	{
-	case EAsceActionState::Attack:
-		return FindAttackClipName(UnitTypeId);
-
-	case EAsceActionState::Casting:
-	case EAsceActionState::Channel:
+	// 技能状态：读技能表的 CastConfig；没有就返回空 ⇒ 不播（不回退）
+	if (State == EAsceActionState::Casting || State == EAsceActionState::Channel)
 	{
 		if (ActionDefId > 0)
 		{
 			FAsceActionDef ActionDef;
 			if (FAsceActionDefLibrary::GetActionDef(ActionDefId, ActionDef))
 			{
-				// 1) 动作表里声明的语义 clip（优先）
-				for (const FAsceActionClipRef& Ref : ActionDef.AnimClips)
-				{
-					if (Ref.State == static_cast<EAsceActionState>(ActionState) && !Ref.ClipName.IsNone())
-					{
-						return Ref.ClipName;
-					}
-				}
-				// 2) CastConfig 上的动画名
+				// 施法/持续动画就在 CastConfig 上（唯一来源）
 				if (const FAsceSkillCastConfig* CastConfig = ActionDef.CastConfig.GetPtr<FAsceSkillCastConfig>())
 				{
-					const FName Clip = (ActionState == static_cast<uint8>(EAsceActionState::Channel))
+					const TSoftObjectPtr<UAnimSequence> Clip = (State == EAsceActionState::Channel)
 						? CastConfig->GetChannelAnim()
 						: CastConfig->GetCastAnim();
-					if (!Clip.IsNone())
+					if (!Clip.IsNull())
 					{
 						return Clip;
 					}
 				}
 			}
 		}
-		// 3) 保留名
-		return (ActionState == static_cast<uint8>(EAsceActionState::Channel))
-			? AsceAnimClipNames::ChannelGeneric
-			: AsceAnimClipNames::CastGeneric;
+		return TSoftObjectPtr<UAnimSequence>();
 	}
 
-	case EAsceActionState::Move:
-		return AsceAnimClipNames::Move;
-
-	case EAsceActionState::Dying:
-		return AsceAnimClipNames::Dying;
-
-	default:
-		return AsceAnimClipNames::Idle;
+	// 基础状态：读单位 def 的语义槽位（没配就不播）
+	if (const FAsceUnitAnimRefs* Refs = AnimRefCache.Find(static_cast<int32>(UnitTypeId)))
+	{
+		switch (State)
+		{
+		case EAsceActionState::Move:   return Refs->Move;
+		case EAsceActionState::Dying:  return Refs->Dying;
+		case EAsceActionState::Attack: return Refs->Attack;
+		case EAsceActionState::Idle:
+		default:                       return Refs->Idle;
+		}
 	}
+	return TSoftObjectPtr<UAnimSequence>();
 }
 
-const FAsceAnimClip* UAsceCombatVisualProcessor::ResolveClip(UAsceAnimSet* AnimSet, const FName ClipName, const uint8 ActionState, bool& bOutLoop) const
+const FAsceAnimClip* UAsceCombatVisualProcessor::ResolveClip(UAsceAnimSet* AnimSet, const TSoftObjectPtr<UAnimSequence>& ClipRef) const
 {
-	bOutLoop = false;
-	if (!AnimSet)
+	if (!AnimSet || ClipRef.IsNull())
 	{
 		return nullptr;
 	}
+	return AnimSet->Clips.Find(ClipRef);
+}
 
-	auto Try = [AnimSet](const FName Name) -> const FAsceAnimClip*
+bool UAsceCombatVisualProcessor::IsLoopingState(const uint8 ActionState)
+{
+	switch (static_cast<EAsceActionState>(ActionState))
 	{
-		return Name.IsNone() ? nullptr : AnimSet->Clips.Find(Name);
-	};
-
-	// 回退链：专属 → Cast_Generic/Channel_Generic/Attack → Idle → 无
-	const EAsceActionState State = static_cast<EAsceActionState>(ActionState);
-	if (const FAsceAnimClip* Clip = Try(ClipName))
-	{
-		bOutLoop = Clip->bLoop;
-		return Clip;
+	case EAsceActionState::Idle:
+	case EAsceActionState::Move:
+	case EAsceActionState::Channel:
+		return true;
+	default:
+		return false;
 	}
-	if (State == EAsceActionState::Channel)
-	{
-		if (const FAsceAnimClip* Clip = Try(AsceAnimClipNames::ChannelGeneric)) { bOutLoop = Clip->bLoop; return Clip; }
-	}
-	if (State == EAsceActionState::Channel || State == EAsceActionState::Casting)
-	{
-		if (const FAsceAnimClip* Clip = Try(AsceAnimClipNames::CastGeneric)) { bOutLoop = Clip->bLoop; return Clip; }
-		if (const FAsceAnimClip* Clip = Try(AsceAnimClipNames::Attack)) { bOutLoop = Clip->bLoop; return Clip; }
-	}
-	if (State == EAsceActionState::Attack || State == EAsceActionState::Dying)
-	{
-		if (const FAsceAnimClip* Clip = Try(AsceAnimClipNames::Attack)) { bOutLoop = Clip->bLoop; return Clip; }
-	}
-	if (const FAsceAnimClip* Clip = Try(AsceAnimClipNames::Idle))
-	{
-		bOutLoop = Clip->bLoop;
-		return Clip;
-	}
-	return nullptr;
 }
 
 void UAsceCombatVisualProcessor::Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context)
@@ -232,7 +204,8 @@ void UAsceCombatVisualProcessor::Execute(FMassEntityManager& EntityManager, FMas
 			const FAsceCombatVisualFragment* Visual = (Visuals.Num() == Num) ? &Visuals[i] : nullptr;
 			const bool bHasAction = bAuthority ? (Action != nullptr) : (Visual != nullptr);
 
-			uint16 UnitTypeId = 0;
+			// 单位类型：**两端都从 EntityTemplate 自带的身份 fragment 读**（不随动作消息复制）
+			const uint16 UnitTypeId = (Defs.Num() == Num) ? Defs[i].UniqueTypeId : 0;
 			uint8 ActionState = static_cast<uint8>(EAsceActionState::Idle);
 			int32 ActionDefId = 0;
 			uint32 Counter = 0;
@@ -241,7 +214,6 @@ void UAsceCombatVisualProcessor::Execute(FMassEntityManager& EntityManager, FMas
 			{
 				if (bAuthority)
 				{
-					UnitTypeId = (Defs.Num() == Num) ? Defs[i].UniqueTypeId : 0;
 					ActionState = static_cast<uint8>(Action->ActionState);
 					ActionDefId = Action->ActionDefId;
 					Counter = Action->Counter;
@@ -252,7 +224,6 @@ void UAsceCombatVisualProcessor::Execute(FMassEntityManager& EntityManager, FMas
 				}
 				else
 				{
-					UnitTypeId = Visual->UnitTypeId;
 					ActionState = static_cast<uint8>(Visual->ActionState);
 					ActionDefId = Visual->ActionDefId;
 					Counter = Visual->Counter;
@@ -274,16 +245,15 @@ void UAsceCombatVisualProcessor::Execute(FMassEntityManager& EntityManager, FMas
 					Playback->bValid = false;
 
 					UAsceAnimSet* AnimSet = FindOrLoadAnimSet(UnitTypeId);
-					const FName ClipName = ResolveClipName(ActionState, ActionDefId, UnitTypeId);
-					bool bLoop = false;
-					if (const FAsceAnimClip* Clip = ResolveClip(AnimSet, ClipName, ActionState, bLoop))
+					const TSoftObjectPtr<UAnimSequence> ClipRef = ResolveClipRef(ActionState, ActionDefId, UnitTypeId);
+					if (const FAsceAnimClip* Clip = ResolveClip(AnimSet, ClipRef))
 					{
 						Playback->AnimIndex = Clip->AnimIndex;
 						Playback->StartFrame = Clip->StartFrame;
 						Playback->EndFrame = Clip->EndFrame;
 						Playback->FrameRate = AnimSet ? FMath::Max(AnimSet->FrameRate, 1.f) : 30.f;
-						Playback->PlayRate = FMath::Max(ActionPlayRate, 0.01f) * FMath::Max(Clip->BasePlayRate, 0.01f);
-						Playback->bLoop = Clip->bLoop;
+						Playback->PlayRate = FMath::Max(ActionPlayRate, 0.01f);
+						Playback->bLoop = IsLoopingState(ActionState);
 						Playback->bValid = true;
 					}
 				}

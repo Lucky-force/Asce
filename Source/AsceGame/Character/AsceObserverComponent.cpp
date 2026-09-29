@@ -439,6 +439,10 @@ void UAsceObserverComponent::InitializePlayerInput(UInputComponent* PlayerInputC
 					AsceIC->BindNativeAction(InputConfig, AsceGameplayTags::InputTag_Select, ETriggerEvent::Completed, this, &ThisClass::Input_Select_Stop, /*bLogIfNotFound=*/ false);
 					AsceIC->BindNativeAction(InputConfig, AsceGameplayTags::InputTag_Select, ETriggerEvent::Canceled, this, &ThisClass::Input_Select_Cancel, /*bLogIfNotFound=*/ false);
 					AsceIC->BindNativeAction(InputConfig, AsceGameplayTags::InputTag_Order_Move, ETriggerEvent::Triggered, this, &ThisClass::Input_Order_Move, /*bLogIfNotFound=*/ false);
+					AsceIC->BindNativeAction(InputConfig, AsceGameplayTags::InputTag_Skill1, ETriggerEvent::Started, this, &ThisClass::Input_Skill1, /*bLogIfNotFound=*/ false);
+					AsceIC->BindNativeAction(InputConfig, AsceGameplayTags::InputTag_Skill2, ETriggerEvent::Started, this, &ThisClass::Input_Skill2, /*bLogIfNotFound=*/ false);
+					AsceIC->BindNativeAction(InputConfig, AsceGameplayTags::InputTag_Skill3, ETriggerEvent::Started, this, &ThisClass::Input_Skill3, /*bLogIfNotFound=*/ false);
+					AsceIC->BindNativeAction(InputConfig, AsceGameplayTags::InputTag_Stop, ETriggerEvent::Started, this, &ThisClass::Input_Stop, /*bLogIfNotFound=*/ false);
 				}
 			}
 		}
@@ -626,6 +630,36 @@ void UAsceObserverComponent::Input_Order_Move(const FInputActionValue& InputActi
 		PC->GetMousePosition(MousePosition.X, MousePosition.Y);
 		OnMoveOrder.Broadcast(MousePosition);
 	}
+}
+
+void UAsceObserverComponent::BroadcastSkillOrder(const int32 SlotId)
+{
+	if (APawn* Pawn = GetPawn<APawn>())
+	{
+		APlayerController* PC = Pawn->GetController<APlayerController>();
+		if (!IsValid(PC))
+		{
+			return;
+		}
+		// 指针在 UI 上：不下发技能指令
+		if (IsPointerOverUI())
+		{
+			return;
+		}
+		FVector2D MousePosition;
+		PC->GetMousePosition(MousePosition.X, MousePosition.Y);
+		OnSkillOrder.Broadcast(SlotId, MousePosition);
+	}
+}
+
+void UAsceObserverComponent::Input_Skill1(const FInputActionValue& InputActionValue) { BroadcastSkillOrder(0); }
+void UAsceObserverComponent::Input_Skill2(const FInputActionValue& InputActionValue) { BroadcastSkillOrder(1); }
+void UAsceObserverComponent::Input_Skill3(const FInputActionValue& InputActionValue) { BroadcastSkillOrder(2); }
+
+void UAsceObserverComponent::Input_Stop(const FInputActionValue& InputActionValue)
+{
+	// S：不依赖鼠标位置，也不受 UI 阻挡影响（随时可停）
+	OnStopOrder.Broadcast();
 }
 
 

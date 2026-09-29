@@ -164,6 +164,34 @@ namespace
 	}
 }
 
+/**
+ * 生命周期过滤：**请求销毁**（`FAsceLifecycleFragment`）的实体 ⇒ 把 LOD 覆写成 Off
+ * （随后各能力按 LOD 走 Remove；真正的销毁由 `UAsceSimulationSubsystem` 在"bubble 引用计数归 0"后做）。
+ * 必须紧跟在**视野过滤之后**：否则视野过滤可能把 Off 又抬回 Low（可见）⇒ 销毁实体被复制。
+ */
+static void ApplyLifecycleFilterToChunk(FMassExecutionContext& Context)
+{
+	if (!Context.DoesArchetypeHaveFragment<FAsceLifecycleFragment>()
+		|| !Context.DoesArchetypeHaveFragment<FMassReplicationLODFragment>())
+	{
+		return;
+	}
+	TArrayView<FMassReplicationLODFragment> LODList = Context.GetMutableFragmentView<FMassReplicationLODFragment>();
+	const TConstArrayView<FAsceLifecycleFragment> Lifecycles = Context.GetFragmentView<FAsceLifecycleFragment>();
+	const int32 Num = Context.GetNumEntities();
+	if (Lifecycles.Num() != Num)
+	{
+		return;
+	}
+	for (int32 i = 0; i < Num; ++i)
+	{
+		if (Lifecycles[i].IsDestroyRequested())
+		{
+			LODList[i].LOD = EMassLOD::Off;
+		}
+	}
+}
+
 TArray<TUniquePtr<FAsceReplicationCapabilityBase>>& UAsceUnitReplicator::GetCapabilities()
 {
 	static TArray<TUniquePtr<FAsceReplicationCapabilityBase>> Capabilities;
@@ -195,6 +223,9 @@ void UAsceUnitReplicator::AddRequirements(FMassEntityQuery& EntityQuery)
 	// 过滤逻辑靠 `Radii.Num() == Num` / `Footprints.Num() == Num` 判断退化路径。
 	EntityQuery.AddRequirement<FAgentRadiusFragment>(EMassFragmentAccess::ReadOnly, EMassFragmentPresence::Any);
 	EntityQuery.AddRequirement<FAsceGridFootprintFragment>(EMassFragmentAccess::ReadOnly, EMassFragmentPresence::Any);
+	// 生命周期（同上：必须显式声明）。用 **ReadWrite**：过滤只读它，但各能力的 Add/Remove 要**写**引用计数
+	// （同一份共享 Query，访问权限按最宽的来）——否则能力的 `GetMutableFragmentView` 会命中 "not bound for writing"。
+	EntityQuery.AddRequirement<FAsceLifecycleFragment>(EMassFragmentAccess::ReadWrite, EMassFragmentPresence::Any);
 
 	for (const TUniquePtr<FAsceReplicationCapabilityBase>& Capability : GetCapabilities())
 	{
@@ -250,6 +281,9 @@ void UAsceUnitReplicator::ProcessClientReplication(FMassExecutionContext& Contex
 		}
 	}
 	// ────────────────────────────────────────────────────────────
+
+	// 生命周期过滤：请求销毁的实体一律 LOD Off（放在视野过滤之后 ⇒ Off 优先级最高）
+	ApplyLifecycleFilterToChunk(Context);
 
 	const int32 NumEntities = Context.GetNumEntities();
 	if (NumEntities == 0)

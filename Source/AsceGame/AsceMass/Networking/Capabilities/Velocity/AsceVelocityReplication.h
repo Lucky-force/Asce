@@ -5,6 +5,7 @@
 #include "MassClientBubbleHandler.h"
 #include "MassClientBubbleInfoBase.h"
 #include "AsceMass/Networking/Core/AsceReplicationVelocityHandlers.h"
+#include "AsceMass/Networking/Core/AsceLightReplicatedAgent.h"
 #include "AsceVelocityReplication.generated.h"
 
 /**
@@ -21,7 +22,7 @@
  * TAsceVelocityClientBubbleHandler::SetVelocityFromFragment），不是只在Add时同步一次。
  */
 USTRUCT()
-struct FAsceVelocityReplicatedAgent : public FReplicatedAgentBase
+struct FAsceVelocityReplicatedAgent : public FAsceLightReplicatedAgentBase
 {
 	GENERATED_BODY()
 

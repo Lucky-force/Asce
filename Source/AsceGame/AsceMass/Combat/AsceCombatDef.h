@@ -5,8 +5,11 @@
 #include "CoreMinimal.h"
 #include "Engine/DataTable.h"
 #include "StructUtils/InstancedStruct.h"
+#include "UObject/SoftObjectPtr.h"
 
 #include "AsceCombatDef.generated.h"
+
+class UAnimSequence;
 
 /**
  * 动作 / 技能定义（数据表行；服务器与客户端共用同一份）。
@@ -74,20 +77,6 @@ enum class EAsceSkillType : uint8
 	Passive UMETA(DisplayName = "被动（v1 只做常驻属性加成）"),
 };
 
-/** 动作动画引用：某个动作状态下播哪个**语义 clip 名**（实际烘焙段由单位 AnimSet 解析，见 `AsceAnimDef.h` / §7） */
-USTRUCT(BlueprintType)
-struct FAsceActionClipRef
-{
-	GENERATED_BODY()
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action")
-	EAsceActionState State = EAsceActionState::Casting;
-
-	/** 语义 clip 名（空 = 走 AnimSet 回退链：Cast_Generic/Channel_Generic/Attack → Idle） */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action")
-	FName ClipName;
-};
-
 /**
  * 动作管线配置（**多态基类**，技能表里用 `FInstancedStruct` 存）。
  *
@@ -105,10 +94,10 @@ struct FAsceSkillCastConfig
 
 	/** 是否持续施法 */
 	virtual bool IsChannel() const { return false; }
-	/** 前摇/施法动画 clip 名（空 = AnimSet 回退） */
-	virtual FName GetCastAnim() const { return NAME_None; }
-	/** 持续施法动画 clip 名（空 = AnimSet 回退） */
-	virtual FName GetChannelAnim() const { return NAME_None; }
+	/** 前摇/施法动画资产（空 = 该状态没有动画，不播） */
+	virtual TSoftObjectPtr<UAnimSequence> GetCastAnim() const { return TSoftObjectPtr<UAnimSequence>(); }
+	/** 持续施法动画资产（空 = 该状态没有动画，不播） */
+	virtual TSoftObjectPtr<UAnimSequence> GetChannelAnim() const { return TSoftObjectPtr<UAnimSequence>(); }
 	/** 真正结算时刻（相对动作开始，秒） */
 	virtual float GetTriggerTime() const { return 0.f; }
 	/** 动作总时长（普通 = 动画尾巴；持续 = 前摇时长，秒） */
@@ -126,7 +115,7 @@ struct FAsceNormalCastConfig : public FAsceSkillCastConfig
 	GENERATED_BODY()
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action")
-	FName CastAnim;
+	TSoftObjectPtr<UAnimSequence> CastAnim;
 
 	/** 动作总时长（动画尾巴，秒） */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action")
@@ -136,7 +125,7 @@ struct FAsceNormalCastConfig : public FAsceSkillCastConfig
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action")
 	float TriggerTime = 1.f;
 
-	virtual FName GetCastAnim() const override { return CastAnim; }
+	virtual TSoftObjectPtr<UAnimSequence> GetCastAnim() const override { return CastAnim; }
 	virtual float GetTriggerTime() const override { return TriggerTime; }
 	virtual float GetTotalCastTime() const override { return TotalCastTime; }
 };
@@ -148,14 +137,14 @@ struct FAsceChannelCastConfig : public FAsceSkillCastConfig
 	GENERATED_BODY()
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action")
-	FName CastAnim;
+	TSoftObjectPtr<UAnimSequence> CastAnim;
 
 	/** 前摇时长（秒） */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action")
 	float CastTime = 1.f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action")
-	FName ChannelAnim;
+	TSoftObjectPtr<UAnimSequence> ChannelAnim;
 
 	/** 持续施法总时长（秒） */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action")
@@ -166,8 +155,8 @@ struct FAsceChannelCastConfig : public FAsceSkillCastConfig
 	float TickInterval = 0.5f;
 
 	virtual bool IsChannel() const override { return true; }
-	virtual FName GetCastAnim() const override { return CastAnim; }
-	virtual FName GetChannelAnim() const override { return ChannelAnim; }
+	virtual TSoftObjectPtr<UAnimSequence> GetCastAnim() const override { return CastAnim; }
+	virtual TSoftObjectPtr<UAnimSequence> GetChannelAnim() const override { return ChannelAnim; }
 	virtual float GetTriggerTime() const override { return CastTime; }
 	virtual float GetTotalCastTime() const override { return CastTime; }
 	virtual float GetChannelDuration() const override { return ChannelDuration; }
@@ -229,11 +218,7 @@ struct FAsceActionDef : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action")
 	int32 SpawnGroupId = 0;
 
-	/** 动作管线配置（多态：普通 / 持续；**时间字段的唯一来源**） */
+	/** 动作管线配置（多态：普通 / 持续）：**时间字段 + 施法/持续动画的唯一来源**（`GetCastAnim()/GetChannelAnim()`；空 = 不播） */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action", meta = (BaseStruct = "/Script/AsceGame.AsceSkillCastConfig"))
 	FInstancedStruct CastConfig;
-
-	/** 动画：状态 → 语义 clip 名（空 = 走 AnimSet 回退链，见 `AsceAnimDef.h` / §7） */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action")
-	TArray<FAsceActionClipRef> AnimClips;
 };

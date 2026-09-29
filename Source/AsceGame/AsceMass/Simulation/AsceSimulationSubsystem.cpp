@@ -1,6 +1,7 @@
 // AsceSimulationSubsystem.cpp
 #include "AsceSimulationSubsystem.h"
 #include "AsceMass/Combat/AsceCombatSubsystem.h"   // 阶段 5b：战斗阶段
+#include "AsceMass/Lifecycle/AsceDestroyQueueSubsystem.h" // 阶段 -2：死亡队列 drain
 #include "AsceMass/Spawn/AsceSpawnQueueSubsystem.h" // 阶段 8：生成队列 drain
 
 #include "AsceTickContext.h"
@@ -8,6 +9,9 @@
 #include "Engine/World.h"
 #include "GameFramework/GameStateBase.h"
 #include "MassEntitySubsystem.h"
+#include "MassEntityQuery.h"
+#include "MassExecutionContext.h"
+#include "AsceMass/Fragments/AsceCoreFragments.h"   // FAsceLifecycleFragment
 #include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "GameModes/AsceExperienceManagerComponent.h"
 #include "AsceMass/SpatialGrid/AsceSpatialGridSubsystem.h"
@@ -158,6 +162,23 @@ void UAsceSimulationSubsystem::Tick(float DeltaTime)
 		return;
 	}
 
+	// 阶段 -2（**帧首、阶段 2 之前**）：死亡队列 drain —— 限流发死亡 RPC + 置 destroyRequested
+	// （见 `UAsceDestroyQueueSubsystem`：RPC 先于本帧末的复制移除到达，客户端查实体时它还在）。
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(AsceSim_DestroyQueue);
+		if (UAsceDestroyQueueSubsystem* DestroyQueue = World->GetSubsystem<UAsceDestroyQueueSubsystem>())
+		{
+			DestroyQueue->RunDestroyQueueStage();
+		}
+	}
+
+	// 阶段 -1（**帧首、阶段 2 之前**）：销毁已"请求销毁且 bubble 引用计数归 0"的实体。
+	// 必须早于阶段 2（空间数据），否则空间层会收录已销毁实体/留悬空句柄。
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(AsceSim_Destroy);
+		RunDestroyStage();
+	}
+
 	// 前置（不在本阶段链里）：结构变化（footprint 增删/搬家、Ether 注册）由 TG_PrePhysics 的 Mass observer 处理，
 	// 早于本调度器；它们 push 的命令会在阶段 5 的唯一 drain 点被消费（此时建筑层已是本轮最新）。
 
@@ -248,5 +269,39 @@ void UAsceSimulationSubsystem::Tick(float DeltaTime)
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(AsceSim_SpawnQueue);
 		SpawnQueue->RunGenerationStage();
+	}
+}
+
+void UAsceSimulationSubsystem::RunDestroyStage()
+{
+	if (!TickContext.bAuthority || !TickContext.EntityManager)
+	{
+		return;   // 只权威端；客户端实体销毁由复制的 Remove 驱动（引擎已做）
+	}
+	FMassEntityManager& EntityManager = *TickContext.EntityManager;
+
+	// 挑出"请求销毁 且 bubble 引用计数归 0"的实体（引用计数归 0 = 各 bubble 都真的把它移除了 ⇒ 零幽灵）
+	FMassEntityQuery Query(EntityManager.AsShared());
+	Query.AddRequirement<FAsceLifecycleFragment>(EMassFragmentAccess::ReadOnly);
+	Query.CacheArchetypes();
+	FMassExecutionContext ExecContext(EntityManager);
+
+	TArray<FMassEntityHandle> ToDestroy;
+	Query.ForEachEntityChunk(ExecContext, [&ToDestroy](FMassExecutionContext& Ctx)
+	{
+		const TConstArrayView<FAsceLifecycleFragment> Lifecycles = Ctx.GetFragmentView<FAsceLifecycleFragment>();
+		for (int32 i = 0; i < Ctx.GetNumEntities(); ++i)
+		{
+			if (Lifecycles[i].IsDestroyRequested() && Lifecycles[i].GetBubbleRefCount() == 0)
+			{
+				ToDestroy.Add(Ctx.GetEntity(i));
+			}
+		}
+	});
+
+	// 结构性变更必须在遍历外做
+	for (const FMassEntityHandle& Handle : ToDestroy)
+	{
+		EntityManager.DestroyEntity(Handle);
 	}
 }

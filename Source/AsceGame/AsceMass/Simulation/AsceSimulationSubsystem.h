@@ -44,6 +44,9 @@ public:
 	/** 本帧的共享上下文（只在该世界的 Tick 期间有效）。 */
 	const FAsceTickContext& GetTickContext() const { return TickContext; }
 
+	/** 阶段 -1（帧首、阶段 2 之前）：销毁"请求销毁 且 bubble 引用计数归 0"的实体（仅权威端）。 */
+	void RunDestroyStage();
+
 	// ── 世界初始化（loading 依赖它）──
 
 	/** 关卡里的世界数据源（`AAsceWorldMapReplicatorActor`）在 BeginPlay 注册；**注册即尝试初始化**（不依赖 Tick）。 */

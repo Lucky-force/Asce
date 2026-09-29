@@ -6,6 +6,8 @@
 #include "MassEntityQuery.h"
 #include "MassExecutionContext.h"
 #include "MassMovementFragments.h"
+#include "Engine/World.h"
+#include "AsceServeWindow.h"
 #include "AsceReplicationVelocityHandlers.generated.h"
 
 namespace UE::AsceMass::Replication
@@ -92,8 +94,8 @@ public:
 	using FAgentType = typename AgentArrayItem::FReplicatedAgentType;
 
 #if UE_REPLICATION_COMPILE_SERVER_CODE
-	/** 服务器侧：Fragment变化时，判断速度是否超过容差，超过就写进Agent+标脏 */
-	void SetVelocityFromFragment(const FMassReplicatedAgentHandle Handle, const FVector& Velocity)
+	/** 服务器侧：Fragment变化时，判断速度是否超过容差，超过就写进Agent+标脏（含"按距离的更新间隔"门控） */
+	void SetVelocityFromFragment(const FMassReplicatedAgentHandle Handle, const FVector& Velocity, const float IntervalSeconds)
 	{
 		check(this->AgentHandleManager.IsValidHandle(Handle));
 		const int32 AgentsIdx = this->AgentLookupArray[Handle.GetIndex()].AgentsIdx;
@@ -103,11 +105,21 @@ public:
 
 		FReplicatedAgentVelocityData& ReplicatedData = Item.Agent.GetReplicatedVelocityDataMutable();
 
-		if (!Velocity.Equals(ReplicatedData.GetVelocity(), UE::AsceMass::Replication::VelocityReplicateTolerance))
+		if (Velocity.Equals(ReplicatedData.GetVelocity(), UE::AsceMass::Replication::VelocityReplicateTolerance))
 		{
-			ReplicatedData.SetVelocity(Velocity);
-			this->Serializer->MarkItemDirty(Item);
+			return;
 		}
+
+		// 三步门控（见 `Core/AsceServeWindow.h`）：按距离的 interval → 票据窗口 → 单帧预算；不过就跳过（不写影子 ⇒ 下帧仍是候选）
+		const float Now = this->GetNowSeconds();
+		if (!this->TryReserveForSend(Item.Agent, IntervalSeconds, Now))
+		{
+			return;
+		}
+
+		ReplicatedData.SetVelocity(Velocity);
+		this->Serializer->MarkItemDirty(Item);
+		this->MarkSent(Item.Agent, Now);
 	}
 
 	/** 本客户端bubble里是否已经有这个NetID的Agent（有则返回其handle，没有返回无效handle）。
@@ -118,6 +130,8 @@ public:
 		const FMassReplicatedAgentHandle* Found = this->NetworkIDToAgentHandleMap.Find(NetID);
 		return Found ? *Found : FMassReplicatedAgentHandle();
 	}
+
+	// TryReserveForAdd()/IsFrameBudgetExhausted() 由基类 `TAsceServeWindowHandler` 提供
 #endif // UE_REPLICATION_COMPILE_SERVER_CODE
 
 protected:
@@ -140,6 +154,7 @@ protected:
 		DesiredMovementFragment.DesiredVelocity = Data.GetVelocity();
 	}
 #endif // UE_REPLICATION_COMPILE_CLIENT_CODE
+	// ServeWindow / TryReserveForAdd / ... 由基类 `TAsceServeWindowHandler`（经被动基类）提供
 };
 
 /**
@@ -165,9 +180,9 @@ public:
 	}
 
 	template<typename BubbleHandlerType>
-	void ModifyEntity(const FMassReplicatedAgentHandle Handle, const int32 EntityIdx, BubbleHandlerType& Bubble) const
+	void ModifyEntity(const FMassReplicatedAgentHandle Handle, const int32 EntityIdx, BubbleHandlerType& Bubble, const float IntervalSeconds) const
 	{
-		Bubble.SetVelocityFromFragment(Handle, DesiredMovementList[EntityIdx].DesiredVelocity);
+		Bubble.SetVelocityFromFragment(Handle, DesiredMovementList[EntityIdx].DesiredVelocity, IntervalSeconds);
 	}
 
 protected:

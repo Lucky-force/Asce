@@ -24,8 +24,9 @@ UAsceLocalFogVisibilityProcessor::UAsceLocalFogVisibilityProcessor()
 {
 	// 表现层处理器：走引擎标准处理链（可视化处理器都在那里）
 	bAutoRegisterWithProcessingPhases = true;
-	// 只在 standalone / 听服 host 跑（客户端由复制裁剪负责；专用服务器无本地玩家，Execute 里早退）
-	ExecutionFlags = static_cast<int32>(EProcessorExecutionFlags::Standalone | EProcessorExecutionFlags::Server);
+	// 三端都要跑：客户端靠它做"死亡隐藏"（敌人已被复制裁剪，迷雾那条在客户端不适用）；
+	// standalone / 听服 host 额外做迷雾视野。专用服务器无本地玩家，Execute 里早退。
+	ExecutionFlags = static_cast<int32>(EProcessorExecutionFlags::AllNetModes);
 
 	// 顺序必须卡在"距离 LOD 算完"和"决定 representation"之间：
 	// 否则会被距离 LOD 覆盖回去（闪一帧）或晚一帧才隐藏。
@@ -39,6 +40,8 @@ void UAsceLocalFogVisibilityProcessor::ConfigureQueries(const TSharedRef<FMassEn
 	EntityQuery.RegisterWithProcessor(*this);
 	// 只需要表现 LOD（有它 ⇒ 实体挂了可视化 trait）；几何/队伍由 Fog 的便捷判定自己按需取
 	EntityQuery.AddRequirement<FMassRepresentationLODFragment>(EMassFragmentAccess::ReadWrite);
+	// 死亡隐藏：核心 trait 恒挂，但用 Optional 保险（缺了就当没死）
+	EntityQuery.AddRequirement<FAsceLifecycleFragment>(EMassFragmentAccess::ReadOnly, EMassFragmentPresence::Optional);
 }
 
 void UAsceLocalFogVisibilityProcessor::Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context)
@@ -49,47 +52,67 @@ void UAsceLocalFogVisibilityProcessor::Execute(FMassEntityManager& EntityManager
 		return;
 	}
 
-	// 本地玩家队伍（专用服务器/观战无本地玩家 → 不做）
-	APlayerController* PC = GEngine ? GEngine->GetFirstLocalPlayerController(World) : nullptr;
-	IGenericTeamAgentInterface* TeamAgent = PC ? Cast<IGenericTeamAgentInterface>(PC) : nullptr;
-	if (!TeamAgent)
+	// 客户端没有迷雾数据（敌人已被复制裁剪）⇒ 只做"死亡隐藏"；standalone / 听服 host 额外做迷雾
+	const bool bClient = (World->GetNetMode() == NM_Client);
+
+	UAsceFogSubsystem* Fog = nullptr;
+	int32 TeamKey = 0;
+	if (!bClient)
 	{
-		return;
-	}
-	const int32 TeamId = AsceNormalizeTeamId(GenericTeamIdToInteger(TeamAgent->GetGenericTeamId()));
-	if (TeamId == AsceNeutralTeamId)
-	{
-		return;
+		// 本地玩家队伍（专用服务器/观战无本地玩家 → 不做）
+		APlayerController* PC = GEngine ? GEngine->GetFirstLocalPlayerController(World) : nullptr;
+		IGenericTeamAgentInterface* TeamAgent = PC ? Cast<IGenericTeamAgentInterface>(PC) : nullptr;
+		if (!TeamAgent)
+		{
+			return;
+		}
+		const int32 TeamId = AsceNormalizeTeamId(GenericTeamIdToInteger(TeamAgent->GetGenericTeamId()));
+		if (TeamId == AsceNeutralTeamId)
+		{
+			return;
+		}
+
+		Fog = UAsceFogSubsystem::Get(World);
+		AAsceGameState* GameState = World->GetGameState<AAsceGameState>();
+		if (!Fog || !Fog->IsReady() || !GameState)
+		{
+			return;
+		}
+		TeamKey = GameState->GetTeamKey(TeamId);
+		if (TeamKey == 0)
+		{
+			return;   // 本端队伍未登记：不裁（安全默认）
+		}
 	}
 
-	UAsceFogSubsystem* Fog = UAsceFogSubsystem::Get(World);
-	AAsceGameState* GameState = World->GetGameState<AAsceGameState>();
-	if (!Fog || !Fog->IsReady() || !GameState)
-	{
-		return;
-	}
-	const int32 TeamKey = GameState->GetTeamKey(TeamId);
-	if (TeamKey == 0)
-	{
-		return;   // 本端队伍未登记：不裁（安全默认）
-	}
-
-	EntityQuery.ForEachEntityChunk(Context, [&EntityManager, Fog, TeamKey](FMassExecutionContext& Ctx)
+	EntityQuery.ForEachEntityChunk(Context, [&EntityManager, Fog, TeamKey, bClient](FMassExecutionContext& Ctx)
 	{
 		const TArrayView<FMassRepresentationLODFragment> LODList = Ctx.GetMutableFragmentView<FMassRepresentationLODFragment>();
+		const TConstArrayView<FAsceLifecycleFragment> Lifecycles = Ctx.GetFragmentView<FAsceLifecycleFragment>();
 		const int32 Num = Ctx.GetNumEntities();
 		for (int32 i = 0; i < Num; ++i)
 		{
-			// 距离剔除已判 Off 的直接跳过（本来就不渲染，也省掉迷雾查询）
+			// 距离剔除已判 Off 的直接跳过（本来就不渲染，也省掉后续判定）
 			if (LODList[i].LOD >= EMassLOD::Off)
 			{
 				continue;
 			}
 
-			const FMassEntityHandle Entity = Ctx.GetEntity(i);
-			if (!Fog->IsEntityVisibleToLocalTeam(EntityManager, Entity, TeamKey))
+			// ① 死亡隐藏（两端通用）：权威端死亡现场置、客户端由 `Client_NotifyDeaths` 本地置
+			if (Lifecycles.Num() == Num && Lifecycles[i].IsDying())
 			{
-				LODList[i].LOD = EMassLOD::Off;   // 视野剔除：只影响表现（复制用的是另一个 fragment）
+				LODList[i].LOD = EMassLOD::Off;
+				continue;
+			}
+
+			// ② 迷雾视野（只 standalone / 听服 host）：只影响表现（复制用的是另一个 fragment）
+			if (!bClient)
+			{
+				const FMassEntityHandle Entity = Ctx.GetEntity(i);
+				if (!Fog->IsEntityVisibleToLocalTeam(EntityManager, Entity, TeamKey))
+				{
+					LODList[i].LOD = EMassLOD::Off;
+				}
 			}
 		}
 	});

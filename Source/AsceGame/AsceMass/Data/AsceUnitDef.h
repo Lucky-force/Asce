@@ -7,6 +7,7 @@
 #include "AsceUnitDef.generated.h"
 
 class UAsceAnimSet;
+class UAnimSequence;
 
 /**
  * RTS 单位类型定义（实体定义表行 `Def` 的一种）：只放"同一结构、数值不同"的每类型数据。
@@ -59,7 +60,7 @@ struct FAsceRTSUnitDef : public FAsceEntityDefBase
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Combat")
 	float AttackDamage = 10.f;
 
-	/** 攻击的动作管线配置（NormalCast；时间按 1.0x 配，运行时由 AttackSpeed 缩放；空 = 默认 Total=1s / Trigger=1s） */
+	/** 攻击的动作管线配置（NormalCast）：时间 + **攻击动画 `CastAnim`**（1.0x 配，运行时由 AttackSpeed 缩放；空 = 默认 Total=1s / Trigger=1s、无攻击动画） */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Combat", meta = (BaseStruct = "/Script/AsceGame.AsceNormalCastConfig"))
 	FInstancedStruct AttackCastConfig;
 
@@ -85,6 +86,22 @@ struct FAsceRTSUnitDef : public FAsceEntityDefBase
 	TArray<int32> SkillSlots;
 
 	/** 该单位类型的动画集（Bone 模式；客户端通过复制的 UniqueTypeId 查本行解析动画）。见 `Combat/AsceAnimDef.h` */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation")
 	TSoftObjectPtr<UAsceAnimSet> AnimSet;
+
+	// ── 动画语义（AnimSet 只是"资产 → 帧段"的库；哪个状态播哪条动画由本行决定）──
+	// 规则：**没配就不播**（不再有保留名/回退链）。Idle/Move/Dying 用下面三个槽位；
+	// **攻击动画 = `AttackCastConfig.CastAnim`**（动画统一跟 CastConfig 走，不再单列 AttackAnim）。
+
+	/** 待机（循环） */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation")
+	TSoftObjectPtr<UAnimSequence> IdleAnim;
+
+	/** 移动（循环） */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation")
+	TSoftObjectPtr<UAnimSequence> MoveAnim;
+
+	/** 死亡（一次性） */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation")
+	TSoftObjectPtr<UAnimSequence> DyingAnim;
 };

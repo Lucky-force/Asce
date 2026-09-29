@@ -54,6 +54,9 @@ void UAsceRTSEntityTrait::BuildTemplate(FMassEntityTemplateBuildContext& BuildCo
 	// 阵营 fragment（结构）：值由生成方按归属写入（工厂 TeamKey 参数 / 建筑 placement），这里只给默认值
 	BuildContext.AddFragment<FAsceTeamFragment>();
 
+	// 生命周期（服务端专用、不复制）：销毁请求 + bubble 引用计数。见 `AsceCoreFragments.h`
+	BuildContext.AddFragment<FAsceLifecycleFragment>();
+
 	if (bAddHealth)
 	{
 		FAsceHealthFragment& Health = BuildContext.AddFragment_GetRef<FAsceHealthFragment>();

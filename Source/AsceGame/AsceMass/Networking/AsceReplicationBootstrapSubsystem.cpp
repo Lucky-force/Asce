@@ -14,6 +14,8 @@
 #include "AsceMass/Networking/Capabilities/Team/AsceTeamReplicationCapability.h"
 #include "AsceMass/Networking/Capabilities/Action/AsceActionReplication.h"
 #include "AsceMass/Networking/Capabilities/Action/AsceActionReplicationCapability.h"
+#include "AsceMass/Networking/Capabilities/SkillPanel/AsceSkillPanelReplication.h"
+#include "AsceMass/Networking/Capabilities/SkillPanel/AsceSkillPanelReplicationCapability.h"
 #include "AsceMass/Networking/Core/AsceUnitReplicator.h"
 #include "AsceMass/Data/AsceEntityDefLibrary.h"
 #include "MassReplicationSubsystem.h"
@@ -45,6 +47,7 @@ namespace
 		UAsceUnitReplicator::RegisterCapability(MakeUnique<FAsceManaReplicationCapability>());
 		UAsceUnitReplicator::RegisterCapability(MakeUnique<FAsceTeamReplicationCapability>());
 		UAsceUnitReplicator::RegisterCapability(MakeUnique<FAsceActionReplicationCapability>());
+		UAsceUnitReplicator::RegisterCapability(MakeUnique<FAsceSkillPanelReplicationCapability>());
 	}
 }
 
@@ -64,6 +67,7 @@ void UAsceReplicationBootstrapSubsystem::PostInitialize()
 		ReplicationSubsystem->RegisterBubbleInfoClass(AAsceManaClientBubbleInfo::StaticClass());
 		ReplicationSubsystem->RegisterBubbleInfoClass(AAsceTeamClientBubbleInfo::StaticClass());
 		ReplicationSubsystem->RegisterBubbleInfoClass(AAsceActionClientBubbleInfo::StaticClass());
+		ReplicationSubsystem->RegisterBubbleInfoClass(AAsceSkillPanelClientBubbleInfo::StaticClass());
 	}
 }
 

@@ -122,3 +122,49 @@ struct FAsceUnitDefFragment : public FMassFragment
 
 	uint16 UniqueTypeId = 0;
 };
+
+/**
+ * 实体生命周期（**服务端专用，不复制**；见 `Networking/Mass复制设计.md` §8）：
+ *  - 低 14 位 = 还有多少个 bubble item 持有它（`BubbleRefCount`，上限 16383）；
+ *  - bit14 = `bDying`（已死亡/待销毁：死亡现场置，其它系统据此跳过它）；
+ *  - bit15 = `bDestroyRequested`（死亡队列 drain 时置 ⇒ 复制侧 Off ⇒ 移除）。
+ *
+ * **销毁条件 = `bDestroyRequested` 且 引用计数归 0**（由 `UAsceSimulationSubsystem` 在**帧首、阶段 2 之前**销毁）：
+ *  - 引用计数由各复制能力的 Add/Remove 成功时增减 ⇒ **Remove 被额度推迟也没事，计数不归 0 就不销毁**（零幽灵）；
+ *  - 三个字段打包进一个 `uint16`（**2B、零浪费**）；计数上限 16383（远超"客户端数 × 通道数"）。
+ */
+USTRUCT()
+struct FAsceLifecycleFragment : public FMassFragment
+{
+	GENERATED_BODY()
+
+	/** 还有多少个 bubble item 持有它（低 14 位） */
+	uint16 GetBubbleRefCount() const { return Packed & RefCountMask; }
+	void IncBubbleRefCount() { if ((Packed & RefCountMask) < RefCountMask) { ++Packed; } }
+	void DecBubbleRefCount() { if ((Packed & RefCountMask) != 0) { --Packed; } }
+
+	/** 已死亡/待销毁（死亡现场置；别处判断直接读它，零查表） */
+	bool IsDying() const { return (Packed & DyingFlag) != 0; }
+	void SetDying(const bool bValue)
+	{
+		if (bValue) { Packed |= DyingFlag; }
+		else { Packed &= ~DyingFlag; }
+	}
+
+	/** 请求销毁（队列 drain 时置） */
+	bool IsDestroyRequested() const { return (Packed & DestroyFlag) != 0; }
+	void SetDestroyRequested(const bool bValue)
+	{
+		if (bValue) { Packed |= DestroyFlag; }
+		else { Packed &= ~DestroyFlag; }
+	}
+
+private:
+	static constexpr uint16 RefCountMask = 0x3FFF;   // bit0..13：引用计数
+	static constexpr uint16 DyingFlag    = 0x4000;   // bit14：已死亡/待销毁
+	static constexpr uint16 DestroyFlag  = 0x8000;   // bit15：请求销毁
+
+	/** bit0..13 = 引用计数；bit14 = bDying；bit15 = bDestroyRequested */
+	UPROPERTY()
+	uint16 Packed = 0;
+};

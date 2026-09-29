@@ -32,6 +32,10 @@ namespace AsceGameplayTags
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(InputTag_Control, "InputTag.Control", "Key Control")
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(InputTag_Select, "InputTag.Select", "Trying to Select something")
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(InputTag_Order_Move, "InputTag.Order.Move", "Right click to issue a move order")
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(InputTag_Skill1, "InputTag.Skill.1", "Skill slot 1 (Q)")
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(InputTag_Skill2, "InputTag.Skill.2", "Skill slot 2 (W)")
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(InputTag_Skill3, "InputTag.Skill.3", "Skill slot 3 (E)")
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(InputTag_Stop, "InputTag.Stop", "Stop order (S)")
 
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(UI_SelectionChanged, "Asce.UI.SelectionChanged", "RTS 选择集合变化（UI 检视器等监听）")
 

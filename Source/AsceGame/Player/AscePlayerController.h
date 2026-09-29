@@ -5,6 +5,7 @@
 //#include "Camera/AsceCameraAssistInterface.h"
 #include "CommonPlayerController.h"
 #include "Engine/NetSerialization.h"
+#include "MassCommonTypes.h"
 #include "Teams/AsceTeamAgentInterface.h"
 
 #include "AscePlayerController.generated.h"
@@ -74,6 +75,13 @@ public:
 	 *  Unreliable：丢包下一拍覆盖即可，不需要重传。 */
 	UFUNCTION(Unreliable, Server)
 	UE_API void Server_UpdateViewFocus(const FVector_NetQuantize& Focus);
+
+	/** 服务器→客户端：一批"死亡通知"（NetID 数组）。
+	 *  服务器在帧中发出本 RPC（此时实体还在），同帧末才走复制移除；UE 保证 RPC 先于属性复制到达
+	 *  ⇒ 客户端处理时实体仍存在，可读 transform/类型等生成本地死亡特效。
+	 *  服务器只把"当时能看见该实体"的客户端放进数组（各 controller 逐个体检视野）。 */
+	UFUNCTION(Client, Reliable)
+	UE_API void Client_NotifyDeaths(const TArray<FMassNetworkID>& NetIDs);
 
 	//~AActor interface
 	UE_API virtual void PreInitializeComponents() override;

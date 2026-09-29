@@ -61,6 +61,10 @@ public:
     UFUNCTION(BlueprintCallable)
     void IssueStopOrder();
 
+    /** 技能指令（BP/UI 入口）：对当前选中单位释放槽位 `SlotId`（0/1/2 ↔ Q/W/E）的技能，目标 = 当前鼠标位置 */
+    UFUNCTION(BlueprintCallable)
+    void IssueSkillOrder(int32 SlotId);
+
 protected:
     UE_API virtual void OnRegister() override;
     UE_API virtual void BeginPlay() override;
@@ -89,6 +93,7 @@ private:
     void OnAdditiveClickSelect(const FVector2D& ScreenPos);
     void OnAdditiveDragSelect(const FVector2D& Start, const FVector2D& End);
     void OnMoveOrder(const FVector2D& ScreenPos);
+    void OnSkillOrder(int32 SlotId, const FVector2D& ScreenPos);
 
     // ── 内部 ──
     void BindToObserverComponent();
@@ -146,6 +151,8 @@ private:
     FDelegateHandle OnAdditiveSelectDelegateHandle;
     FDelegateHandle OnAdditiveDragSelectDelegateHandle;
     FDelegateHandle OnMoveOrderDelegateHandle;
+    FDelegateHandle OnSkillOrderDelegateHandle;
+    FDelegateHandle OnStopOrderDelegateHandle;
 
     // ── 右键移动到达半径（非平方，传给IssueMoveOrder后再平方）──
     UPROPERTY(EditAnywhere, Category = "Asce|RTSCommander")

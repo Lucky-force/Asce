@@ -6,6 +6,7 @@
 #include "MassClientBubbleHandler.h"
 #include "MassEntityView.h"
 #include "MassReplicationSubsystem.h"
+#include "AsceServeWindow.h"
 
 /**
  * 被动bubble的客户端处理基类——多bubble架构（一个entity拆多个FastArray bubble）能在客户端成立的另一半。
@@ -34,11 +35,26 @@
  * TAsceXxxClientBubbleHandler 里的 SetModifiedEntityData。
  */
 template<typename AgentArrayItem>
-class TAscePassiveClientBubbleHandler : public TClientBubbleHandlerBase<AgentArrayItem>
+class TAscePassiveClientBubbleHandler : public TAsceServeWindowHandler<AgentArrayItem>, public TClientBubbleHandlerBase<AgentArrayItem>
 {
 public:
 	using Super = TClientBubbleHandlerBase<AgentArrayItem>;
 	using FAgentType = typename AgentArrayItem::FReplicatedAgentType;
+
+	/** 服务器侧：当前世界时间（秒）——"按距离的更新间隔"用。 */
+	float GetNowSeconds() const
+	{
+		const UWorld* World = this->Serializer ? this->Serializer->GetWorld() : nullptr;
+		return World ? World->GetRealTimeSeconds() : 0.f;
+	}
+
+	/** Remove 前调用（owner/被动都可用）：把该 item 的票收回"待加入表"，让"再进来"时仍被窗口挡住。 */
+	void SavePendingTicketForHandle(const FMassReplicatedAgentHandle Handle)
+	{
+		const FMassAgentLookupData& Lookup = this->AgentLookupArray[Handle.GetIndex()];
+		const AgentArrayItem& Item = (*this->Agents)[Lookup.AgentsIdx];
+		this->SavePendingTicket(Lookup.NetID, Item.Agent.GetLastServedTicket());
+	}
 
 #if UE_REPLICATION_COMPILE_CLIENT_CODE
 protected:

@@ -4,7 +4,7 @@
 
 #include "AsceActionReplication.h"
 #include "AsceMass/Combat/AsceCombatFragments.h"
-#include "AsceMass/Fragments/AsceCoreFragments.h"   // FAsceUnitDefFragment（单位类型 id）
+#include "AsceMass/Fragments/AsceCoreFragments.h"   // FAsceLifecycleFragment
 #include "AsceMass/Networking/Core/AsceReplicationActionHandlers.h"
 #include "MassReplicationProcessor.h"
 #include "MassEntityQuery.h"
@@ -19,8 +19,6 @@ void FAsceActionReplicationCapability::AddRequirements(FMassEntityQuery& EntityQ
 	// CHECK_IF_VALID 的 checkf("Requested fragment type not bound")。
 	// （与 AsceUnitReplicator::AddRequirements 里 FAgentRadiusFragment/FAsceGridFootprintFragment 同理）
 	EntityQuery.AddRequirement<FAsceCombatFragment>(EMassFragmentAccess::ReadOnly, EMassFragmentPresence::Any);
-	// 单位类型 id（客户端解析 AnimSet 用）：同上，可选数据
-	EntityQuery.AddRequirement<FAsceUnitDefFragment>(EMassFragmentAccess::ReadOnly, EMassFragmentPresence::Any);
 }
 
 void FAsceActionReplicationCapability::ProcessChunk(FMassExecutionContext& Context, FMassReplicationContext& ReplicationContext
@@ -61,18 +59,18 @@ void FAsceActionReplicationCapability::ProcessChunk(FMassExecutionContext& Conte
 	{
 		CombatList = Context.GetFragmentView<FAsceCombatFragment>();
 	}
-	// 单位类型 id（客户端解析 AnimSet 用）
-	TConstArrayView<FAsceUnitDefFragment> DefList;
-	if (Context.DoesArchetypeHaveFragment<FAsceUnitDefFragment>())
+
+	// 生命周期（服务端）：Add/Remove 成功时增减 bubble 引用计数
+	TArrayView<FAsceLifecycleFragment> Lifecycles;
+	if (Context.DoesArchetypeHaveFragment<FAsceLifecycleFragment>())
 	{
-		DefList = Context.GetFragmentView<FAsceUnitDefFragment>();
+		Lifecycles = Context.GetMutableFragmentView<FAsceLifecycleFragment>();
 	}
 
 	const int32 NumEntities = Context.GetNumEntities();
 	for (int32 EntityIdx = 0; EntityIdx < NumEntities; ++EntityIdx)
 	{
 		const FAsceActionFragment& Action = ActionList[EntityIdx];
-		const uint16 UnitTypeId = (DefList.Num() == NumEntities) ? DefList[EntityIdx].UniqueTypeId : 0;
 
 		float PlayRate = 1.f;
 		if (Action.ActionState == EAsceActionState::Attack && CombatList.Num() == NumEntities)
@@ -95,29 +93,37 @@ void FAsceActionReplicationCapability::ProcessChunk(FMassExecutionContext& Conte
 		{
 			if (!ExistingHandle.IsValid())
 			{
-				FAsceActionReplicatedAgent ReplicatedAgent;
-				ReplicatedAgent.SetNetID(NetworkIDList[EntityIdx].NetID);
-				ReplicatedAgent.SetTemplateID(TemplateIDList[EntityIdx].ID);
-
-				FReplicatedActionStateData& Data = ReplicatedAgent.GetReplicatedActionStateDataMutable();
-				Data.SetActionState(ActionStateQ);
-				Data.SetActionDefId(ActionDefIdQ);
-				Data.SetCounter(CounterQ);
-				Data.SetPlayRateQ(PlayRateQ);
-				Data.SetFacingQ(FacingQ);
-				Data.SetUnitTypeId(UnitTypeId);
-
-				const FMassReplicatedAgentHandle NewHandle = Bubble.AddAgent(Context.GetEntity(EntityIdx), ReplicatedAgent);
-				if (!InOutMarkers[EntityIdx].IsValid())
+				// Add：先查"待加入票"（flapping 保护）再扣额度；不满足 ⇒ 本帧不 Add（下帧重试）
+				if (Bubble.TryReserveForAdd(NetworkIDList[EntityIdx].NetID))
 				{
-					InOutMarkers[EntityIdx] = NewHandle;
+					FAsceActionReplicatedAgent ReplicatedAgent;
+					ReplicatedAgent.SetNetID(NetworkIDList[EntityIdx].NetID);
+					ReplicatedAgent.SetTemplateID(TemplateIDList[EntityIdx].ID);
+
+					FReplicatedActionStateData& Data = ReplicatedAgent.GetReplicatedActionStateDataMutable();
+					Data.SetActionState(ActionStateQ);
+					Data.SetActionDefId(ActionDefIdQ);
+					Data.SetCounter(CounterQ);
+					Data.SetPlayRateQ(PlayRateQ);
+					Data.SetFacingQ(FacingQ);
+					Bubble.CommitAdd(NetworkIDList[EntityIdx].NetID, ReplicatedAgent, Bubble.GetNowSeconds());
+
+					const FMassReplicatedAgentHandle NewHandle = Bubble.AddAgent(Context.GetEntity(EntityIdx), ReplicatedAgent);
+					if (Lifecycles.Num() == NumEntities)
+					{
+						Lifecycles[EntityIdx].IncBubbleRefCount();
+					}
+					if (!InOutMarkers[EntityIdx].IsValid())
+					{
+						InOutMarkers[EntityIdx] = NewHandle;
+					}
 				}
 			}
 			else
 			{
 				// 周期同步：是否真的重新广播由 SetActionStateFromFragment 内部按字段比较判断，
 				// 只在动作切换的边沿标脏，不是无脑每帧发。
-				Bubble.SetActionStateFromFragment(ExistingHandle, ActionStateQ, ActionDefIdQ, CounterQ, PlayRateQ, FacingQ, UnitTypeId);
+				Bubble.SetActionStateFromFragment(ExistingHandle, ActionStateQ, ActionDefIdQ, CounterQ, PlayRateQ, FacingQ);
 				if (!InOutMarkers[EntityIdx].IsValid())
 				{
 					InOutMarkers[EntityIdx] = ExistingHandle;
@@ -126,7 +132,15 @@ void FAsceActionReplicationCapability::ProcessChunk(FMassExecutionContext& Conte
 		}
 		else if (ExistingHandle.IsValid())
 		{
-			Bubble.RemoveAgent(ExistingHandle);
+			if (Bubble.TryReserveForRemove())
+			{
+				Bubble.SavePendingTicketForHandle(ExistingHandle);
+				Bubble.RemoveAgent(ExistingHandle);
+				if (Lifecycles.Num() == NumEntities)
+				{
+					Lifecycles[EntityIdx].DecBubbleRefCount();
+				}
+			}
 		}
 	}
 #endif // UE_REPLICATION_COMPILE_SERVER_CODE

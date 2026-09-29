@@ -3,7 +3,10 @@
 #include "AsceVelocityReplicationCapability.h"
 
 #include "AsceVelocityReplication.h"
+#include "AsceMass/Fragments/AsceCoreFragments.h"   // FAsceLifecycleFragment
+#include "AsceMass/Networking/Core/AsceReplicationInterval.h"
 #include "MassReplicationProcessor.h"
+#include "MassCommonFragments.h"
 #include "MassMovementFragments.h"
 #include "MassEntityQuery.h"
 #include "MassExecutionContext.h"
@@ -12,6 +15,8 @@ void FAsceVelocityReplicationCapability::AddRequirements(FMassEntityQuery& Entit
 {
 	// AddRequirements内部已经是Any（见AsceReplicationVelocityHandlers.h），直接转发即可。
 	FAsceReplicationProcessorVelocityHandler::AddRequirements(EntityQuery);
+	// "按距离的更新间隔"需要读实体位置来算距离（Optional 数据）
+	EntityQuery.AddRequirement<FTransformFragment>(EMassFragmentAccess::ReadOnly, EMassFragmentPresence::Any);
 }
 
 void FAsceVelocityReplicationCapability::ProcessChunk(FMassExecutionContext& Context, FMassReplicationContext& ReplicationContext
@@ -38,9 +43,9 @@ void FAsceVelocityReplicationCapability::ProcessChunk(FMassExecutionContext& Con
 		return;
 	}
 
-	FAsceVelocityClientBubbleHandler& Bubble =
-		RepSubsystem.GetTypedClientBubbleChecked<AAsceVelocityClientBubbleInfo>(BubbleClassHandle, ClientHandle)
-			->GetAsceSerializer().Bubble;
+	AAsceVelocityClientBubbleInfo* BubbleActor =
+		RepSubsystem.GetTypedClientBubbleChecked<AAsceVelocityClientBubbleInfo>(BubbleClassHandle, ClientHandle);
+	FAsceVelocityClientBubbleHandler& Bubble = BubbleActor->GetAsceSerializer().Bubble;
 
 	FAsceReplicationProcessorVelocityHandler VelocityHandler;
 	VelocityHandler.CacheFragmentViews(Context);
@@ -48,6 +53,22 @@ void FAsceVelocityReplicationCapability::ProcessChunk(FMassExecutionContext& Con
 	const TConstArrayView<FMassNetworkIDFragment> NetworkIDList = Context.GetFragmentView<FMassNetworkIDFragment>();
 	const TConstArrayView<FReplicationTemplateIDFragment> TemplateIDList = Context.GetFragmentView<FReplicationTemplateIDFragment>();
 	const TConstArrayView<FMassReplicationLODFragment> LODList = Context.GetFragmentView<FMassReplicationLODFragment>();
+
+	// 按距离的更新间隔（近快远慢）：需要实体位置 + viewer（该客户端 bubble Owner PC 的 Pawn）
+	TConstArrayView<FTransformFragment> TransformList;
+	if (Context.DoesArchetypeHaveFragment<FTransformFragment>())
+	{
+		TransformList = Context.GetFragmentView<FTransformFragment>();
+	}
+	FVector ViewerLocation = FVector::ZeroVector;
+	const bool bHasViewer = UE::AsceMass::Replication::ResolveViewerLocationFromBubbleOwner(BubbleActor, ViewerLocation);
+
+	// 生命周期（服务端）：Add/Remove 成功时增减 bubble 引用计数
+	TArrayView<FAsceLifecycleFragment> Lifecycles;
+	if (Context.DoesArchetypeHaveFragment<FAsceLifecycleFragment>())
+	{
+		Lifecycles = Context.GetMutableFragmentView<FAsceLifecycleFragment>();
+	}
 
 	const int32 NumEntities = Context.GetNumEntities();
 	for (int32 EntityIdx = 0; EntityIdx < NumEntities; ++EntityIdx)
@@ -60,23 +81,38 @@ void FAsceVelocityReplicationCapability::ProcessChunk(FMassExecutionContext& Con
 		{
 			if (!ExistingHandle.IsValid())
 			{
-				FAsceVelocityReplicatedAgent ReplicatedAgent;
-				ReplicatedAgent.SetNetID(NetworkIDList[EntityIdx].NetID);
-				ReplicatedAgent.SetTemplateID(TemplateIDList[EntityIdx].ID);
-				VelocityHandler.AddEntity(EntityIdx, ReplicatedAgent.GetReplicatedVelocityDataMutable());
-
-				const FMassReplicatedAgentHandle NewHandle = Bubble.AddAgent(Context.GetEntity(EntityIdx), ReplicatedAgent);
-				if (!InOutMarkers[EntityIdx].IsValid())
+				// Add：先查"待加入票"（flapping 保护）再扣额度；不满足 ⇒ 本帧不 Add（下帧重试）
+				if (Bubble.TryReserveForAdd(NetworkIDList[EntityIdx].NetID))
 				{
-					InOutMarkers[EntityIdx] = NewHandle;
+					FAsceVelocityReplicatedAgent ReplicatedAgent;
+					ReplicatedAgent.SetNetID(NetworkIDList[EntityIdx].NetID);
+					ReplicatedAgent.SetTemplateID(TemplateIDList[EntityIdx].ID);
+					VelocityHandler.AddEntity(EntityIdx, ReplicatedAgent.GetReplicatedVelocityDataMutable());
+					Bubble.CommitAdd(NetworkIDList[EntityIdx].NetID, ReplicatedAgent, Bubble.GetNowSeconds());
+
+					const FMassReplicatedAgentHandle NewHandle = Bubble.AddAgent(Context.GetEntity(EntityIdx), ReplicatedAgent);
+					if (Lifecycles.Num() == NumEntities)
+					{
+						Lifecycles[EntityIdx].IncBubbleRefCount();
+					}
+					if (!InOutMarkers[EntityIdx].IsValid())
+					{
+						InOutMarkers[EntityIdx] = NewHandle;
+					}
 				}
 			}
 			else
 			{
-				// 周期速度同步：是否真的重新广播由SetVelocityFromFragment内部按速度容差判断，
-				// 不是无脑每帧发。TODO：如果以后要按LOD进一步降频，可以在这里加一层节流；
-				// 目前实测下来容差判断已经够用，暂不做。
-				VelocityHandler.ModifyEntity(ExistingHandle, EntityIdx, Bubble);
+				// 额度已满 ⇒ 本帧不再算距离/发 Modify（省 CPU）；仍标记"在 bubble 里"
+				if (!Bubble.IsFrameBudgetExhausted())
+				{
+					// 周期速度同步："值变了没" + "按距离的更新间隔" + "公平分帧/预算" 都由 SetVelocityFromFragment 内部判断，不是无脑每帧发。
+					const float Interval = (bHasViewer && TransformList.Num() == NumEntities)
+						? UE::AsceMass::Replication::ComputeIntervalFromDistSq(
+							FVector::DistSquared(TransformList[EntityIdx].GetTransform().GetLocation(), ViewerLocation))
+						: 0.f;
+					VelocityHandler.ModifyEntity(ExistingHandle, EntityIdx, Bubble, Interval);
+				}
 				if (!InOutMarkers[EntityIdx].IsValid())
 				{
 					InOutMarkers[EntityIdx] = ExistingHandle;
@@ -85,7 +121,15 @@ void FAsceVelocityReplicationCapability::ProcessChunk(FMassExecutionContext& Con
 		}
 		else if (ExistingHandle.IsValid())
 		{
-			Bubble.RemoveAgent(ExistingHandle);
+			if (Bubble.TryReserveForRemove())
+			{
+				Bubble.SavePendingTicketForHandle(ExistingHandle);
+				Bubble.RemoveAgent(ExistingHandle);
+				if (Lifecycles.Num() == NumEntities)
+				{
+					Lifecycles[EntityIdx].DecBubbleRefCount();
+				}
+			}
 		}
 	}
 #endif // UE_REPLICATION_COMPILE_SERVER_CODE
