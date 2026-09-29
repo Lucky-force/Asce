@@ -351,6 +351,20 @@ void UAsceCombatProcessor::Execute(FMassEntityManager& EntityManager, FMassExecu
 				continue;
 			}
 
+			// ───────── ①b Idle ↔ Move：移动也是动作态（服务器权威；客户端表现走动作态通道）─────────
+			// 只在 Idle/Move 之间切，不碰其它动作；`Counter++` 让两端"变了就播一次"。
+			// （到达时 `AsceArrivalProcessor` 会清 `bHasOrder` ⇒ 这里自然切回 Idle。）
+			if (Action.ActionState == EAsceActionState::Idle && bMoving)
+			{
+				Action.ActionState = EAsceActionState::Move;
+				++Action.Counter;
+			}
+			else if (Action.ActionState == EAsceActionState::Move && !bMoving)
+			{
+				Action.ActionState = EAsceActionState::Idle;
+				++Action.Counter;
+			}
+
 			// ───────── ② 扫描起手（0.3s 节流）─────────
 			if (Action.ActionState != EAsceActionState::Idle || !Combat.bAutoAttack || bMoving)
 			{

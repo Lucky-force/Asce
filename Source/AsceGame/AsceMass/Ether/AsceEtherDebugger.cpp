@@ -8,6 +8,7 @@
 #include "AsceMass/Ether/AsceEtherProcessCore.h"
 #include "AsceMass/Fragments/AsceCoreFragments.h"
 #include "AsceMass/Fragments/AsceFootprintFragment.h"
+#include "AsceMass/Lifecycle/AsceDestroyQueueSubsystem.h"
 #include "AsceMass/FlowField/AsceFlowFieldCores.h"   // GRID_SIZE
 #include "DrawDebugHelpers.h"
 #include "Engine/World.h"
@@ -123,13 +124,23 @@ void AAsceEtherDebugger::UnregisterAndDestroy()
 		return;
 	}
 
-	// 销毁实体 → Remove 观察者会把建筑从 ether 网络注销
+	// 统一走"请求销毁"（置 Dying + 入队 ⇒ 复制移除/引用计数归零后在销毁阶段真正销毁）；
+	// 实体真正销毁时 Remove 观察者会把建筑从 ether 网络注销
+	UAsceDestroyQueueSubsystem* DestroyQueue = World ? World->GetSubsystem<UAsceDestroyQueueSubsystem>() : nullptr;
 	FMassEntityManager& EM = EntitySubsystem->GetMutableEntityManager();
 	for (const FMassEntityHandle& Entity : SpawnedEntities)
 	{
-		if (EM.IsEntityValid(Entity))
+		if (!EM.IsEntityValid(Entity))
 		{
-			EM.DestroyEntity(Entity);
+			continue;
+		}
+		if (DestroyQueue)
+		{
+			DestroyQueue->RequestDestroy(Entity);
+		}
+		else
+		{
+			EM.DestroyEntity(Entity);   // 子系统缺失（异常）：立即销毁兜底
 		}
 	}
 	SpawnedEntities.Reset();

@@ -24,6 +24,18 @@
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AsceCombatVisualProcessor)
 
+namespace
+{
+	/** per-instance custom data = AnimToTexture 的 `FAnimToTextureFrameData` 布局（2 floats：Frame, PrevFrame）。
+	 *  不直接引 AnimToTexture 模块类型，只保证 sizeof == 2*float（`AddBatchedCustomData` 的 static_assert 要求）。 */
+	struct FAsceAnimFrameData
+	{
+		float Frame = 0.f;
+		float PrevFrame = 0.f;
+	};
+	static_assert(sizeof(FAsceAnimFrameData) == 2 * sizeof(float), "custom data 必须正好 2 个 float");
+}
+
 UAsceCombatVisualProcessor::UAsceCombatVisualProcessor()
 	: EntityQuery(*this)
 {
@@ -90,6 +102,22 @@ UAsceAnimSet* UAsceCombatVisualProcessor::FindOrLoadAnimSet(const uint16 UnitTyp
 				Refs.Attack = AttackConfig->CastAnim;
 			}
 		}
+		else if (!WarnedMissingAnimSets.Contains(Key))
+		{
+			WarnedMissingAnimSets.Add(Key);
+			UE_LOG(LogTemp, Warning, TEXT("[Anim] 单位类型 %d 的实体定义 Def 不是 FAsceRTSUnitDef —— 不会有动画"), Key);
+		}
+	}
+	else if (!WarnedMissingAnimSets.Contains(Key))
+	{
+		WarnedMissingAnimSets.Add(Key);
+		UE_LOG(LogTemp, Warning, TEXT("[Anim] 单位类型 %d 在实体定义表里查不到行 —— 不会有动画"), Key);
+	}
+
+	if (!AnimSet && !WarnedMissingAnimSets.Contains(Key))
+	{
+		WarnedMissingAnimSets.Add(Key);
+		UE_LOG(LogTemp, Warning, TEXT("[Anim] 单位类型 %d 没配 AnimSet —— 不会有动画"), Key);
 	}
 
 	AnimSetCache.Add(Key, AnimSet);
@@ -255,6 +283,36 @@ void UAsceCombatVisualProcessor::Execute(FMassEntityManager& EntityManager, FMas
 						Playback->PlayRate = FMath::Max(ActionPlayRate, 0.01f);
 						Playback->bLoop = IsLoopingState(ActionState);
 						Playback->bValid = true;
+
+						// 诊断（每种"单位类型+状态"只提示一次）：数据侧解析成功。
+						// 有这条日志但画面还是不动 ⇒ 问题一定在渲染接线（visualization desc 里的网格/材质没换成烘焙产物）。
+						const int32 HitKey = (static_cast<int32>(UnitTypeId) << 8) | static_cast<int32>(ActionState);
+						if (!LoggedAnimHits.Contains(HitKey))
+						{
+							LoggedAnimHits.Add(HitKey);
+							UE_LOG(LogTemp, Log, TEXT("[Anim] 单位类型 %u 状态 %d → %s（帧 [%d, %d]，速率 %.2f）"),
+								UnitTypeId, static_cast<int32>(ActionState), *ClipRef.ToString(),
+								Clip->StartFrame, Clip->EndFrame, Playback->PlayRate);
+						}
+					}
+					else
+					{
+						// 诊断（每种"单位类型+状态"只提示一次）：没配 or 动画不在 AnimSet.Clips 里
+						const int32 MissKey = (static_cast<int32>(UnitTypeId) << 8) | static_cast<int32>(ActionState);
+						if (!WarnedAnimMisses.Contains(MissKey))
+						{
+							WarnedAnimMisses.Add(MissKey);
+							if (ClipRef.IsNull())
+							{
+								UE_LOG(LogTemp, Warning, TEXT("[Anim] 单位类型 %u 的状态 %d 没配动画（AnimSet=%s）—— 不播"),
+									UnitTypeId, static_cast<int32>(ActionState), AnimSet ? *AnimSet->GetName() : TEXT("无"));
+							}
+							else
+							{
+								UE_LOG(LogTemp, Warning, TEXT("[Anim] 单位类型 %u 的状态 %d 的动画 %s 不在 AnimSet(%s).Clips 里 —— 没重烘 / 动画资产换过？"),
+									UnitTypeId, static_cast<int32>(ActionState), *ClipRef.ToString(), AnimSet ? *AnimSet->GetName() : TEXT("无"));
+							}
+						}
 					}
 				}
 
@@ -270,34 +328,40 @@ void UAsceCombatVisualProcessor::Execute(FMassEntityManager& EntityManager, FMas
 
 					Floats[0] = Frame;                                                            // 当前帧（可小数，材质做帧间插值）
 					Floats[1] = FMath::Clamp(Frame - 1.f, StartFrame, EndFrame);                  // 上一帧（运动模糊/混合）
+
+					// 诊断（每种"单位类型+状态"约每 0.5s 一次）：确认实际写入的帧号在推进。
+					// 这条在变但画面不动 ⇒ 材质/组件没消费 custom data（先查 MI 的 AutoPlay 开关必须为 false）。
+					{
+						const int32 LogKey = (static_cast<int32>(UnitTypeId) << 8) | static_cast<int32>(ActionState);
+						float& LastLogged = LastLoggedFrames.FindOrAdd(LogKey, -1000.f);
+						if (FMath::Abs(Frame - LastLogged) >= FMath::Max(Playback->FrameRate, 1.f) * 0.5f)
+						{
+							LastLogged = Frame;
+							UE_LOG(LogTemp, Log, TEXT("[Anim] 写入帧：单位类型 %u 状态 %d frame=%.1f（[%d, %d]）"),
+								UnitTypeId, static_cast<int32>(ActionState), Frame, Playback->StartFrame, Playback->EndFrame);
+						}
+					}
 				}
 			}
 
-			// ── 写 per-instance custom data（**必须覆盖每一个进 ISM 更新的实例**，否则缓冲对不齐）──
+			// ── 追加 per-instance custom data（**append，不是覆盖**）──
+			// `WriteCustomDataFloatsAtStartIndex` 只覆盖已分配的槽位、不扩容（前提是别人先 append 过），
+			// 而动态 ISM 路径里没有任何地方 append custom floats ⇒ 缓冲每帧都是空的，会 ensure + 越界。
+			// 这里走 `AddBatchedCustomData`：和 `UMassUpdateISMProcessor` 给同一实体 append Transform **完全镜像**
+			// （当前 + prev 两个 LODSignificance range）——每实例恰好 2 个 float、顺序一致，
+			// PostPhysics 的 `EndVisualChanges` 才能把 `NumCustomDataFloats` 正确对应到每个实例。
+			// 注意：**不跳过多 mesh range**（append 对 range 里每个 mesh 都成立；跳过会造成实例计数不齐）。
 			const int32 ISMInfoIndex = Reps[i].StaticMeshDescHandle.ToIndex();
 			if (!ISMInfos.IsValidIndex(ISMInfoIndex))
 			{
 				continue;
 			}
 			FMassInstancedStaticMeshInfo& ISMInfo = ISMInfos[ISMInfoIndex];
-			if (FMassLODSignificanceRange* Range = ISMInfo.GetLODSignificanceRange(RepLODs[i].LODSignificance))
-			{
-				if (Range->StaticMeshRefs.Num() != 1)
-				{
-					if (!bWarnedMultiMesh)
-					{
-						bWarnedMultiMesh = true;
-						UE_LOG(LogTemp, Warning,
-							TEXT("[Anim] 每个 LODSignificance range 只支持 1 个 mesh（当前 %d 个）：动画 custom data 跳过"),
-							Range->StaticMeshRefs.Num());
-					}
-					continue;
-				}
 
-				// `PrevLODSignificance`：与 Transform 路径相同（当前范围 + prev 范围镜像）；
-				// 本处理器在 UMassUpdateISMProcessor 之前跑，这里读到的还是旧值。
-				ISMInfo.WriteCustomDataFloatsAtStartIndex(0, MakeArrayView(Floats), RepLODs[i].LODSignificance, 2, 0, Reps[i].PrevLODSignificance);
-			}
+			// `PrevLODSignificance`：与 Transform 路径相同（当前范围 + prev 范围镜像）；
+			// 本处理器在 UMassUpdateISMProcessor 之前跑，这里读到的还是旧值。
+			ISMInfo.AddBatchedCustomData<FAsceAnimFrameData>(FAsceAnimFrameData{ Floats[0], Floats[1] }
+				, RepLODs[i].LODSignificance, Reps[i].PrevLODSignificance);
 		}
 	});
 }

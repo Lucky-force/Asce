@@ -57,19 +57,20 @@ namespace
 	}
 
 	/** 记下这次下单实际用到的本地 entity（供拒绝回执反查 + 撤销预测）；超过容量丢最旧一条。 */
-	void RecordPendingLocalOrder(TMap<int32, TArray<FMassEntityHandle>>& PendingLocalOrders, const int32 Capacity
-		, const int32 OrderSequence, TArray<FMassEntityHandle>&& Handles)
+	template<typename TValue>
+	void RecordPendingLocalOrder(TMap<int32, TArray<TValue>>& Orders, const int32 Capacity
+		, const int32 OrderSequence, TArray<TValue>&& Handles)
 	{
-		if (PendingLocalOrders.Num() >= Capacity)
+		if (Orders.Num() >= Capacity)
 		{
 			int32 OldestSequence = TNumericLimits<int32>::Max();
-			for (const TPair<int32, TArray<FMassEntityHandle>>& Pair : PendingLocalOrders)
+			for (const TPair<int32, TArray<TValue>>& Pair : Orders)
 			{
 				OldestSequence = FMath::Min(OldestSequence, Pair.Key);
 			}
-			PendingLocalOrders.Remove(OldestSequence);
+			Orders.Remove(OldestSequence);
 		}
-		PendingLocalOrders.Add(OrderSequence, MoveTemp(Handles));
+		Orders.Add(OrderSequence, MoveTemp(Handles));
 	}
 
 	/** 客户端技能预测（**只预测表现，不预测结算**；`Combat/技能系统设计.md` §3.1）：
@@ -79,7 +80,8 @@ namespace
 	 *  客户端缺的东西：迷雾（客户端只有复制过来的实体，"可见"天然满足）、`FAsceCombatFragment`（服务器专有；
 	 *  技能射程从技能表取）。CD 是回绕百分秒值（见 `AsceClientIsSkillCooldownReady`）。 */
 	void PredictSkillOrderLocally(FMassEntityManager& EntityManager, const TArray<FMassEntityHandle>& Handles, const int32 SlotId
-		, const FVector2D TargetPos, const FMassEntityHandle TargetHandle, const int32 MyTeamId, const double ServerWorldTimeSeconds)
+		, const FVector2D TargetPos, const FMassEntityHandle TargetHandle, const int32 MyTeamId, const double ServerWorldTimeSeconds
+		, TArray<FAscePredictedSkillUnit>& OutPredictedUnits)
 	{
 		const bool bTargetIsUnit = TargetHandle.IsValid() && EntityManager.IsEntityValid(TargetHandle);
 
@@ -181,12 +183,81 @@ namespace
 			{
 				continue;
 			}
+			const FMassNetworkIDFragment* NetIDFragment = EntityManager.GetFragmentDataPtr<FMassNetworkIDFragment>(Handle);
+			if (!NetIDFragment)
+			{
+				continue;
+			}
+
+			// 快照（拒绝回执恢复用；权威态到达后守卫会跳过恢复）
+			FAscePredictedSkillUnit Predicted;
+			Predicted.Handle = Handle;
+			Predicted.NetID = NetIDFragment->NetID;
+			Predicted.SnapshotActionState = static_cast<uint8>(Visual->ActionState);
+			Predicted.SnapshotActionDefId = Visual->ActionDefId;
+			Predicted.SnapshotCounter = Visual->Counter;
+			Predicted.SnapshotPlayRate = Visual->PlayRate;
+			Predicted.SnapshotFacingYaw = Visual->FacingYaw;
+
 			const float FacingYaw = FMath::RadiansToDegrees(FMath::Atan2(AimLocation.Y - Location.Y, AimLocation.X - Location.X));
 			Visual->ActionState = EAsceActionState::Casting;
 			Visual->ActionDefId = Slots->Slots[SlotId].ActionId;
 			Visual->Counter = Visual->Counter + 1;   // 变了 ⇒ 表现层"播一次"
 			Visual->PlayRate = 1.f;                  // 技能 v1 = 1.0（与服务器一致）
 			Visual->FacingYaw = FacingYaw;           // 客户端转身 processor 据此限速转过去
+
+			Predicted.PredictedCounter = Visual->Counter;
+			OutPredictedUnits.Add(MoveTemp(Predicted));
+		}
+	}
+
+	/** 恢复技能预测前的视觉态（拒绝回执；见 `Combat/技能系统设计.md` §3.1）。
+	 *  **服务器权威优先**：只恢复"仍是我们预测写入的值"的单位——`Counter == PredictedCounter` 且状态为 `Casting`；
+	 *  权威动作态已经同步下来（Counter/状态变了）或实体没了 ⇒ 跳过（恢复会覆盖新状态）。
+	 *  `FilterNetID` 非空时只处理该单位（逐单位拒绝用）；处理到的条目从表里移除。 */
+	void RestorePredictedSkillVisuals(TMap<int32, TArray<FAscePredictedSkillUnit>>& PredictedSkillUnits
+		, FMassEntityManager& EntityManager, const int32 OrderSequence, const FMassNetworkID* FilterNetID = nullptr)
+	{
+		TArray<FAscePredictedSkillUnit>* Units = PredictedSkillUnits.Find(OrderSequence);
+		if (!Units)
+		{
+			return;
+		}
+
+		for (int32 Index = Units->Num() - 1; Index >= 0; --Index)
+		{
+			const FAscePredictedSkillUnit& Predicted = (*Units)[Index];
+			if (FilterNetID && !(Predicted.NetID == *FilterNetID))
+			{
+				continue;
+			}
+			Units->RemoveAtSwap(Index);
+
+			if (!EntityManager.IsEntityValid(Predicted.Handle))
+			{
+				continue;
+			}
+			FAsceCombatVisualFragment* Visual = EntityManager.GetFragmentDataPtr<FAsceCombatVisualFragment>(Predicted.Handle);
+			if (!Visual)
+			{
+				continue;
+			}
+			// 守卫：已不是我们预测写入的值（权威动作态已同步 / 又发生了别的变化）⇒ 服务器权威优先，不动
+			if (Visual->Counter != Predicted.PredictedCounter || Visual->ActionState != EAsceActionState::Casting)
+			{
+				continue;
+			}
+
+			Visual->ActionState = static_cast<EAsceActionState>(Predicted.SnapshotActionState);
+			Visual->ActionDefId = Predicted.SnapshotActionDefId;
+			Visual->Counter = Predicted.SnapshotCounter;
+			Visual->PlayRate = Predicted.SnapshotPlayRate;
+			Visual->FacingYaw = Predicted.SnapshotFacingYaw;
+		}
+
+		if (Units->Num() == 0)
+		{
+			PredictedSkillUnits.Remove(OrderSequence);
 		}
 	}
 }
@@ -456,10 +527,14 @@ void UAsceOrderChannelComponent::RequestSkillOrder(const TArray<FMassEntityHandl
 	if (World->GetNetMode() == NM_Client)
 	{
 		const AAsceGameState* GameState = World->GetGameState<AAsceGameState>();
+		TArray<FAscePredictedSkillUnit> PredictedUnits;
 		PredictSkillOrderLocally(EntityManager, ValidHandles, SlotId, TargetPos, TargetLocalHandle
-			, GetRequesterTeamId(), GameState ? GameState->GetServerWorldTimeSeconds() : 0.0);
+			, GetRequesterTeamId(), GameState ? GameState->GetServerWorldTimeSeconds() : 0.0, PredictedUnits);
 
-		// 记下本次下单的本地 entity：拒绝回执（`ClientRejectSkillOrder`）按 OrderSequence 反查它们
+		// 记下预测快照：拒绝回执（`ClientRejectSkillOrder` / `ClientRejectWholeOrder`）据此恢复预测前视觉态
+		RecordPendingLocalOrder(PredictedSkillUnits, PredictedSkillUnitsCapacity, OrderSequence, MoveTemp(PredictedUnits));
+
+		// 记下本次下单的本地 entity：拒绝回执按 OrderSequence 反查它们
 		RecordPendingLocalOrder(PendingLocalOrders, PendingLocalOrdersCapacity, OrderSequence, MoveTemp(ValidHandles));
 	}
 
@@ -915,23 +990,29 @@ void UAsceOrderChannelComponent::ClientRejectWholeOrder_Implementation(int32 Ord
 {
 	UE_LOG(LogTemp, Warning, TEXT("[Order] Client 收到整批拒绝：seq=%d, reason=%d"), OrderSequence, static_cast<int32>(Reason));
 
-	TArray<FMassEntityHandle> Handles;
-	if (!PendingLocalOrders.RemoveAndCopyValue(OrderSequence, Handles))
-	{
-		// 不是这次本地预测过的订单（比如这个客户端本身就是Authority，从没往PendingLocalOrders里记过），
-		// 没有需要回滚的本地状态。
-		return;
-	}
-
 	const UWorld* World = GetWorld();
 	UMassEntitySubsystem* MassEntitySubsystem = World ? World->GetSubsystem<UMassEntitySubsystem>() : nullptr;
 	UAscePathFindingSubsystem* PathFindingSubsystem = UAscePathFindingSubsystem::Get(this);
 	UPathFinder* PathFinder = PathFindingSubsystem ? PathFindingSubsystem->GetPathFinder() : nullptr;
-	if (!MassEntitySubsystem || !PathFinder)
+	if (!MassEntitySubsystem)
 	{
 		return;
 	}
 	FMassEntityManager& EntityManager = MassEntitySubsystem->GetMutableEntityManager();
+
+	// 技能预测：整批拒绝 ⇒ 恢复本序列所有预测单位（服务器权威优先：权威态已同步的条目会被守卫跳过）
+	RestorePredictedSkillVisuals(PredictedSkillUnits, EntityManager, OrderSequence);
+
+	TArray<FMassEntityHandle> Handles;
+	if (!PendingLocalOrders.RemoveAndCopyValue(OrderSequence, Handles))
+	{
+		// 没有本地移动订单预测需要回滚（比如这个客户端本身就是Authority，从没往PendingLocalOrders里记过）
+		return;
+	}
+	if (!PathFinder)
+	{
+		return;
+	}
 
 	for (const FMassEntityHandle& Handle : Handles)
 	{
@@ -1030,13 +1111,6 @@ void UAsceOrderChannelComponent::ClientRejectSkillOrder_Implementation(int32 Ord
 {
 	UE_LOG(LogTemp, Verbose, TEXT("[Order] Client 收到技能拒绝：seq=%d, %d 个单位"), OrderSequence, RejectedUnits.Num());
 
-	// 按 OrderSequence 反查本次下单涉及的本地 entity；查不到（不是我们预测过的 / 已被挤出容量）⇒ 忽略
-	TArray<FMassEntityHandle>* HandlesPtr = PendingLocalOrders.Find(OrderSequence);
-	if (!HandlesPtr)
-	{
-		return;
-	}
-
 	const UWorld* World = GetWorld();
 	UMassEntitySubsystem* MassEntitySubsystem = World ? World->GetSubsystem<UMassEntitySubsystem>() : nullptr;
 	if (!MassEntitySubsystem)
@@ -1045,38 +1119,12 @@ void UAsceOrderChannelComponent::ClientRejectSkillOrder_Implementation(int32 Ord
 	}
 	FMassEntityManager& EntityManager = MassEntitySubsystem->GetMutableEntityManager();
 
-	// 逐条：在这批本地 entity 里按 NetID 找到被拒的那个 ⇒ 撤销它的预测表现（回 Idle）。
-	// 不在 RejectedUnits 里的 = 服务器接受了 ⇒ 等动作态边沿当隐式确认（会整段覆写视觉 fragment）。
+	// 逐单位恢复预测前的视觉快照；**服务器权威优先**：权威动作态已同步下来的（Counter/状态被覆写）会被守卫跳过，
+	// 不再像旧版那样一律写 Idle（那会在"服务器正在攻击/施法"时抹掉真实表现直到下一条边沿）。
+	// 不在 RejectedUnits 里的 = 服务器接受了 ⇒ 快照作废（权威边沿会覆写视觉 fragment），无需处理。
 	for (const FAsceEntityReject& Reject : RejectedUnits)
 	{
-		for (int32 Index = 0; Index < HandlesPtr->Num(); ++Index)
-		{
-			const FMassEntityHandle Handle = (*HandlesPtr)[Index];
-			if (!EntityManager.IsEntityValid(Handle))
-			{
-				continue;
-			}
-			const FMassNetworkIDFragment* NetIDFragment = EntityManager.GetFragmentDataPtr<FMassNetworkIDFragment>(Handle);
-			if (!NetIDFragment || !(NetIDFragment->NetID == Reject.NetID))
-			{
-				continue;
-			}
-
-			// 撤销预测：回 Idle（`Counter++` 让"变了就播一次"生效）。若该单位其实还在攻击/施法（服务器不因
-			// 技能被拒就取消当前动作），下一次权威动作态边沿会把它纠回来。
-			if (FAsceCombatVisualFragment* Visual = EntityManager.GetFragmentDataPtr<FAsceCombatVisualFragment>(Handle))
-			{
-				Visual->ActionState = EAsceActionState::Idle;
-				Visual->Counter = Visual->Counter + 1;
-			}
-
-			HandlesPtr->RemoveAtSwap(Index);
-			break;
-		}
+		RestorePredictedSkillVisuals(PredictedSkillUnits, EntityManager, OrderSequence, &Reject.NetID);
 	}
-
-	if (HandlesPtr->Num() == 0)
-	{
-		PendingLocalOrders.Remove(OrderSequence);
-	}
+	PredictedSkillUnits.Remove(OrderSequence);   // 本条请求的响应是最终态：未拒绝单位的快照不再需要
 }

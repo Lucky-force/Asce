@@ -267,16 +267,12 @@ protected:
 
 /**
  * 服务器侧（Replicator Processor用）的位置同步Handler，固定读FTransformFragment。
+ * 需求声明：FTransformFragment（ReadOnly + Any）由 `UAsceUnitReplicator::AddRequirements` 统一声明
+ * （共享 Query 不允许同一 fragment 重复声明），本 handler 不再提供 AddRequirements。
  */
 class FAsceReplicationProcessorPositionHandler
 {
 public:
-	static void AddRequirements(FMassEntityQuery& InQuery)
-	{
-		// Any：这个Query最终会合并进UAsceUnitReplicator共用的EntityQuery，理由见AsceReplicationCapability.h
-		InQuery.AddRequirement<FTransformFragment>(EMassFragmentAccess::ReadOnly, EMassFragmentPresence::Any);
-	}
-
 	void CacheFragmentViews(FMassExecutionContext& ExecContext)
 	{
 		TransformList = ExecContext.GetFragmentView<FTransformFragment>();

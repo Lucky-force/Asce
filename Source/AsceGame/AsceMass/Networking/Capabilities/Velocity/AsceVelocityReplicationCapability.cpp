@@ -15,8 +15,9 @@ void FAsceVelocityReplicationCapability::AddRequirements(FMassEntityQuery& Entit
 {
 	// AddRequirements内部已经是Any（见AsceReplicationVelocityHandlers.h），直接转发即可。
 	FAsceReplicationProcessorVelocityHandler::AddRequirements(EntityQuery);
-	// "按距离的更新间隔"需要读实体位置来算距离（Optional 数据）
-	EntityQuery.AddRequirement<FTransformFragment>(EMassFragmentAccess::ReadOnly, EMassFragmentPresence::Any);
+	// 注意：算"按距离的更新间隔"要读的 FTransformFragment 由 `UAsceUnitReplicator::AddRequirements`
+	// 统一声明（共享 Query 不允许同一 fragment 重复声明），这里不要再加——重复会触发
+	// Mass 的 "Duplicated requirements" checkf。
 }
 
 void FAsceVelocityReplicationCapability::ProcessChunk(FMassExecutionContext& Context, FMassReplicationContext& ReplicationContext

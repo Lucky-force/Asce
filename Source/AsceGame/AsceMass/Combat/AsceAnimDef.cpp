@@ -10,6 +10,7 @@
 #include "Engine/SkeletalMesh.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/Texture2D.h"
+#include "Materials/MaterialInstanceConstant.h"
 #include "Materials/MaterialInterface.h"
 #include "Misc/PackageName.h"
 #include "UObject/Package.h"
@@ -27,14 +28,26 @@ namespace
 		return FString::Printf(TEXT("%s/%s.%s"), *PackagePath, *AssetName, *AssetName);
 	}
 
-	/** 建/复用一张空的 `UTexture2D` 资产：插件烘焙只往"已存在的纹理对象"里写内容（字段为空 ⇒ 静默失败） */
-	UTexture2D* FindOrCreateTextureAsset(const FString& PackagePath, const FString& AssetName)
+	/** 标准资产包路径 `<目录>/<资产名>`（一包一资产；不能拿"目录"本身当包名，否则 Content Browser 里看不到） */
+	FString MakeStandardPackagePath(const FString& FolderPath, const FString& AssetName)
 	{
-		if (UTexture2D* Existing = LoadObject<UTexture2D>(nullptr, *MakeObjectPath(PackagePath, AssetName)))
+		return FString::Printf(TEXT("%s/%s"), *FolderPath, *AssetName);
+	}
+
+	/** 旧版工具把产物塞进了"包名 = AnimSet 所在目录"的包（CB 看不到）：识别出来当"没有"，改到标准位置重建 */
+	bool IsLegacyHiddenAsset(const UObject* Asset, const FString& FolderPath)
+	{
+		return Asset != nullptr && Asset->GetOutermost()->GetName() == FolderPath;
+	}
+
+	/** 建/复用一张空的 `UTexture2D` 资产（标准位置）：插件烘焙只往"已存在的纹理对象"里写内容（字段为空 ⇒ 静默失败） */
+	UTexture2D* FindOrCreateTextureAsset(const FString& FolderPath, const FString& AssetName)
+	{
+		if (UTexture2D* Existing = LoadObject<UTexture2D>(nullptr, *MakeObjectPath(FolderPath, AssetName)))
 		{
 			return Existing;
 		}
-		UPackage* Package = CreatePackage(*PackagePath);
+		UPackage* Package = CreatePackage(*MakeStandardPackagePath(FolderPath, AssetName));
 		UTexture2D* NewTexture = NewObject<UTexture2D>(Package, *AssetName, RF_Public | RF_Standalone);
 		if (NewTexture)
 		{
@@ -49,6 +62,43 @@ namespace
 	{
 		return NewObject<UTexture2D>(GetTransientPackage());
 	}
+
+	/** MI 的父材质：优先 `AnimSet.MaterialParent`，为空则用插件自带的 BoneAnimation 示例材质 */
+	UMaterialInterface* ResolveMaterialParent(const UAsceAnimSet& AnimSet)
+	{
+		if (UMaterialInterface* Parent = AnimSet.MaterialParent.LoadSynchronous())
+		{
+			return Parent;
+		}
+		return LoadObject<UMaterialInterface>(nullptr,
+			TEXT("/AnimToTexture/Characters/Mannequin/Materials/BoneAnimation/M_Body_BoneAnimation.M_Body_BoneAnimation"));
+	}
+
+	/** 建/复用 MaterialInstanceConstant 资产（与纹理同目录；已存在就复用、不重置父材质） */
+	UMaterialInstanceConstant* FindOrCreateMaterialInstance(const FString& PackagePath, const FString& AssetName, UMaterialInterface* Parent)
+	{
+		if (UMaterialInstanceConstant* Existing = LoadObject<UMaterialInstanceConstant>(nullptr, *MakeObjectPath(PackagePath, AssetName)))
+		{
+			return Existing;
+		}
+		if (!Parent)
+		{
+			return nullptr;
+		}
+		UPackage* Package = CreatePackage(*MakeStandardPackagePath(PackagePath, AssetName));
+		UMaterialInstanceConstant* NewMIC = NewObject<UMaterialInstanceConstant>(Package, *AssetName, RF_Public | RF_Standalone);
+		if (NewMIC)
+		{
+			NewMIC->SetParentEditorOnly(Parent);
+			FAssetRegistryModule::AssetCreated(NewMIC);
+			NewMIC->MarkPackageDirty();
+		}
+		return NewMIC;
+	}
+
+	// 绑定数据（顶点 → 权重图 texel 的映射）写入的 UV 通道；与临时 DA 的默认 UVChannel 一致，
+	// 也决定 MI 的 UseUVx 静态开关（见 UpdateMaterialInstanceFromDataAsset）
+	constexpr int32 AnimBakeUVChannel = 1;
 
 	/** 把本资产的烘焙参数灌进（临时）插件 DA */
 	void ApplyBakeParams(const UAsceAnimSet& AnimSet, UAnimToTextureDataAsset& DA)
@@ -73,11 +123,17 @@ namespace
 
 void UAsceAnimSet::RebuildFromSources()
 {
-	// ① 校验
-	if (!Skeleton || SkeletalMesh.IsNull() || Sources.Num() == 0 || Meshes.Num() == 0)
+	// ① 校验（`Meshes` 可留空：自动补一条默认外观 ⇒ 只想填"骨骼 / 骨骼网格 / 动画"也能一键重烘）
+	// 注意：软引用判"配没配"必须用 `IsNull()`——`operator bool` 是 `IsValid()`（资产是否已加载），
+	// 编辑器重启后骨架不在内存里会把"配了的"误判成没配。
+	if (Skeleton.IsNull() || SkeletalMesh.IsNull() || Sources.Num() == 0)
 	{
-		UE_LOG(LogTemp, Error, TEXT("[AnimSet] %s: 请先配 Skeleton / SkeletalMesh / Sources / Meshes"), *GetName());
+		UE_LOG(LogTemp, Error, TEXT("[AnimSet] %s: 请先配 Skeleton / SkeletalMesh / Sources"), *GetName());
 		return;
+	}
+	if (Meshes.Num() == 0)
+	{
+		Meshes.AddDefaulted();
 	}
 	USkeletalMesh* SourceMesh = SkeletalMesh.LoadSynchronous();
 	if (!SourceMesh)
@@ -90,29 +146,49 @@ void UAsceAnimSet::RebuildFromSources()
 	const FString AssetName = GetName();
 
 	// ② 每个 mesh：生成/复用静态网格（烘焙输入 + 我们的产物）+ 建/复用它的权重纹理
+	//    语义统一：**字段有引用且能加载 ⇒ 直接用；引用为空/失效 ⇒ 按"同目录 + 约定名"找；都没有才建**
 	for (int32 MeshIndex = 0; MeshIndex < Meshes.Num(); ++MeshIndex)
 	{
 		FAsceVATMeshEntry& Entry = Meshes[MeshIndex];
-		if (Entry.Mesh.IsNull())
+		if (Entry.Mesh.LoadSynchronous() == nullptr)
 		{
 			// ⚠️ `LODIndex = -1` 用默认；将来要支持"从骨骼网格的哪个 LOD 采样"再补字段
+			// （`ConvertSkeletalMeshToStaticMesh` 内部也是"同路径已存在就复用"，不会重复建）
 			Entry.Mesh = UAnimToTextureBPLibrary::ConvertSkeletalMeshToStaticMesh(
 				SourceMesh, FString::Printf(TEXT("%s/%s_Mesh%d"), *PackagePath, *AssetName, MeshIndex + 1), /*LODIndex=*/ -1);
 		}
-		if (Entry.BoneWeightTexture.IsNull())
+		if (UStaticMesh* BakedMesh = Entry.Mesh.LoadSynchronous())
+		{
+			// LightMap UV 冲突修复：生成的静态网格默认把 LightMap 生成到 UV1（DstLightmapIndex=1），
+			// 而绑定数据（顶点→权重图 texel）正要写 UV1 ⇒ 插件 `CheckDataAsset` 会直接拒绝烘焙
+			// （"Invalid StaticMesh UVChannel: 1. Already used by LightMap"）。单位走动态光，
+			// 不需要 LightMap UV ⇒ 自动关掉（之前烘失败的旧网格也会被顺带修好）。
+			if (BakedMesh->IsSourceModelValid(0))
+			{
+				const FStaticMeshSourceModel& SourceModel = BakedMesh->GetSourceModel(0);
+				if (SourceModel.BuildSettings.bGenerateLightmapUVs
+					&& SourceModel.BuildSettings.DstLightmapIndex == AnimBakeUVChannel)
+				{
+					UAnimToTextureBPLibrary::SetLightMapIndex(BakedMesh, /*LODIndex=*/0, AnimBakeUVChannel, /*bGenerateLightmapUVs=*/false);
+				}
+			}
+		}
+		if (Entry.BoneWeightTexture.LoadSynchronous() == nullptr || IsLegacyHiddenAsset(Entry.BoneWeightTexture.Get(), PackagePath))
 		{
 			Entry.BoneWeightTexture = FindOrCreateTextureAsset(
 				PackagePath, FString::Printf(TEXT("%s_Mesh%d_Weight"), *AssetName, MeshIndex + 1));
 		}
 	}
 
-	// ③ 共享动画纹理（先建/复用；内容随后被烘焙覆写）
-	BonePositionTexture = BonePositionTexture.IsNull()
-		? FindOrCreateTextureAsset(PackagePath, FString::Printf(TEXT("%s_BonePos"), *AssetName))
-		: BonePositionTexture.LoadSynchronous();
-	BoneRotationTexture = BoneRotationTexture.IsNull()
-		? FindOrCreateTextureAsset(PackagePath, FString::Printf(TEXT("%s_BoneRot"), *AssetName))
-		: BoneRotationTexture.LoadSynchronous();
+	// ③ 共享动画纹理（字段有就用；空/失效/历史遗留不可见才按同目录约定名找，找不到才建；内容随后被烘焙覆写）
+	if (BonePositionTexture.LoadSynchronous() == nullptr || IsLegacyHiddenAsset(BonePositionTexture.Get(), PackagePath))
+	{
+		BonePositionTexture = FindOrCreateTextureAsset(PackagePath, FString::Printf(TEXT("%s_BonePos"), *AssetName));
+	}
+	if (BoneRotationTexture.LoadSynchronous() == nullptr || IsLegacyHiddenAsset(BoneRotationTexture.Get(), PackagePath))
+	{
+		BoneRotationTexture = FindOrCreateTextureAsset(PackagePath, FString::Printf(TEXT("%s_BoneRot"), *AssetName));
+	}
 	if (!BonePositionTexture.IsValid() || !BoneRotationTexture.IsValid()
 		|| !BonePositionTexture.LoadSynchronous() || !BoneRotationTexture.LoadSynchronous())
 	{
@@ -179,13 +255,16 @@ void UAsceAnimSet::RebuildFromSources()
 		Pages.Add(Page);
 	}
 
-	// ⑤ 每个 mesh 薄烘一次（只为产出各自的权重纹理；位置/旋转写进一次性纹理，避免覆写共享动画纹理）
+	// ⑤ 每个 mesh 薄烘一次（产出权重纹理；位置/旋转写进一次性纹理，避免覆写共享动画纹理），
+	//    烘完立刻按同一批参数建/更新该外观的 MI（用户不用手配材质参数）
 	for (int32 MeshIndex = 0; MeshIndex < Meshes.Num(); ++MeshIndex)
 	{
+		FAsceVATMeshEntry& Entry = Meshes[MeshIndex];
+
 		UAnimToTextureDataAsset* Thin = NewObject<UAnimToTextureDataAsset>(GetTransientPackage());
 		ApplyBakeParams(*this, *Thin);
-		Thin->StaticMesh = Meshes[MeshIndex].Mesh;
-		Thin->BoneWeightTexture = Meshes[MeshIndex].BoneWeightTexture;
+		Thin->StaticMesh = Entry.Mesh;
+		Thin->BoneWeightTexture = Entry.BoneWeightTexture;
 		Thin->BonePositionTexture = MakeThrowawayTexture();
 		Thin->BoneRotationTexture = MakeThrowawayTexture();
 		Thin->AnimSequences.Reset();
@@ -199,9 +278,67 @@ void UAsceAnimSet::RebuildFromSources()
 			Info.EndFrame = 0;
 			Thin->AnimSequences.Add(Info);
 		}
+
 		if (!UAnimToTextureBPLibrary::AnimationToTexture(Thin))
 		{
-			UE_LOG(LogTemp, Warning, TEXT("[AnimSet] %s: mesh%d 的权重烘焙失败"), *GetName(), MeshIndex + 1);
+			UE_LOG(LogTemp, Warning, TEXT("[AnimSet] %s: mesh%d 的权重烘焙失败（跳过 MI 参数）"), *GetName(), MeshIndex + 1);
+		}
+		else
+		{
+			// MI：`Meshes[N].Material` 已指着 MaterialInstanceConstant ⇒ 就地更新参数；
+			// 没指/引用失效/历史遗留不可见 ⇒ 按"同目录 + 约定名"找；都没有才建（移动目录后不会另建）
+			UMaterialInterface* ExistingMaterial = Entry.Material.LoadSynchronous();
+			if (IsLegacyHiddenAsset(ExistingMaterial, PackagePath))
+			{
+				ExistingMaterial = nullptr;   // 旧版"目录包"遗留：CB 看不见 ⇒ 当作没有，重建到标准位置
+			}
+			UMaterialInstanceConstant* MIC = Cast<UMaterialInstanceConstant>(ExistingMaterial);
+			if (ExistingMaterial && !MIC)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("[AnimSet] %s: Meshes[%d].Material 不是 MaterialInstanceConstant，跳过自动套参数"),
+					*GetName(), MeshIndex);
+			}
+			else
+			{
+				if (!MIC)
+				{
+					MIC = FindOrCreateMaterialInstance(PackagePath
+						, FString::Printf(TEXT("%s_Mesh%d_MI"), *AssetName, MeshIndex + 1)
+						, ResolveMaterialParent(*this));
+				}
+				if (MIC)
+				{
+					// 参数 DA：共享烘焙（骨骼数/行数/包围盒）+ 该 mesh 的权重行数 + 三类纹理；AutoPlay=false（我们手动写帧）
+					// ⚠️ `NumFrames`/`SampleRate` 必须给：`UpdateMaterialInstanceFromDataAsset` 会把它们写进 MI，
+					// 材质在非 AutoPlay 下靠 `NumFrames` 把帧号换算成 UV；给 0 的话会永远停在第 0 帧。
+					UAnimToTextureDataAsset* MIData = NewObject<UAnimToTextureDataAsset>(GetTransientPackage());
+					MIData->Mode = EAnimToTextureMode::Bone;
+					MIData->UVChannel = AnimBakeUVChannel;   // 与烘焙一致（绑定信息写 UV1）
+					MIData->bAutoPlay = false;          // 手动帧模式
+					MIData->NumBoneInfluences = EAnimToTextureNumBoneInfluences::Four;
+					MIData->NumBones = Temp->NumBones;
+					MIData->BoneRowsPerFrame = Temp->BoneRowsPerFrame;
+					MIData->BoneMinBBox = Temp->BoneMinBBox;
+					MIData->BoneSizeBBox = Temp->BoneSizeBBox;
+					MIData->BoneWeightRowsPerFrame = Thin->BoneWeightRowsPerFrame;
+					MIData->BonePositionTexture = BonePositionTexture;
+					MIData->BoneRotationTexture = BoneRotationTexture;
+					MIData->BoneWeightTexture = Entry.BoneWeightTexture;
+					MIData->NumFrames = Temp->NumFrames;                        // 图集总帧数（材质算 UV 用）
+					MIData->SampleRate = FMath::Max(FrameRate, 1.f);            // 与烘焙一致
+
+					UAnimToTextureBPLibrary::UpdateMaterialInstanceFromDataAsset(MIData, MIC);
+					MIC->MarkPackageDirty();
+					MIData->MarkAsGarbage();
+
+					Entry.Material = MIC;
+				}
+				else
+				{
+					UE_LOG(LogTemp, Error,
+						TEXT("[AnimSet] %s: 建 MI 失败（MaterialParent 与插件默认材质都加载不到）"), *GetName());
+				}
+			}
 		}
 		Thin->MarkAsGarbage();
 	}
@@ -233,7 +370,7 @@ void UAsceAnimSet::ValidateAnimSet()
 	};
 
 	// 骨架 / 源网格
-	if (!Skeleton)
+	if (Skeleton.IsNull())
 	{
 		ReportError(TEXT("没配 Skeleton"));
 	}
@@ -241,11 +378,11 @@ void UAsceAnimSet::ValidateAnimSet()
 	{
 		ReportError(TEXT("没配 SkeletalMesh"));
 	}
-	else if (Skeleton)
+	else if (!Skeleton.IsNull())
 	{
 		if (const USkeletalMesh* SourceMesh = SkeletalMesh.LoadSynchronous())
 		{
-			if (SourceMesh->GetSkeleton() != Skeleton)
+			if (SourceMesh->GetSkeleton() != Skeleton.LoadSynchronous())
 			{
 				ReportWarning(TEXT("SkeletalMesh 的 Skeleton 与资产的 Skeleton 不一致"));
 			}

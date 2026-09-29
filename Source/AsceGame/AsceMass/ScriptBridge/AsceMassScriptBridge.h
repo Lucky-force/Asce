@@ -41,7 +41,9 @@ public:
 	/** 销毁实体：参数是 `SpawnEntities*` 返回的 `int64` 句柄（`FMassEntityHandle::AsNumber()`）。
 	 *  ⚠️ 必须是 `int64`：`AsNumber()` 是 `[Index(low32) | SerialNumber(high32)]` 的原始 64 位，
 	 *  截成 int32 会丢掉 SerialNumber ⇒ `FromNumber` 得到的句柄 `IsEntityValid` 永远为假（拆不掉）。
-	 *  ⚠️ **仅权威端有效**（客户端调用会打 Warning 并忽略：本地销毁不走复制）。 */
+	 *  ⚠️ **仅权威端有效**（客户端调用会打 Warning 并忽略：本地销毁不走复制）。
+	 *  ⚠️ 走 `UAsceDestroyQueueSubsystem::RequestDestroy` = **请求销毁**：置 Dying + 入队，
+	 *  真正销毁在"复制移除 + bubble 引用计数归零"之后（帧首阶段，晚 1~3 帧；见 `Networking/Mass复制设计.md` §8）。 */
 	void DestroyEntities(const TArray<int64>& EntityHandles);
 
 protected:

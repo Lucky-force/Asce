@@ -27,6 +27,53 @@ void UAsceDestroyQueueSubsystem::Enqueue(const FMassEntityHandle Entity)
 	}
 }
 
+bool UAsceDestroyQueueSubsystem::RequestDestroy(const FMassEntityHandle Entity)
+{
+	if (!Entity.IsValid())
+	{
+		return false;
+	}
+
+	UWorld* World = GetWorld();
+	if (!World || World->GetNetMode() == NM_Client)
+	{
+		return false;   // 只权威端
+	}
+
+	UMassEntitySubsystem* Mass = World->GetSubsystem<UMassEntitySubsystem>();
+	if (!Mass)
+	{
+		return false;
+	}
+	FMassEntityManager& EntityManager = Mass->GetMutableEntityManager();
+	if (!EntityManager.IsEntityValid(Entity))
+	{
+		return false;
+	}
+
+	if (FAsceLifecycleFragment* Lifecycle = EntityManager.GetFragmentDataPtr<FAsceLifecycleFragment>(Entity))
+	{
+		if (Lifecycle->IsDying() || Lifecycle->IsDestroyRequested())
+		{
+			return false;   // 幂等：已在销毁流程里
+		}
+		Lifecycle->SetDying(true);   // 停行动/表现隐藏：战斗扫描、选择等据此跳过
+		Enqueue(Entity);
+		return true;
+	}
+
+	// 模板没挂 `UAsceRTSEntityTrait`（没有生命周期 fragment）：无法跟踪 bubble 引用计数 ⇒ 立即销毁兜底
+	static bool bWarnedMissingLifecycle = false;
+	if (!bWarnedMissingLifecycle)
+	{
+		bWarnedMissingLifecycle = true;
+		UE_LOG(LogTemp, Warning,
+			TEXT("[Lifecycle] 实体缺少 FAsceLifecycleFragment（模板必须挂 UAsceRTSEntityTrait）：RequestDestroy 走立即销毁兜底"));
+	}
+	EntityManager.DestroyEntity(Entity);
+	return true;
+}
+
 void UAsceDestroyQueueSubsystem::RunDestroyQueueStage()
 {
 	if (PendingDestroy.Num() == 0)

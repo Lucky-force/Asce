@@ -223,6 +223,11 @@ void UAsceUnitReplicator::AddRequirements(FMassEntityQuery& EntityQuery)
 	// 过滤逻辑靠 `Radii.Num() == Num` / `Footprints.Num() == Num` 判断退化路径。
 	EntityQuery.AddRequirement<FAgentRadiusFragment>(EMassFragmentAccess::ReadOnly, EMassFragmentPresence::Any);
 	EntityQuery.AddRequirement<FAsceGridFootprintFragment>(EMassFragmentAccess::ReadOnly, EMassFragmentPresence::Any);
+	// 坐标（同上：必须显式声明）——Replicator 自己的视野过滤要读它（ApplyVisionFilterToChunk），
+	// 位置能力要读它发坐标、速度能力要读它算"按距离的更新间隔"。**共享 Query 里同一 fragment 只能有一条需求**
+	// （Mass 对重复声明直接 checkf "Duplicated requirements"），所以统一在这里声明：能力侧
+	// （FAsceReplicationProcessorPositionHandler / FAsceVelocityReplicationCapability）不要再加。
+	EntityQuery.AddRequirement<FTransformFragment>(EMassFragmentAccess::ReadOnly, EMassFragmentPresence::Any);
 	// 生命周期（同上：必须显式声明）。用 **ReadWrite**：过滤只读它，但各能力的 Add/Remove 要**写**引用计数
 	// （同一份共享 Query，访问权限按最宽的来）——否则能力的 `GetMutableFragmentView` 会命中 "not bound for writing"。
 	EntityQuery.AddRequirement<FAsceLifecycleFragment>(EMassFragmentAccess::ReadWrite, EMassFragmentPresence::Any);

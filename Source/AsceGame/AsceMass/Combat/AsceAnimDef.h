@@ -29,15 +29,15 @@ struct FAsceAnimClip
 	GENERATED_BODY()
 
 	/** 烘焙里的动画序号（AnimToTexture DataAsset 的 `Animations` 数组下标；仅元数据/调试用） */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Anim")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	int32 AnimIndex = 0;
 
 	/** 段起始帧（烘焙贴图内的**绝对帧**） */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Anim")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	int32 StartFrame = 0;
 
 	/** 段结束帧（烘焙贴图内的**绝对帧**） */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Anim")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	int32 EndFrame = 0;
 };
 
@@ -71,17 +71,17 @@ struct FAsceAnimPageInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Asce|Anim")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly)
 	int32 NumFrames = 0;
 
 	/** 每帧占的行数（= ceil(NumBones / 宽)） */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Asce|Anim")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly)
 	int32 RowsPerFrame = 1;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Asce|Anim")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly)
 	int32 SizeX = 0;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Asce|Anim")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly)
 	int32 SizeY = 0;
 };
 
@@ -92,15 +92,15 @@ struct FAsceVATMeshEntry
 	GENERATED_BODY()
 
 	/** 烘焙输出的静态网格（**含绑定 UV**，实例化用它；与权重纹理必须来自同一次烘焙） */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Asce|Anim")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly)
 	TSoftObjectPtr<UStaticMesh> Mesh;
 
 	/** 该 mesh 的蒙皮权重纹理（per-mesh；材质采样用） */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Asce|Anim")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly)
 	TSoftObjectPtr<UTexture2D> BoneWeightTexture;
 
 	/** 该 mesh 用的材质实例（其动画纹理参数应指向本 AnimSet 的共享动画纹理） */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Asce|Anim")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly)
 	TSoftObjectPtr<UMaterialInterface> Material;
 };
 
@@ -111,17 +111,17 @@ class UAsceAnimSet : public UDataAsset
 
 public:
 	/** 本动画集对应的骨架（同骨架可共用一份烘焙） */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Asce|Anim")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Asce 配置")
 	TSoftObjectPtr<USkeleton> Skeleton;
 
 	// （原 `BoneData`（插件 DA 引用）已移除：插件 DA 只作临时烘焙中间件，数据全部搬进本资产）
 
 	/** 烘焙帧率（帧/秒）= 插件 DA 的 `SampleRate`；表现 processor 用它把"经过时间"换算成帧号 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Asce|Anim")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Asce 配置")
 	float FrameRate = 30.f;
 
 	/** 动画资产 → 烘焙帧段（键走 `FSoftObjectPath` 查找/哈希，**不加载资产**；由 `RebuildFromSources` 填） */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Asce|Anim")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Asce 产物")
 	TMap<TSoftObjectPtr<UAnimSequence>, FAsceAnimClip> Clips;
 
 	// ──────────────────────────────────────────
@@ -130,47 +130,52 @@ public:
 
 	// ── 烘焙参数（编辑期用；重烘时用它们 + `Sources` 填临时 DA）──
 	/** 源骨骼网格（采样用） */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Asce|Anim|Bake")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Asce 配置")
 	TSoftObjectPtr<USkeletalMesh> SkeletalMesh;
 
 	/** 烘焙**输入**：按顺序的动画序列（约定：一个动作 = 一条独立资产，**clip 名 = 资产名**，禁止用自定义帧段切段） */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Asce|Anim|Bake")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Asce 配置")
 	TArray<TSoftObjectPtr<UAnimSequence>> Sources;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Asce|Anim|Bake")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Asce 配置")
 	EAsceVATMode Mode = EAsceVATMode::Bone;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Asce|Anim|Bake")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Asce 配置")
 	EAsceVATPrecision Precision = EAsceVATPrecision::EightBits;
 
 	/** 每顶点骨骼影响数（权重纹理格式 + 材质静态开关） */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Asce|Anim|Bake")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Asce 配置")
 	int32 NumBoneInfluences = 4;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Asce|Anim|Bake")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Asce 配置")
 	int32 MaxWidth = 4096;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Asce|Anim|Bake")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Asce 配置")
 	int32 MaxHeight = 4096;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Asce|Anim|Bake")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Asce 配置")
 	bool bEnforcePowerOfTwo = false;
 
-	// ── 烘焙**产物**：共享（Bone 模式：同骨架所有 mesh 共用一份）──
+	// ── 烘焙**产物**（**不用配**，重烘自动生成，只读查看）：共享（Bone 模式：同骨架所有 mesh 共用一份）──
 	/** 动画数据：骨骼位置图集（分页时改数组） */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Asce|Anim|Baked")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Asce 产物")
 	TSoftObjectPtr<UTexture2D> BonePositionTexture;
 
 	/** 动画数据：骨骼旋转图集 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Asce|Anim|Baked")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Asce 产物")
 	TSoftObjectPtr<UTexture2D> BoneRotationTexture;
 
 	/** 图集布局（不分页 1 条） */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Asce|Anim|Baked")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Asce 产物")
 	TArray<FAsceAnimPageInfo> Pages;
 
-	// ── 烘焙**产物**：per-mesh（多外观；插件 DA 只有一份，这里扩成数组）──
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Asce|Anim|Baked")
+	/** 生成 MI 用的**父材质**（空 = 用插件自带的 `M_Body_BoneAnimation`）。
+	 *  重烘时会为每个外观建/更新 `<名>_MeshN_MI` 并写回 `Meshes[N].Material`，参数全自动（纹理/骨骼数/行数/包围盒/AutoPlay=false…） */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Asce 配置")
+	TSoftObjectPtr<UMaterialInterface> MaterialParent;
+
+	// ── 每个外观一条（**可留空**：重烘会自动补一条；`Material` 留空会自动生成 MI）──
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Asce 配置")
 	TArray<FAsceVATMeshEntry> Meshes;
 
 #if WITH_EDITOR
@@ -183,9 +188,14 @@ public:
 	 *  - 纹理资产由本工具**先建/复用**（空 `UTexture2D`）再烘焙，因为插件的 `WriteToTexture` 只往
 	 *    "已存在的纹理对象"里写内容（字段为空 ⇒ 静默失败）；
 	 *  - 每个 mesh 各薄烘一次（只放 1 条 1 帧序列）来产出它的 `StaticMesh` + `BoneWeightTexture`；
-	 *  - **幂等**：已存在的资产（纹理/网格）复用，不重建。
+	 *    薄烘完按同一批参数**自动建/更新该外观的 MI**（`<名>_MeshN_MI`，父材质 = `MaterialParent` 或
+	 *    插件默认 `M_Body_BoneAnimation`）写进 `Meshes[N].Material` —— 材质参数不用手配；
+	 *  - `Meshes` 为空会自动补一条；`BoneWeightTexture` 为空会自动建；
+	 *  - **引用优先、不重复建**：字段（网格/权重纹理/共享纹理/MI）有引用且能加载 ⇒ 直接用；
+	 *    引用为空或失效 ⇒ 先按"同目录 + 约定名"找，找到就用；都没有才新建（移动目录后不会另建）；
+	 *  - **幂等**：重复重烘不会产生新资产，只更新内容/参数。
 	 */
-	UFUNCTION(CallInEditor, Category = "Asce|Anim")
+	UFUNCTION(CallInEditor, Category = "Asce 配置")
 	void RebuildFromSources();
 
 	/**
@@ -193,7 +203,7 @@ public:
 	 * `Meshes[]` 条目是否完整、`SkeletalMesh`/各 mesh 的骨架是否与资产一致。
 	 * `RebuildFromSources` 末尾会自动跑一次。
 	 */
-	UFUNCTION(CallInEditor, Category = "Asce|Anim")
+	UFUNCTION(CallInEditor, Category = "Asce 配置")
 	void ValidateAnimSet();
 #endif
 };

@@ -76,6 +76,15 @@ private:
 	/** 单位类型 → 语义动画软引用（`FindOrLoadAnimSet` 填充；软引用不参与 GC） */
 	mutable TMap<int32, FAsceUnitAnimRefs> AnimRefCache;
 
-	/** 多 mesh desc 告警只打一次 */
-	bool bWarnedMultiMesh = false;
+	/** 诊断防刷屏：每种"单位类型+状态"的动画解析失败只提示一次（没配 / 不在 AnimSet.Clips 里） */
+	TSet<int32> WarnedAnimMisses;
+
+	/** 诊断防刷屏：单位类型缺 AnimSet / 表行查不到 / Def 类型不对 只提示一次 */
+	TSet<int32> WarnedMissingAnimSets;
+
+	/** 诊断防刷屏：每种"单位类型+状态"解析成功只提示一次（用来判断"数据侧 OK、画面不动 ⇒ 渲染接线问题"） */
+	TSet<int32> LoggedAnimHits;
+
+	/** 诊断防刷屏：每种"单位类型+状态"约每 0.5s 打一次实际写入的帧号（确认 custom data 在推进） */
+	TMap<int32, float> LastLoggedFrames;
 };

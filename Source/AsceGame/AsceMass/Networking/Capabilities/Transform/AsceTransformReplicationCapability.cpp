@@ -12,8 +12,8 @@
 
 void FAsceTransformReplicationCapability::AddRequirements(FMassEntityQuery& EntityQuery)
 {
-	// AddRequirements内部已经是Any（见AsceReplicationPositionHandlers.h），直接转发即可。
-	FAsceReplicationProcessorPositionHandler::AddRequirements(EntityQuery);
+	// 坐标需求（FTransformFragment，ReadOnly + Any）由 `UAsceUnitReplicator::AddRequirements` 统一声明
+	// （共享 Query 不允许同一 fragment 重复声明），这里不需要再加。
 }
 
 void FAsceTransformReplicationCapability::ProcessChunk(FMassExecutionContext& Context, FMassReplicationContext& ReplicationContext

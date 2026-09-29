@@ -9,6 +9,7 @@
 #include "MassExecutionContext.h"
 #include "Engine/World.h"
 #include "AsceMass/Data/AsceEntityFactory.h"
+#include "AsceMass/Lifecycle/AsceDestroyQueueSubsystem.h"
 #include "AsceMass/SpatialGrid/AsceSpatialGridSubsystem.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AsceMassScriptBridge)
@@ -115,14 +116,24 @@ void UAsceMassScriptBridge::DestroyEntities(const TArray<int64>& EntityHandles){
 	}
 
 	FMassEntityManager& EntityManager = EntitySubsystem->GetMutableEntityManager();
+	UAsceDestroyQueueSubsystem* DestroyQueue = World ? World->GetSubsystem<UAsceDestroyQueueSubsystem>() : nullptr;
 
 	// 句柄是 `AsNumber()` 的原始 64 位（Index 低 32 + SerialNumber 高 32）⇒ 必须用 int64 还原
 	for (const int64 EntityNumber : EntityHandles)
 	{
 		const FMassEntityHandle Handle = FMassEntityHandle::FromNumber(static_cast<uint64>(EntityNumber));
-		if (EntityManager.IsEntityValid(Handle))
+		if (!EntityManager.IsEntityValid(Handle))
 		{
-			EntityManager.DestroyEntity(Handle);
+			continue;
+		}
+		if (DestroyQueue)
+		{
+			// 请求销毁（帧首处理）：置 Dying + 入队 ⇒ 复制移除/引用计数归零后在销毁阶段真正销毁
+			DestroyQueue->RequestDestroy(Handle);
+		}
+		else
+		{
+			EntityManager.DestroyEntity(Handle);   // 子系统缺失（异常）：立即销毁兜底
 		}
 	}
 }

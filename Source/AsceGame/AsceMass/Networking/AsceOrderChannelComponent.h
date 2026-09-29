@@ -67,6 +67,29 @@ struct FAsceEntityReject
  * - **没有手动攻击指令**：攻击由自动攻击承接（见 `Combat/技能系统设计.md`）；历史上的
  *   `ServerRequestAttackOrder` / `FAsceAttackOrderFragment` 已移除，不要再加回来。
  */
+/**
+ * 客户端技能预测快照（拒绝回执恢复用；见 `Combat/技能系统设计.md` §3.1）。
+ *
+ * 预测时记录预测前的 `FAsceCombatVisualFragment` 表现字段 + 预测写入的 `Counter`；
+ * 收到拒绝回执时**只有"视觉 fragment 仍是我们预测写入的值"才恢复**（`Counter == PredictedCounter`
+ * 且状态为 `Casting`）——权威动作态一旦同步下来（Counter/状态被覆写）就跳过：**服务器权威优先**。
+ */
+struct FAscePredictedSkillUnit
+{
+	FMassEntityHandle Handle;
+	FMassNetworkID NetID;
+
+	/** 预测写入的 Counter（"是否仍是我的预测"判定） */
+	uint32 PredictedCounter = 0;
+
+	/** 预测前的视觉态（恢复用；`FAsceCombatVisualFragment` 的表现字段） */
+	uint8 SnapshotActionState = 0;
+	int32 SnapshotActionDefId = 0;
+	uint32 SnapshotCounter = 0;
+	float SnapshotPlayRate = 1.f;
+	float SnapshotFacingYaw = 0.f;
+};
+
 UCLASS(ClassGroup=(Mass), meta=(BlueprintSpawnableComponent))
 class UAsceOrderChannelComponent : public UActorComponent
 {
@@ -146,7 +169,8 @@ public:
 	void ClientRejectEntityOrder(int32 OrderSequence, FMassNetworkID UnitNetID, EAsceOrderRejectReason Reason);
 
 	/** 技能释放：一次请求的**逐单位拒绝明细**（**一次请求一条**，与 `ServerRequestSkillOrder` 对称；空数组不发）。
-	 *  客户端按 `OrderSequence` 反查本次下单的本地 entity，逐个撤销预测（见 `Combat/技能系统设计.md` §3.1）。 */
+	 *  客户端按 `OrderSequence` 取预测快照，逐个恢复预测前的视觉态（**服务器权威优先**：权威态已同步的跳过；
+	 *  见 `Combat/技能系统设计.md` §3.1）。 */
 	UFUNCTION(Client, Reliable)
 	void ClientRejectSkillOrder(int32 OrderSequence, const TArray<FAsceEntityReject>& RejectedUnits);
 
@@ -182,4 +206,9 @@ private:
 	 * （对应订单早就该被服务器确认/拒绝过了，理论上不应该堆积到这个量级）。 */
 	TMap<int32, TArray<FMassEntityHandle>> PendingLocalOrders;
 	static constexpr int32 PendingLocalOrdersCapacity = 64;
+
+	/** 客户端专用：技能预测快照（按 OrderSequence 记录），拒绝回执时按"仍是我的预测"守卫恢复快照。
+	 *  容量淘汰策略同 `PendingLocalOrders`（服务器接受后不会再有拒绝回执，条目自然作废）。 */
+	TMap<int32, TArray<FAscePredictedSkillUnit>> PredictedSkillUnits;
+	static constexpr int32 PredictedSkillUnitsCapacity = 64;
 };

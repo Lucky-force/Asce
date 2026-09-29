@@ -13,6 +13,7 @@
 #include "AsceMass/FlowField/AscePathFindingSubsystem.h"
 #include "AsceMass/Fragments/AsceCoreFragments.h"
 #include "AsceMass/Fragments/AsceFootprintFragment.h"
+#include "AsceMass/Lifecycle/AsceDestroyQueueSubsystem.h"
 #include "AsceMass/SpatialGrid/AsceSpatialGridSubsystem.h"
 #include "GameModes/AsceGameState.h"   // 本端阵营表（TeamId → 打包 TeamKey）
 #include "Engine/Engine.h"
@@ -242,7 +243,17 @@ bool UAsceBuildingSubsystem::DemolishBuilding(FMassEntityHandle Building, FStrin
 		SetError(OutError, TEXT("MassEntitySubsystem 不可用"));
 		return false;
 	}
-	MassSub->GetMutableEntityManager().DestroyEntity(Building);
+	// 统一走"请求销毁"：置 Dying + 入队 ⇒ 帧首发死亡通知、置 DestroyRequested ⇒ 复制移除/引用计数归零后
+	// 在销毁阶段真正销毁（晚 1~3 帧；期间战斗扫描/选择已按 Dying 跳过）。实体/空间副作用由观察者回收。
+	if (UAsceDestroyQueueSubsystem* DestroyQueue = World->GetSubsystem<UAsceDestroyQueueSubsystem>())
+	{
+		DestroyQueue->RequestDestroy(Building);
+	}
+	else
+	{
+		// 子系统缺失（异常）：退回立即销毁，至少不留悬空引用
+		MassSub->GetMutableEntityManager().DestroyEntity(Building);
+	}
 	// 建造中的工地：销毁实体即可（没有 footprint ⇒ 观察者不会触发）；占位立刻释放
 	PendingBuilds.RemoveSingle(Building);
 	if (Buildings[Index].Core)

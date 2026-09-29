@@ -29,6 +29,10 @@ struct FMassReplicationContext;
  *     "一个已注册能力的Fragment都没有的entity也会进这个Query白跑一趟"。
  *     Any的语义是"整个Query范围内，只要命中已标记Any的Fragment中的任意一个就算通过"，
  *     所有Capability都用Any，正好等价于"至少命中一个已注册能力才处理这批entity"。
+ *   - **同一Fragment在整个共享Query里只能声明一条**（Mass 对重复声明直接 checkf
+ *     "Duplicated requirements are not supported"）。多能力/Replicator自己共用的数据
+ *     （Transform / 生命周期 / 单位半径 / 建筑footprint……）已由 `UAsceUnitReplicator::AddRequirements`
+ *     统一声明，能力自己不要再 Add 一遍；将来新增共用Fragment也放那里声明。
  *   - ProcessChunk里动手前，必须先用Context.DoesArchetypeHaveFragment<T>()
  *     确认这个chunk里的entity真的有自己需要的Fragment（Any只保证"至少有人命中"，
  *     不保证"每个具体Capability都命中"）。

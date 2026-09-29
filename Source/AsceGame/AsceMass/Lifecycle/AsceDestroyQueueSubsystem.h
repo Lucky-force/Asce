@@ -12,7 +12,8 @@
  * 避免大批死亡一帧把"死亡 RPC / 复制移除 / 销毁"全砸出去。见 `Networking/Mass复制设计.md` §8。
  *
  * 流程：
- *  1. 死亡现场：`FAsceLifecycleFragment::SetDying(true)`（去重 + 别处据此跳过它）+ `Enqueue(Entity)`；
+ *  1. **统一入口 `RequestDestroy`**（战斗死亡现场 / 建筑拆除 / 脚本销毁都走它）：置
+ *     `FAsceLifecycleFragment::SetDying(true)`（去重 + 别处据此跳过它）+ `Enqueue(Entity)`；
  *  2. 每帧 drain ≤ `MaxPerFrame`：对每个实体
  *     a. 按"该 controller 视野"判定要通知哪些客户端 ⇒ 每个 controller 一条死亡 RPC（NetID 数组）；
  *     b. `SetDestroyRequested(true)` ⇒ 复制侧 Off ⇒ 各 bubble Remove ⇒ 引用计数归 0 ⇒ 销毁阶段销毁。
@@ -26,7 +27,14 @@ class UAsceDestroyQueueSubsystem : public UWorldSubsystem
 	GENERATED_BODY()
 
 public:
-	/** 死亡现场调用（调用方先置 `FAsceLifecycleFragment::SetDying(true)` 去重）。 */
+	/** **统一"请求销毁"入口**（非权威端/无效实体返回 false；幂等）：
+	 *  置 Dying（停行动 + 表现隐藏；战斗扫描/选择等据此跳过）→ 入队 → 帧首 drain（发死亡通知 + 置
+	 *  `DestroyRequested`）→ 复制 Off/各 bubble Remove → 引用计数归 0 → 销毁阶段真正销毁。
+	 *  **不**清理移动命令/动作（那是战斗死亡现场自己的事）；没有 `FAsceLifecycleFragment` 的实体
+	 *  （模板没挂 `UAsceRTSEntityTrait`）无法跟踪引用计数 ⇒ **立即销毁**兜底并告警一次。 */
+	bool RequestDestroy(const FMassEntityHandle Entity);
+
+	/** 死亡现场直接入队（调用方需自行置 Dying、清移动/取消动作；一般用 `RequestDestroy` 即可）。 */
 	void Enqueue(const FMassEntityHandle Entity);
 
 	/** 帧首、阶段 2 之前、权威端门控：drain ≤ `MaxPerFrame`。 */
