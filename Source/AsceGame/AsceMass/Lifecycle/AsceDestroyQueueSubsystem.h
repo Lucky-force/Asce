@@ -30,7 +30,8 @@ public:
 	/** **统一"请求销毁"入口**（非权威端/无效实体返回 false；幂等）：
 	 *  置 Dying（停行动 + 表现隐藏；战斗扫描/选择等据此跳过）→ 入队 → 帧首 drain（发死亡通知 + 置
 	 *  `DestroyRequested`）→ 复制 Off/各 bubble Remove → 引用计数归 0 → 销毁阶段真正销毁。
-	 *  **不**清理移动命令/动作（那是战斗死亡现场自己的事）；没有 `FAsceLifecycleFragment` 的实体
+	 *  会**清移动命令**（Dying 期间不该再被移动管线带走）；**动作**由战斗死亡现场自己取消（`HandleDeath`）。
+	 *  没有 `FAsceLifecycleFragment` 的实体
 	 *  （模板没挂 `UAsceRTSEntityTrait`）无法跟踪引用计数 ⇒ **立即销毁**兜底并告警一次。 */
 	bool RequestDestroy(const FMassEntityHandle Entity);
 

@@ -28,6 +28,9 @@ void UAsceGridEntitiesUpdateProcessor::ConfigureQueries(const TSharedRef<FMassEn
 	// 阵营：决定写入格子的"阵营列"（写入与移除共用 AsceTeamIndex；缺该 fragment 的实体会从单位层消失，
 	// 所以这是硬要求——单位由 UAsceRTSEntityTrait 提供、工厂有 ensure 兜）
 	EntityQuery.AddRequirement<FAsceTeamFragment>(EMassFragmentAccess::ReadOnly);
+	// 生命周期：**待销毁（Dying）的实体视为已销毁**，不进网格（见下）——空间层是选择/寻路/放置/战斗的公共底，
+	// 在真正销毁前的 1~3 帧里，所有消费方**都应该看不到它**。核心 trait 恒挂，用 Optional 保险。
+	EntityQuery.AddRequirement<FAsceLifecycleFragment>(EMassFragmentAccess::ReadOnly, EMassFragmentPresence::Optional);
 	EntityQuery.AddSubsystemRequirement<UAsceSpatialGridSubsystem>(EMassFragmentAccess::ReadWrite);
 }
 
@@ -42,10 +45,17 @@ void UAsceGridEntitiesUpdateProcessor::Execute(FMassEntityManager& EntityManager
 		const TConstArrayView<FMassEntityHandle> Handles = Ctx.GetEntities();
 		const TConstArrayView<FAsceHeightFragment> Heights = Ctx.GetFragmentView<FAsceHeightFragment>();
 		const TConstArrayView<FAsceTeamFragment> Teams = Ctx.GetFragmentView<FAsceTeamFragment>();
+		const TConstArrayView<FAsceLifecycleFragment> Lifecycles = Ctx.GetFragmentView<FAsceLifecycleFragment>();
 		const int32 Num = Ctx.GetNumEntities();
 		UAsceSpatialGridSubsystem& Grid = Ctx.GetMutableSubsystemChecked<UAsceSpatialGridSubsystem>();
 		for (int32 i = 0; i < Num; ++i)
 		{
+			// 待销毁（`RequestDestroy` / 战斗死亡当场置 Dying）**视为已销毁**：不进网格。
+			// 真正销毁在帧首销毁阶段（引用计数归零后），那之前的 1~3 帧里所有消费方都不该再看到它。
+			if (Lifecycles.Num() == Num && Lifecycles[i].IsDying())
+			{
+				continue;
+			}
 			// **本端**阵营列：fragment 高 16 位是**写入方**的 index，必须用本端阵营表重映射
 			Grid.InsertEntity(Handles[i], Transforms[i].GetTransform().GetLocation(), RadiusList[i].Radius, Heights[i].Height,
 				GameState ? GameState->FindTeamIndex(AsceTeamId(Teams[i].TeamKey)) : 0);

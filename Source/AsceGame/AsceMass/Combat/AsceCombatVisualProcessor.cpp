@@ -350,7 +350,19 @@ void UAsceCombatVisualProcessor::Execute(FMassEntityManager& EntityManager, FMas
 			// 这里走 `AddBatchedCustomData`：和 `UMassUpdateISMProcessor` 给同一实体 append Transform **完全镜像**
 			// （当前 + prev 两个 LODSignificance range）——每实例恰好 2 个 float、顺序一致，
 			// PostPhysics 的 `EndVisualChanges` 才能把 `NumCustomDataFloats` 正确对应到每个实例。
-			// 注意：**不跳过多 mesh range**（append 对 range 里每个 mesh 都成立；跳过会造成实例计数不齐）。
+			//
+			// ⚠️⚠️ **改本 processor 的 query / 执行顺序前必读：custom data 与 instance 的对应靠"append 顺序"
+			// 隐式对齐**——本 processor 追加的帧号会贴到 `UMassUpdateISMProcessor` 同一次循环里追加的实例上。
+			// 要成立的三个条件（缺一即静默错位、帧号贴到别的实例）：
+			//   1. **匹配的 archetype 集合相同**（本 query 独有的 fragment 全用 Optional ⇒ 不额外筛掉实体）；
+			//   2. **同帧内、且在 `UMassUpdateISMProcessor` 之前**跑（`ExecuteAfter/Below` 已锁定）；
+			//   3. 两组 query 走同一条 archetype/chunk/entity 迭代顺序（Mass 按 entity manager 的 archetype
+			//      顺序缓存，同帧内一致 ⇒ 只要集合相同就成立）。
+			// 验证手段：PIE 里同时放**两种**单位类型一起动，看帧号没有串到另一类身上。
+			//
+			// ⚠️ 假设：**每个 LODSignificance range 只有 1 个 mesh**（v1 限制，见 `技能系统设计.md` §7）。
+			// `UMassUpdateISMProcessor` 对 range 里每个 mesh 各 append 一次实例；这里每实体只 append 一份，
+			// 多 mesh 的 range 会实例数不齐 ⇒ 将来要支持多 mesh 必须同步改成"按 mesh 次数 append"。
 			const int32 ISMInfoIndex = Reps[i].StaticMeshDescHandle.ToIndex();
 			if (!ISMInfos.IsValidIndex(ISMInfoIndex))
 			{

@@ -28,6 +28,9 @@ void UAsceGridBuildingsUpdateProcessor::ConfigureQueries(const TSharedRef<FMassE
 	EntityQuery.AddRequirement<FTransformFragment>(EMassFragmentAccess::ReadOnly);   // 基座 Z（贴地后的实体 Z）
 	// 阵营：缓存到 part 里（选择/战斗按阵营过滤；建筑不分列，查询时比较一次）
 	EntityQuery.AddRequirement<FAsceTeamFragment>(EMassFragmentAccess::ReadOnly);
+	// 生命周期：**待销毁（Dying）的建筑视为已销毁**，不进网格——拆掉的建筑在真正销毁前的 1~3 帧里
+	// 不该再被选择/放置校验/战斗看到（`RequestDestroy` 当场置 Dying；核心 trait 恒挂，Optional 保险）。
+	EntityQuery.AddRequirement<FAsceLifecycleFragment>(EMassFragmentAccess::ReadOnly, EMassFragmentPresence::Optional);
 	EntityQuery.AddSubsystemRequirement<UAsceSpatialGridSubsystem>(EMassFragmentAccess::ReadWrite);
 }
 
@@ -41,11 +44,17 @@ void UAsceGridBuildingsUpdateProcessor::Execute(FMassEntityManager& EntityManage
 		const TConstArrayView<FAsceGridFootprintFragment> Footprints = Ctx.GetFragmentView<FAsceGridFootprintFragment>();
 		const TConstArrayView<FTransformFragment> Transforms = Ctx.GetFragmentView<FTransformFragment>();
 		const TConstArrayView<FAsceTeamFragment> Teams = Ctx.GetFragmentView<FAsceTeamFragment>();
+		const TConstArrayView<FAsceLifecycleFragment> Lifecycles = Ctx.GetFragmentView<FAsceLifecycleFragment>();
 		const TConstArrayView<FMassEntityHandle> Handles = Ctx.GetEntities();
 		const int32 Num = Ctx.GetNumEntities();
 		UAsceSpatialGridSubsystem& Grid = Ctx.GetMutableSubsystemChecked<UAsceSpatialGridSubsystem>();
 		for (int32 i = 0; i < Num; ++i)
 		{
+			// 待销毁（`RequestDestroy` 已置 Dying）的建筑**视为已销毁**：不进网格
+			if (Lifecycles.Num() == Num && Lifecycles[i].IsDying())
+			{
+				continue;
+			}
 			const FAsceGridFootprintFragment& Foot = Footprints[i];
 			FAsceGridBuildingPart Part;
 			Part.Entity = Handles[i];

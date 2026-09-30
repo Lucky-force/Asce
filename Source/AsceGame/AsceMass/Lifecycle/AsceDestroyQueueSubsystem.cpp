@@ -11,6 +11,7 @@
 #include "MassReplicationFragments.h"
 
 #include "AsceMass/Fragments/AsceCoreFragments.h"
+#include "AsceMass/Fragments/AsceOrderFragments.h"   // FAsceMoveOrderFragment（清移动命令）
 #include "AsceMass/Lifecycle/AsceDeathPresentation.h"
 #include "AsceMass/Vision/AsceFogSubsystem.h"
 #include "GameModes/AsceGameState.h"
@@ -58,6 +59,12 @@ bool UAsceDestroyQueueSubsystem::RequestDestroy(const FMassEntityHandle Entity)
 			return false;   // 幂等：已在销毁流程里
 		}
 		Lifecycle->SetDying(true);   // 停行动/表现隐藏：战斗扫描、选择等据此跳过
+		// 停移动：清移动命令。Dying 的实体在真正销毁前的 1~3 帧里不该再被移动管线带着走
+		// （动作由战斗死亡现场自己取消 —— 见 `AsceCombatProcessor` 的 `HandleDeath`）。
+		if (FAsceMoveOrderFragment* MoveOrder = EntityManager.GetFragmentDataPtr<FAsceMoveOrderFragment>(Entity))
+		{
+			MoveOrder->bHasOrder = false;
+		}
 		Enqueue(Entity);
 		return true;
 	}
