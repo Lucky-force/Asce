@@ -45,9 +45,9 @@ class ARTSManager : AActor
         }
 
         TArray<FTransform> SpawnTransforms;
-        for (int i = 0; i < 3; i++)
+        for (int i = 0; i < 20; i++)
         {
-            for (int j = 0; j < 3; j++)
+            for (int j = 0; j < 20; j++)
             {
                 FTransform T;
                 T.SetLocation(FVector(i * 50.f, j * 50.f, 100.f) + FVector(1000, 1000, 100));
