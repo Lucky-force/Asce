@@ -53,13 +53,26 @@ private:
 		TSoftObjectPtr<UAnimSequence> Move;
 		TSoftObjectPtr<UAnimSequence> Attack;
 		TSoftObjectPtr<UAnimSequence> Dying;
+
+		/** 待机变体（空 = 用 `Idle`）；按 `FAsceAnimPlaybackFragment::VariantSeed % Num` 选 */
+		TArray<TSoftObjectPtr<UAnimSequence>> IdleVariants;
+
+		/** 移动变体（空 = 用 `Move`）：`[0]` 走 / `[1]` 跑 */
+		TArray<TSoftObjectPtr<UAnimSequence>> MoveVariants;
+
+		/** >= 该速度（cm/s）用"跑"档（`MoveVariants[1]`）；<=0 = 不分档 */
+		float MoveRunSpeedCm = 0.f;
 	};
 
 	/** 单位类型 → 动画资产（AnimSet + 4 个语义动画）；首次用到时同步加载并缓存 */
 	UAsceAnimSet* FindOrLoadAnimSet(uint16 UnitTypeId);
 
 	/** 解析当前动作应播的**动画资产**（Idle/Move/Dying 读单位 def；Attack 读 `AttackCastConfig.CastAnim`；Casting/Channel 读技能表 `CastConfig`；空 = 不播） */
-	TSoftObjectPtr<UAnimSequence> ResolveClipRef(uint8 ActionState, int32 ActionDefId, uint16 UnitTypeId) const;
+	TSoftObjectPtr<UAnimSequence> ResolveClipRef(uint8 ActionState, int32 ActionDefId, uint16 UnitTypeId, uint8 VariantSeed, uint8 MoveBucket) const;
+
+	/** 该单位类型在当前速度下是否算"跑"（`MoveRunSpeedCm <= 0` 或变体不足 2 条 ⇒ 永远 false）。
+	 *  `bCurrentlyRun` 用于**迟滞**：已在跑 ⇒ 阈值降 10% 才落回走，避免阈值附近逐帧来回切（clip 反复重置 = 闪）。 */
+	bool IsRunSpeed(uint16 UnitTypeId, float Speed2D, bool bCurrentlyRun) const;
 
 	/** 按资产引用在 AnimSet 的 Clips 里取段；找不到返回 null */
 	const FAsceAnimClip* ResolveClip(UAsceAnimSet* AnimSet, const TSoftObjectPtr<UAnimSequence>& ClipRef) const;

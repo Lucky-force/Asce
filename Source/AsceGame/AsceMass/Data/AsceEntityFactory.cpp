@@ -4,6 +4,7 @@
 #include "AsceMass/Data/AsceEntityDefLibrary.h"
 #include "AsceMass/Data/AsceUnitDef.h"
 #include "AsceMass/Fragments/AsceCoreFragments.h"
+#include "AsceMass/Combat/AsceActionDefLibrary.h"   // 攻击动作行解析（按行名查动作表）
 #include "AsceMass/Combat/AsceCombatFragments.h"
 #include "AsceMass/Fragments/AsceMovementFragments.h"
 #include "AsceMass/Vision/AsceVisionFragments.h"
@@ -37,23 +38,61 @@ namespace
 		{
 			for (int32 SlotIndex = 0; SlotIndex < FAsceSkillSlotsFragment::NumSkillSlots; ++SlotIndex)
 			{
-				SkillSlots->Slots[SlotIndex].ActionId = Def.SkillSlots.IsValidIndex(SlotIndex) ? Def.SkillSlots[SlotIndex] : 0;
+				// def 里是**固定的 3 个动作表行名** ⇒ 解析成 ActionId（查不到就按空槽 + 告警）
+				int32 ActionId = 0;
+				const FName SlotRowName = Def.SkillSlots[SlotIndex].RowName;
+				if (!SlotRowName.IsNone())
+				{
+					FAsceActionDef SlotDef;
+					if (FAsceActionDefLibrary::GetActionDefByRowName(SlotRowName, SlotDef))
+					{
+						if (SlotDef.ReleaseMode != EAsceReleaseMode::Manual)
+						{
+							UE_LOG(LogTemp, Warning, TEXT("[Factory] 技能槽 %d 引用的动作行 %s 的 ReleaseMode 不是 Manual（技能槽只能放手动的）"),
+								SlotIndex + 1, *SlotRowName.ToString());
+						}
+						ActionId = SlotDef.ActionId;
+					}
+					else
+					{
+						UE_LOG(LogTemp, Warning, TEXT("[Factory] 技能槽 %d 引用了查不到的动作行 %s（按空槽处理）"),
+							SlotIndex + 1, *SlotRowName.ToString());
+					}
+				}
+				SkillSlots->Slots[SlotIndex].ActionId = ActionId;
 				SkillSlots->Slots[SlotIndex].NextReadyServerTime = 0.0;
 			}
 		}
 		// 战斗参数（见 `Combat/技能系统设计.md`）：只写静态值；运行时状态由战斗 processor 推进
 		if (FAsceCombatFragment* Combat = EntityManager.GetFragmentDataPtr<FAsceCombatFragment>(Entity))
 		{
-			Combat->AttackRange = Def.AttackRange;
-			Combat->AttackDamage = Def.AttackDamage;
-			// 攻击时间线：单位 def 的 AttackCastConfig（NormalCast，1.0x 基准）；缺省 Total=1s / Trigger=Total
-			const FAsceNormalCastConfig* AttackConfig = Def.AttackCastConfig.GetPtr<FAsceNormalCastConfig>();
-			Combat->AttackTotalTime = FMath::Max(AttackConfig ? AttackConfig->TotalCastTime : 1.f, 0.05f);
-			Combat->AttackTriggerTime = FMath::Clamp(AttackConfig ? AttackConfig->TriggerTime : Combat->AttackTotalTime, 0.f, Combat->AttackTotalTime);
+			// 攻击 = 一条 `ReleaseMode = Auto` 的动作行（`AttackAction`）；没配才退回旧的 `AttackCastConfig`
+			FAsceActionDef AttackDef;
+			const bool bHasAttackRow = FAsceActionDefLibrary::GetActionDefByRowName(Def.AttackAction.RowName, AttackDef);
+			if (bHasAttackRow && AttackDef.ReleaseMode != EAsceReleaseMode::Auto)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("[Factory] AttackAction 引用的动作行 %s 的 ReleaseMode 不是 Auto（应配成【普通攻击】那种）"),
+					*Def.AttackAction.RowName.ToString());
+			}
+			const FAsceSkillCastConfig* AttackCast = bHasAttackRow
+				? AttackDef.CastConfig.GetPtr<FAsceSkillCastConfig>()
+				: nullptr;
+			const FAsceNormalCastConfig* LegacyAttackConfig = Def.AttackCastConfig.GetPtr<FAsceNormalCastConfig>();
+
+			// 数值：动作行的 `Range/Damage` 为 0 ⇒ 跟随**单位基础属性**（非 0 = 覆盖）
+			Combat->AttackActionId = bHasAttackRow ? AttackDef.ActionId : 0;
+			Combat->AttackRange = (bHasAttackRow && AttackDef.Range > 0.f) ? AttackDef.Range : Def.AttackRange;
+			Combat->AttackDamage = (bHasAttackRow && AttackDef.Damage > 0.f) ? AttackDef.Damage : Def.AttackDamage;
+			// 攻击时间线：优先动作行的 CastConfig；退回旧的 AttackCastConfig；都没有 ⇒ Total=1s / Trigger=Total
+			Combat->AttackTotalTime = FMath::Max(
+				AttackCast ? AttackCast->GetTotalCastTime()
+					: (LegacyAttackConfig ? LegacyAttackConfig->TotalCastTime : 1.f), 0.05f);
+			Combat->AttackTriggerTime = FMath::Clamp(
+				AttackCast ? AttackCast->GetTriggerTime()
+					: (LegacyAttackConfig ? LegacyAttackConfig->TriggerTime : Combat->AttackTotalTime),
+				0.f, Combat->AttackTotalTime);
 			Combat->AttackSpeed = Def.AttackSpeed;
 			Combat->bAutoAttack = Def.bAutoAttackDefault;
-			Combat->bProjectile = Def.bProjectile;
-			Combat->ProjectileDefId = Def.ProjectileDefId;
 		}
 		if (FAsceTeamFragment* Team = EntityManager.GetFragmentDataPtr<FAsceTeamFragment>(Entity))
 		{

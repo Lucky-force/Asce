@@ -725,6 +725,7 @@ void UAsceOrderChannelComponent::ServerRequestSkillOrder_Implementation(const TA
 
 		const float FacingYaw = FMath::RadiansToDegrees(FMath::Atan2(AimLocation.Y - Location.Y, AimLocation.X - Location.X));
 		Action->ActionState = EAsceActionState::Casting;   // 持续施法也先走前摇
+		Action->StartServerTime = static_cast<float>(Now);   // 起轴时刻（锚点；随动作态通道下发）
 		Action->ActionDefId = Slots->Slots[SlotId].ActionId;
 		Action->ActionTarget = TargetHandle;
 		Action->ActionTargetPos = FVector2D(AimLocation.X, AimLocation.Y);
@@ -819,7 +820,7 @@ void UAsceOrderChannelComponent::ServerRequestSetSkillSlot_Implementation(const 
 	{
 		FAsceActionDef ActionDef;
 		if (!FAsceActionDefLibrary::GetActionDef(ActionId, ActionDef)
-			|| ActionDef.SkillType != EAsceSkillType::Active)
+			|| ActionDef.ReleaseMode != EAsceReleaseMode::Manual)   // 槽位只能放"手动释放"的动作（Auto = 普通攻击）
 		{
 			ClientRejectWholeOrder(OrderSequence, EAsceOrderRejectReason::InvalidTarget);
 			return;

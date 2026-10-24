@@ -4,6 +4,7 @@
 #include "CoreMinimal.h"
 #include "StructUtils/InstancedStruct.h"
 #include "AsceMass/Data/AsceEntityDefTypes.h"
+#include "DataTableSystem/AsceRowNameWrapper.h"
 #include "AsceUnitDef.generated.h"
 
 class UAsceAnimSet;
@@ -54,10 +55,11 @@ struct FAsceRTSUnitDef : public FAsceEntityDefBase
 	// ── 战斗（写入 FAsceCombatFragment；见 `Combat/技能系统设计.md`）──
 
 	/** 攻击距离（cm）；v1 固定"近战表面/圆心"口径，高度口径后补 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Combat")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Attributes")
 	float AttackRange = 300.f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Combat")
+	/** 攻击力（技能/攻击的伤害基数；动作行的 `Damage` 为 0 时用它） */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Attributes")
 	float AttackDamage = 10.f;
 
 	/** 攻击的动作管线配置（NormalCast）：时间 + **攻击动画 `CastAnim`**（1.0x 配，运行时由 AttackSpeed 缩放；空 = 默认 Total=1s / Trigger=1s、无攻击动画） */
@@ -65,25 +67,30 @@ struct FAsceRTSUnitDef : public FAsceEntityDefBase
 	FInstancedStruct AttackCastConfig;
 
 	/** 攻击速度；PlayRate = AttackSpeed / 200 + 0.1（180 → 1.0x） */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Combat")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Attributes")
 	float AttackSpeed = 180.f;
 
 	/** 自动攻击默认开关（玩家可切） */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Combat")
 	bool bAutoAttackDefault = true;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Combat")
-	bool bProjectile = false;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Combat")
-	int32 ProjectileDefId = 0;
+	/** **攻击 = 一条 `ReleaseMode = Auto` 的动作行**（动作表里的行名）。
+	 *  行里决定：时间轴（CastConfig，含**攻击动画 `CastAnim`**）、交付方式（Instant/Projectile）、
+	 *  `Range/Damage` 为 0 时跟随下面的**基础属性**。留空 = 退回旧的 `AttackCastConfig` 路径（迁移用）。 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Combat",
+		meta = (DataTableBinding = "AsceActionDefRow:ActionId"))
+	FAsceRowNameWrapper AttackAction;
 
 	// ── 技能（写入 FAsceSkillSlotsFragment 的初始槽位；见 `Combat/技能系统设计.md`）──
 
 	/** 初始技能槽位（1/2/3 ↔ Q/W/E）：每项是技能（动作定义）id；0 = 空槽。
 	 *  运行时换槽由"配置槽位"指令改，这里只是出生时的初始配置 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Skill")
-	TArray<int32> SkillSlots;
+	// ★ **固定 3 个**（与运行时 `FAsceSkillSlotsFragment::Slots[3]` 一致），元素是**动作表行名** =
+	//   下拉选技能；空 = 空槽。旧版是 `TArray<int32>`（可以任意加、裸 id）⇒ 已迁移，内容需要重填一次。
+	// ⚠️ 静态 C 数组**不能暴露给蓝图**（UHT 限制）⇒ 只给 EditAnywhere；C++ 侧（工厂）照常读
+	UPROPERTY(EditAnywhere, Category = "Skill",
+		meta = (DataTableBinding = "AsceActionDefRow:ActionId"))
+	FAsceRowNameWrapper SkillSlots[3];
 
 	/** 该单位类型的动画集（Bone 模式；客户端通过复制的 UniqueTypeId 查本行解析动画）。见 `Combat/AsceAnimDef.h` */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation")
@@ -104,4 +111,19 @@ struct FAsceRTSUnitDef : public FAsceEntityDefBase
 	/** 死亡（一次性） */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation")
 	TSoftObjectPtr<UAnimSequence> DyingAnim;
+
+	// ── 动画变体（可选；空 = 用上面的单条）──
+
+	/** 待机变体：>1 条时按**选择种子**随机（种子由行为树的 `Asce Select Anim Variant` task 写；
+	 *  没挂那个 task 时种子=0 ⇒ 固定第一条）。见 `FAsceAnimPlaybackFragment::VariantSeed` */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation")
+	TArray<TSoftObjectPtr<UAnimSequence>> IdleAnimVariants;
+
+	/** 移动变体：**下一步接**"按速度选"；留空 = 用 `MoveAnim` */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation")
+	TArray<TSoftObjectPtr<UAnimSequence>> MoveAnimVariants;
+
+	/** 达到该速度（cm/s）时用 `MoveAnimVariants[1]`（走/跑分档）；<=0 = 不分档（配合 `MoveAnimVariants` 使用） */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation")
+	float MoveAnimRunSpeedCm = 0.f;
 };

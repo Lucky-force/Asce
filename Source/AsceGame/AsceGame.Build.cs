@@ -53,6 +53,10 @@ public class AsceGame : ModuleRules
 				"MassLOD",
 				"MassReplication",
 				"MassActors",
+				// 技能/行为运行时：Mass × StateTree（`Combat/技能编辑器设计.md`）
+				// 公开头（Behavior/AsceStateTreeProcessors.h）直接 include MassStateTreeProcessors.h
+				"MassAIBehavior",
+				"StateTreeModule",
 			}
 		);
 

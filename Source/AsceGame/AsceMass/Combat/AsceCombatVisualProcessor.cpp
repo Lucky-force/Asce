@@ -8,6 +8,7 @@
 #include "MassEntityQuery.h"
 #include "MassExecutionContext.h"
 #include "MassLODFragments.h"             // FMassVisualizationChunkFragment
+#include "MassMovementFragments.h"        // FMassDesiredMovementFragment（移动走/跑分档读速度）
 #include "MassRepresentationFragments.h"  // FMassRepresentationFragment/LOD/SubsystemSharedFragment
 #include "MassRepresentationProcessor.h"  // UMassVisualizationProcessor（排序）
 #include "MassRepresentationSubsystem.h"
@@ -73,6 +74,8 @@ void UAsceCombatVisualProcessor::ConfigureQueries(const TSharedRef<FMassEntityMa
 	EntityQuery.AddRequirement<FAsceUnitDefFragment>(EMassFragmentAccess::ReadOnly, EMassFragmentPresence::Optional);
 	EntityQuery.AddRequirement<FAsceCombatFragment>(EMassFragmentAccess::ReadOnly, EMassFragmentPresence::Optional);
 	EntityQuery.AddRequirement<FAsceAnimPlaybackFragment>(EMassFragmentAccess::ReadWrite, EMassFragmentPresence::Optional);
+	// 移动"走/跑"分档要读速度（复制下来的是 DesiredVelocity ⇒ 两端都拿得到）
+	EntityQuery.AddRequirement<FMassDesiredMovementFragment>(EMassFragmentAccess::ReadOnly, EMassFragmentPresence::Optional);
 }
 
 UAsceAnimSet* UAsceCombatVisualProcessor::FindOrLoadAnimSet(const uint16 UnitTypeId)
@@ -96,8 +99,35 @@ UAsceAnimSet* UAsceCombatVisualProcessor::FindOrLoadAnimSet(const uint16 UnitTyp
 			Refs.Idle = UnitDef->IdleAnim;
 			Refs.Move = UnitDef->MoveAnim;
 			Refs.Dying = UnitDef->DyingAnim;
-			// 攻击动画跟攻击的 CastConfig 走（与技能一致，不再单列 AttackAnim）
-			if (const FAsceNormalCastConfig* AttackConfig = UnitDef->AttackCastConfig.GetPtr<FAsceNormalCastConfig>())
+			// 待机变体（空 = 用 IdleAnim 单条）；null 项过滤掉，避免 % 到空条目
+			Refs.IdleVariants.Reserve(UnitDef->IdleAnimVariants.Num());
+			for (const TSoftObjectPtr<UAnimSequence>& Variant : UnitDef->IdleAnimVariants)
+			{
+				if (!Variant.IsNull())
+				{
+					Refs.IdleVariants.Add(Variant);
+				}
+			}
+			// 移动变体（[0] 走 / [1] 跑）+ 跑步速度阈值
+			Refs.MoveVariants.Reserve(UnitDef->MoveAnimVariants.Num());
+			for (const TSoftObjectPtr<UAnimSequence>& Variant : UnitDef->MoveAnimVariants)
+			{
+				if (!Variant.IsNull())
+				{
+					Refs.MoveVariants.Add(Variant);
+				}
+			}
+			Refs.MoveRunSpeedCm = UnitDef->MoveAnimRunSpeedCm;
+			// 攻击动画：优先"攻击动作行"的 CastConfig（`AttackAction`）；没配行才用旧的 AttackCastConfig
+			FAsceActionDef AttackRow;
+			if (FAsceActionDefLibrary::GetActionDefByRowName(UnitDef->AttackAction.RowName, AttackRow))
+			{
+				if (const FAsceSkillCastConfig* AttackCast = AttackRow.CastConfig.GetPtr<FAsceSkillCastConfig>())
+				{
+					Refs.Attack = AttackCast->GetCastAnim();
+				}
+			}
+			else if (const FAsceNormalCastConfig* AttackConfig = UnitDef->AttackCastConfig.GetPtr<FAsceNormalCastConfig>())
 			{
 				Refs.Attack = AttackConfig->CastAnim;
 			}
@@ -125,7 +155,20 @@ UAsceAnimSet* UAsceCombatVisualProcessor::FindOrLoadAnimSet(const uint16 UnitTyp
 	return AnimSet;
 }
 
-TSoftObjectPtr<UAnimSequence> UAsceCombatVisualProcessor::ResolveClipRef(const uint8 ActionState, const int32 ActionDefId, const uint16 UnitTypeId) const
+bool UAsceCombatVisualProcessor::IsRunSpeed(const uint16 UnitTypeId, const float Speed2D, const bool bCurrentlyRun) const
+{
+	const FAsceUnitAnimRefs* Refs = AnimRefCache.Find(static_cast<int32>(UnitTypeId));
+	if (!Refs || Refs->MoveRunSpeedCm <= 0.f || Refs->MoveVariants.Num() <= 1)
+	{
+		return false;
+	}
+	// 迟滞：进"跑"要超过阈值 +10%，已在跑要跌破阈值 -10% 才回"走"
+	const float Margin = Refs->MoveRunSpeedCm * 0.1f;
+	const float Threshold = bCurrentlyRun ? (Refs->MoveRunSpeedCm - Margin) : (Refs->MoveRunSpeedCm + Margin);
+	return Speed2D >= Threshold;
+}
+
+TSoftObjectPtr<UAnimSequence> UAsceCombatVisualProcessor::ResolveClipRef(const uint8 ActionState, const int32 ActionDefId, const uint16 UnitTypeId, const uint8 VariantSeed, const uint8 MoveBucket) const
 {
 	const EAsceActionState State = static_cast<EAsceActionState>(ActionState);
 
@@ -158,11 +201,24 @@ TSoftObjectPtr<UAnimSequence> UAsceCombatVisualProcessor::ResolveClipRef(const u
 	{
 		switch (State)
 		{
-		case EAsceActionState::Move:   return Refs->Move;
+		case EAsceActionState::Move:
+			// 走/跑分档（数组为空 ⇒ 回退单条 MoveAnim）。档位由调用方（含迟滞）算好传进来
+			if (Refs->MoveVariants.Num() > 0)
+			{
+				const int32 Index = (MoveBucket != 0 && Refs->MoveVariants.Num() > 1) ? 1 : 0;
+				return Refs->MoveVariants[Index];
+			}
+			return Refs->Move;
 		case EAsceActionState::Dying:  return Refs->Dying;
 		case EAsceActionState::Attack: return Refs->Attack;
 		case EAsceActionState::Idle:
-		default:                       return Refs->Idle;
+		default:
+			// 待机变体：按选择种子取（数组为空 ⇒ 回退单条）
+			if (Refs->IdleVariants.Num() > 0)
+			{
+				return Refs->IdleVariants[static_cast<int32>(VariantSeed) % Refs->IdleVariants.Num()];
+			}
+			return Refs->Idle;
 		}
 	}
 	return TSoftObjectPtr<UAnimSequence>();
@@ -217,6 +273,7 @@ void UAsceCombatVisualProcessor::Execute(FMassEntityManager& EntityManager, FMas
 		const TConstArrayView<FAsceUnitDefFragment> Defs = Ctx.GetFragmentView<FAsceUnitDefFragment>();
 		const TConstArrayView<FAsceCombatFragment> Combats = Ctx.GetFragmentView<FAsceCombatFragment>();
 		const TArrayView<FAsceAnimPlaybackFragment> Playbacks = Ctx.GetMutableFragmentView<FAsceAnimPlaybackFragment>();
+		const TConstArrayView<FMassDesiredMovementFragment> DesiredMovements = Ctx.GetFragmentView<FMassDesiredMovementFragment>();
 
 		const int32 Num = Ctx.GetNumEntities();
 		for (int32 i = 0; i < Num; ++i)
@@ -265,15 +322,25 @@ void UAsceCombatVisualProcessor::Execute(FMassEntityManager& EntityManager, FMas
 			FAsceAnimPlaybackFragment* Playback = ((Playbacks.Num() == Num) && bHasAction) ? &Playbacks[i] : nullptr;
 			if (Playback)
 			{
-				if (Playback->LastCounter != Counter || Playback->LastActionState != ActionState || !Playback->bValid)
+				// 移动的"走/跑"档位：速度在移动过程中会变 ⇒ 档位切换也算一次边沿（重解析 clip + 重置播放）
+				const float Speed2D = (DesiredMovements.Num() == Num) ? DesiredMovements[i].DesiredVelocity.Size2D() : 0.f;
+				const bool bIsMoving = (ActionState == static_cast<uint8>(EAsceActionState::Move));
+				// 迟滞：把"上一次是不是跑"喂进去，避免阈值附近频繁切换
+				const uint8 NewMoveBucket = (bIsMoving && IsRunSpeed(UnitTypeId, Speed2D, Playback->MoveRunBucket != 0)) ? 1 : 0;
+				const bool bMoveBucketChanged = bIsMoving && Playback->bValid && (Playback->MoveRunBucket != NewMoveBucket);
+
+				if (Playback->LastCounter != Counter || Playback->LastActionState != ActionState || !Playback->bValid
+					|| bMoveBucketChanged)
 				{
 					Playback->LastCounter = Counter;
 					Playback->LastActionState = ActionState;
+					Playback->MoveRunBucket = NewMoveBucket;
 					Playback->StartTime = Now;
 					Playback->bValid = false;
 
 					UAsceAnimSet* AnimSet = FindOrLoadAnimSet(UnitTypeId);
-					const TSoftObjectPtr<UAnimSequence> ClipRef = ResolveClipRef(ActionState, ActionDefId, UnitTypeId);
+					const uint8 VariantSeed = Playback->VariantSeed;   // 树 task 写（没挂 task 就是 0）
+					const TSoftObjectPtr<UAnimSequence> ClipRef = ResolveClipRef(ActionState, ActionDefId, UnitTypeId, VariantSeed, NewMoveBucket);
 					if (const FAsceAnimClip* Clip = ResolveClip(AnimSet, ClipRef))
 					{
 						Playback->AnimIndex = Clip->AnimIndex;

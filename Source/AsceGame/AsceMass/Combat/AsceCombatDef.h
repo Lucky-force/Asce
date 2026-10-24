@@ -69,12 +69,17 @@ enum class EAsceRangeKind : uint8
 	RangedHighGround UMETA(DisplayName = "远程（低→高表面，高→低圆心）"),
 };
 
-/** 技能类型 */
+/**
+ * **释放方式**（取代原来的"主动/被动"）：
+ *  - `Manual` = 玩家指令释放（技能）；
+ *  - `Auto`   = 由系统自动触发（**普通攻击**：战斗扫描选中目标后自己起手）。
+ *  "被动加成"不是一个动作 ⇒ v2 用单位 def 上的 modifier 列表做，不占动作表。
+ */
 UENUM(BlueprintType)
-enum class EAsceSkillType : uint8
+enum class EAsceReleaseMode : uint8
 {
-	Active  UMETA(DisplayName = "主动"),
-	Passive UMETA(DisplayName = "被动（v1 只做常驻属性加成）"),
+	Manual UMETA(DisplayName = "手动（技能）"),
+	Auto   UMETA(DisplayName = "自动（普通攻击）"),
 };
 
 /**
@@ -174,7 +179,7 @@ struct FAsceActionDef : public FTableRowBase
 	int32 ActionId = 0;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action")
-	EAsceSkillType SkillType = EAsceSkillType::Active;
+	EAsceReleaseMode ReleaseMode = EAsceReleaseMode::Manual;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action")
 	EAsceTargetKind TargetKind = EAsceTargetKind::Unit;
@@ -210,13 +215,6 @@ struct FAsceActionDef : public FTableRowBase
 	/** 生成物（`Delivery == SpawnAtTarget`）：实体定义表行名 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action")
 	FName SpawnGroupDefRow;
-
-	/** 备用：数值型定义 id（暂未使用；行名方式够用就不做 id 查表了） */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action")
-	int32 ProjectileDefId = 0;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action")
-	int32 SpawnGroupId = 0;
 
 	/** 动作管线配置（多态：普通 / 持续）：**时间字段 + 施法/持续动画的唯一来源**（`GetCastAnim()/GetChannelAnim()`；空 = 不播） */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action", meta = (BaseStruct = "/Script/AsceGame.AsceSkillCastConfig"))

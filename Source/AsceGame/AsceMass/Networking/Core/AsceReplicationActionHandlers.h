@@ -35,6 +35,28 @@ namespace UE::AsceMass::Replication
 	{
 		return static_cast<float>(FacingQ) * (360.f / 255.f);
 	}
+
+	/** 起轴时刻量化：uint16 = 服务器世界时间的**百分秒回绕值**（与技能面板 CD 同一编码；0 = 未设） */
+	FORCEINLINE uint16 QuantizeActionStartTime(const float ServerWorldTimeSeconds)
+	{
+		if (ServerWorldTimeSeconds <= 0.f)
+		{
+			return 0;
+		}
+		return static_cast<uint16>(FMath::Fmod(static_cast<double>(ServerWorldTimeSeconds) * 100.0, 65536.0));
+	}
+
+	/** 反解成"距现在多久之前起的轴"（秒）。回绕安全，只在 RTT 量级内使用 */
+	FORCEINLINE float DequantizeActionStartAge(const uint16 StartTimeQ, const float ServerNowSeconds)
+	{
+		if (StartTimeQ == 0)
+		{
+			return 0.f;
+		}
+		const int32 NowQ = static_cast<int32>(FMath::Fmod(static_cast<double>(ServerNowSeconds) * 100.0, 65536.0));
+		const int32 DeltaQ = (NowQ - static_cast<int32>(StartTimeQ)) & 0xFFFF;
+		return static_cast<float>(DeltaQ) * 0.01f;
+	}
 } // namespace UE::AsceMass::Replication
 
 /**
@@ -59,12 +81,14 @@ public:
 	void SetCounter(const uint8 InValue) { Counter = InValue; }
 	void SetPlayRateQ(const uint8 InValue) { PlayRateQ = InValue; }
 	void SetFacingQ(const uint8 InValue) { FacingQ = InValue; }
+	void SetStartTimeQ(const uint16 InValue) { StartTimeQ = InValue; }
 
 	uint8 GetActionState() const { return ActionState; }
 	uint8 GetActionDefId() const { return ActionDefId; }
 	uint8 GetCounter() const { return Counter; }
 	uint8 GetPlayRateQ() const { return PlayRateQ; }
 	uint8 GetFacingQ() const { return FacingQ; }
+	uint16 GetStartTimeQ() const { return StartTimeQ; }
 
 private:
 	/** `EAsceActionState` 的数值 */
@@ -86,6 +110,10 @@ private:
 	/** 本次动作朝向量化（见 `QuantizeActionFacing`） */
 	UPROPERTY(Transient)
 	uint8 FacingQ = 0;
+
+	/** Start-of-action server time (wrapped hundredths; see QuantizeActionStartTime) */
+	UPROPERTY(Transient)
+	uint16 StartTimeQ = 0;
 };
 
 /**
@@ -115,7 +143,7 @@ public:
 
 	/** 服务器侧：动作态变化就写进 Agent + 标脏（字段全等则不标，不是每帧推） */
 	void SetActionStateFromFragment(const FMassReplicatedAgentHandle Handle, const uint8 ActionState, const uint8 ActionDefId
-		, const uint8 Counter, const uint8 PlayRateQ, const uint8 FacingQ)
+		, const uint8 Counter, const uint8 PlayRateQ, const uint8 FacingQ, const uint16 StartTimeQ)
 	{
 		check(this->AgentHandleManager.IsValidHandle(Handle));
 		const int32 AgentsIdx = this->AgentLookupArray[Handle.GetIndex()].AgentsIdx;
@@ -128,7 +156,8 @@ public:
 			|| Data.GetActionDefId() != ActionDefId
 			|| Data.GetCounter() != Counter
 			|| Data.GetPlayRateQ() != PlayRateQ
-			|| Data.GetFacingQ() != FacingQ;
+			|| Data.GetFacingQ() != FacingQ
+			|| Data.GetStartTimeQ() != StartTimeQ;
 		if (!bChanged)
 		{
 			return;
@@ -147,6 +176,7 @@ public:
 		Data.SetCounter(Counter);
 		Data.SetPlayRateQ(PlayRateQ);
 		Data.SetFacingQ(FacingQ);
+		Data.SetStartTimeQ(StartTimeQ);
 		this->Serializer->MarkItemDirty(Item);
 		this->MarkSent(Item.Agent, Now);
 	}
@@ -175,6 +205,7 @@ protected:
 		Visual->Counter = Data.GetCounter();
 		Visual->PlayRate = UE::AsceMass::Replication::DequantizeActionPlayRate(Data.GetPlayRateQ());
 		Visual->FacingYaw = UE::AsceMass::Replication::DequantizeActionFacing(Data.GetFacingQ());
+		Visual->ActionStartTimeQ = Data.GetStartTimeQ();
 	}
 #endif // UE_REPLICATION_COMPILE_CLIENT_CODE
 	// ServeWindow / TryReserveForAdd / ... 由基类 `TAsceServeWindowHandler`（经被动基类）提供

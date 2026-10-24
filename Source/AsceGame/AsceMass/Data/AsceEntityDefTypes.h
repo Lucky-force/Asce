@@ -7,6 +7,7 @@
 #include "AsceEntityDefTypes.generated.h"
 
 class UMassEntityConfigAsset;
+class UStateTree;
 
 /**
  * 实体类型定义（所有"可选中的实体"通用）：
@@ -25,6 +26,12 @@ struct FAsceEntityDefBase
 	// 这里只放"所有类型都成立"的字段。
 	// 建筑占地/遮挡/core → `FAsceBuildingDefBase`（`UAsceRTSBuildingTrait` 配默认值）；
 	// 单位半径/高度/速度等 → `FAsceRTSUnitDef`。
+
+	/** **该类型的行为树**（Mass × StateTree；`Combat/技能编辑器设计.md`）：每类型一棵，由
+	 *  `UAsceRTSEntityTrait::BuildTemplate` **两端都**挂进实体模板（客户端也跑表现 task）。
+	 *  必须用 **Mass StateTree Schema**（`UMassStateTreeSchema`）建；空 = 该类型没有状态树（行为不变）。 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Behavior")
+	TSoftObjectPtr<UStateTree> StateTree;
 };
 
 /** 实体类型表的一行（MDT；行名 = 数字 ID 字符串）。 */

@@ -337,6 +337,10 @@
 			"Enabled": true
 		},
 		{
+			"Name": "MassAI",
+			"Enabled": true
+		},
+		{
 			"Name": "AsceRTS",
 			"Enabled": true
 		},

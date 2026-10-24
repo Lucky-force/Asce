@@ -41,4 +41,12 @@ public:
 	/** 实体类型定义表（MDT）。行结构：`FAsceEntityDefRow`（行名 = 数字 ID 字符串）。 */
 	UPROPERTY(EditAnywhere, config, Category = "Entity")
 	TSoftObjectPtr<UDataTable> AsceEntityDefRow;
+
+	// ── 战斗 ──
+
+	/** 动作表（MDT）。行结构：`FAsceActionDef`。
+	 *  用途：`FAsceRowNameWrapper` 的 `DataTableBinding = "AsceActionDefRow:..."` 下拉（攻击动作/技能槽位引用）。
+	 *  ★ 查表本身走 `FAsceActionDefLibrary`（按行结构找表），**不依赖**这里是否填；这里只影响编辑器下拉。 */
+	UPROPERTY(EditAnywhere, config, Category = "Combat")
+	TSoftObjectPtr<UDataTable> AsceActionDefRow;
 };

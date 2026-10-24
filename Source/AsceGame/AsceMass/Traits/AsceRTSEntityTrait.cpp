@@ -5,7 +5,11 @@
 #include "MassReplicationTrait.h"
 #include "MassReplicationFragments.h"   // FMassReplicationParameters（写入调优）
 #include "MassLODTypes.h"               // EMassLOD
+#include "MassEntityUtils.h"            // UE::Mass::Utils::GetEntityManagerChecked（行为树共享 fragment）
+#include "MassStateTreeFragments.h"     // FMassStateTreeSharedFragment / FMassStateTreeInstanceFragment
+#include "StateTree.h"                  // UStateTree::LoadSynchronous / IsReadyToRun
 #include "UObject/Package.h"            // GetTransientPackage
+#include "AsceMass/Behavior/AsceBehaviorFragment.h"
 #include "AsceMass/Data/AsceEntityDefLibrary.h"
 #include "AsceMass/Networking/Core/AsceUnitReplicator.h"
 #include "AsceMass/Networking/Capabilities/Transform/AsceTransformReplication.h"
@@ -56,6 +60,40 @@ void UAsceRTSEntityTrait::BuildTemplate(FMassEntityTemplateBuildContext& BuildCo
 
 	// 生命周期（服务端专用、不复制）：销毁请求 + bubble 引用计数。见 `AsceCoreFragments.h`
 	BuildContext.AddFragment<FAsceLifecycleFragment>();
+
+	// ── 行为树（Mass × StateTree）：**两端都挂**（客户端也跑表现 task，见 `Combat/技能编辑器设计.md` §3.3）──
+	// 树来自该类型的实体定义行（`FAsceEntityDefBase::StateTree`）；空 = 该类型没有状态树（行为不变）。
+	// 注意：**不能**照抄引擎 `UMassStateTreeTrait` 的 `Standalone|Server` 门控，否则两端 archetype 不一致。
+	if (!BuildContext.IsInspectingData())
+	{
+		FAsceEntityDefRow DefRow;
+		const bool bHasRow = UAsceEntityDefLibrary::GetEntityDefRowByName(UniqueType.RowName, DefRow);
+		const FAsceEntityDefBase* DefBase = bHasRow ? DefRow.Def.GetPtr<FAsceEntityDefBase>() : nullptr;
+		UStateTree* BehaviorTree = DefBase ? DefBase->StateTree.LoadSynchronous() : nullptr;
+		if (DefBase && !DefBase->StateTree.IsNull() && BehaviorTree == nullptr)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[Behavior] 实体类型 %s 配了 StateTree 但加载失败（软引用无效/资产缺失）—— 该类型不会有行为树"),
+				*UniqueType.RowName.ToString());
+		}
+		if (BehaviorTree)
+		{
+			if (!BehaviorTree->IsReadyToRun())
+			{
+				UE_LOG(LogTemp, Warning, TEXT("[Behavior] 实体类型 %s 的 StateTree %s 还没编译（IsReadyToRun=false）—— 该类型不会有行为树"),
+					*UniqueType.RowName.ToString(), *BehaviorTree->GetName());
+			}
+			else
+			{
+				FMassStateTreeSharedFragment SharedStateTree;
+				SharedStateTree.StateTree = BehaviorTree;
+				FMassEntityManager& EntityManager = UE::Mass::Utils::GetEntityManagerChecked(World);
+				BuildContext.AddConstSharedFragment(EntityManager.GetOrCreateConstSharedFragment(SharedStateTree));
+				BuildContext.AddFragment<FMassStateTreeInstanceFragment>();
+				// 外层动作态 → 树事件的边沿检测（`UAsceStateTreeNotifyProcessor`）
+				BuildContext.AddFragment<FAsceBehaviorFragment>();
+			}
+		}
+	}
 
 	if (bAddHealth)
 	{

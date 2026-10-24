@@ -10,6 +10,8 @@
 #include "Math/NumericLimits.h"
 
 #include "AsceMass/Combat/AsceCombatFragments.h"
+#include "AsceMass/Combat/AsceSkillCastLibrary.h"
+#include "HAL/IConsoleManager.h"   // TAutoConsoleVariable（迁移开关）
 #include "AsceMass/Combat/AsceActionDefLibrary.h"   // 施法推进要读技能定义
 #include "AsceMass/Spawn/AsceSpawnQueueSubsystem.h" // 生成物入队（结算只入队，帧末创建）
 #include "AsceMass/Lifecycle/AsceDestroyQueueSubsystem.h" // 死亡入队（帧首限流 drain）
@@ -20,6 +22,18 @@
 #include "GameModes/AsceGameState.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AsceCombatProcessor)
+
+namespace
+{
+	/** 施法推进（Trigger / Channel / 回 Idle）是否已交给**行为树**驱动。
+	 *  0（默认）= 仍由本 processor 驱动；1 = 本 processor 不再碰 Casting/Channel，改由
+	 *  `AsceWaitTimelineTask` / `AsceSettleSkillTask` / `AsceSetActionStateTask` 串成的技能子树驱动。
+	 *  见 `Combat/技能编辑器设计.md` §9（B3）。 */
+	TAutoConsoleVariable<int32> CVarTreeDrivesCasting(
+		TEXT("Asce.Combat.TreeDrivesCasting"), 0,
+		TEXT("1 = 施法推进由行为树驱动（见 Combat/技能编辑器设计.md §9）；0 = 仍由 AsceCombatProcessor 驱动"),
+		ECVF_Default);
+}
 
 UAsceCombatProcessor::UAsceCombatProcessor()
 	: EntityQuery(*this)
@@ -78,44 +92,6 @@ void UAsceCombatProcessor::Execute(FMassEntityManager& EntityManager, FMassExecu
 
 		TArray<FMassEntityHandle> Candidates;   // 复用（每个 chunk 一次分配）
 
-		// 死亡处理：HP ≤ 0 ⇒ 标记 Dying（去重，别处据此跳过）+ 停行动 + 入销毁队列（帧首限流 drain）。
-		// 注意：受害者不一定是本 chunk 的实体 ⇒ 一律走 `EntityManager.GetFragmentDataPtr`（不能用 chunk 视图）。
-		auto HandleDeath = [&](const FMassEntityHandle Victim)
-		{
-			if (!EntityManager.IsEntityValid(Victim))
-			{
-				return;
-			}
-			FAsceLifecycleFragment* VictimLifecycle = EntityManager.GetFragmentDataPtr<FAsceLifecycleFragment>(Victim);
-			if (!VictimLifecycle || VictimLifecycle->IsDying())
-			{
-				return;
-			}
-			const FAsceHealthFragment* VictimHealth = EntityManager.GetFragmentDataPtr<FAsceHealthFragment>(Victim);
-			if (!VictimHealth || VictimHealth->CurrentHealth > 0.f)
-			{
-				return;
-			}
-
-			VictimLifecycle->SetDying(true);
-			// 停行动：清移动命令 + 取消当前动作（不再攻击/施法；动画表现由客户端本地死亡特效负责）
-			if (FAsceMoveOrderFragment* VictimMoveOrder = EntityManager.GetFragmentDataPtr<FAsceMoveOrderFragment>(Victim))
-			{
-				VictimMoveOrder->bHasOrder = false;
-			}
-			if (FAsceActionFragment* VictimAction = EntityManager.GetFragmentDataPtr<FAsceActionFragment>(Victim))
-			{
-				VictimAction->ActionState = EAsceActionState::Idle;
-				VictimAction->ActionTarget.Reset();
-				++VictimAction->Counter;
-			}
-			if (UAsceDestroyQueueSubsystem* DestroyQueue = GetWorld() ? GetWorld()->GetSubsystem<UAsceDestroyQueueSubsystem>() : nullptr)
-			{
-				DestroyQueue->Enqueue(Victim);
-			}
-			UE_LOG(LogTemp, Verbose, TEXT("[Death] %lld HP≤0 ⇒ 入销毁队列"), static_cast<int64>(Victim.AsNumber()));
-		};
-
 		for (int32 i = 0; i < Num; ++i)
 		{
 			FAsceCombatFragment& Combat = Combats[i];
@@ -140,6 +116,12 @@ void UAsceCombatProcessor::Execute(FMassEntityManager& EntityManager, FMassExecu
 			// ───────── ①a 施法推进：Trigger 结算（普通=TriggerTime；持续=前摇结束进 Channel）─────────
 			if (Action.ActionState == EAsceActionState::Casting || Action.ActionState == EAsceActionState::Channel)
 			{
+				// 迁移开关：施法推进已交给行为树 ⇒ 本 processor 不再碰（避免和树重复结算）
+				if (CVarTreeDrivesCasting.GetValueOnGameThread() != 0)
+				{
+					continue;
+				}
+
 				FAsceActionDef ActionDef;
 				if (!FAsceActionDefLibrary::GetActionDef(Action.ActionDefId, ActionDef))
 				{
@@ -152,58 +134,12 @@ void UAsceCombatProcessor::Execute(FMassEntityManager& EntityManager, FMassExecu
 
 				const FAsceSkillCastConfig* CastConfig = ActionDef.CastConfig.GetPtr<FAsceSkillCastConfig>();
 
-				// 单次结算：目标失效 ⇒ 什么都不做；v1 只做 `Instant`（直接伤害），
-				// `Projectile`/`SpawnAtTarget` 要"生成排队 → 下一帧生成阶段创建实体"（下一步做）
-				auto SettleOnce = [&, Self]()
+				// 单次结算：交给共享 API（`AsceSkillCast::ApplyEffect`）——直接伤害（含死亡判定）或生成物入队
+				auto SettleOnce = [&]()
 				{
-					if (ActionDef.TargetKind == EAsceTargetKind::Unit
-						&& (!Action.ActionTarget.IsValid() || !EntityManager.IsEntityValid(Action.ActionTarget)))
-					{
-						return;   // 目标没了：不生成、不补刀
-					}
-					if (ActionDef.Delivery != EAsceDelivery::Instant)
-					{
-						// 生成物：**结算只入队**，实体在帧末（阶段 8）统一创建（见 `UAsceSpawnQueueSubsystem`）
-						const UWorld* World = GetWorld();
-						UAsceSpawnQueueSubsystem* SpawnQueue = World ? World->GetSubsystem<UAsceSpawnQueueSubsystem>() : nullptr;
-						if (SpawnQueue)
-						{
-							FAsceSpawnRequest Request;
-							// 子弹/生成物沿用发射者阵营（跨端一致的 TeamId）
-							Request.TeamId = AsceTeamId(Teams[i].TeamKey);
-							if (ActionDef.Delivery == EAsceDelivery::Projectile)
-							{
-								// 弹道：施法者**前方**生成（朝向 = 本次动作定死的 FacingYaw）
-								const FRotator FacingRotation(0.f, Action.FacingYaw, 0.f);
-								const FVector Forward = FRotationMatrix(FacingRotation).GetUnitAxis(EAxis::X);
-								Request.DefRowName = ActionDef.ProjectileDefRow;
-								Request.Transform = FTransform(FacingRotation, Location + Forward * 100.f);
-							}
-							else
-							{
-								// `SpawnAtTarget`：在结算时的目标点生成
-								Request.DefRowName = ActionDef.SpawnGroupDefRow;
-								Request.Transform = FTransform(FRotator::ZeroRotator, FVector(Action.ActionTargetPos.X, Action.ActionTargetPos.Y, Location.Z));
-							}
-							SpawnQueue->Enqueue(Request);
-						}
-						// TODO(弹道追踪)：`Projectile` 的"追着目标直到命中/目标死即消失"需要弹道自己的
-						// fragment + processor（未做）；现在只保证"排队 + 生成 + 阵营正确"。
-						return;
-					}
-					if (Action.ActionTarget.IsValid() && EntityManager.IsEntityValid(Action.ActionTarget))
-					{
-						if (FAsceHealthFragment* TargetHealth = EntityManager.GetFragmentDataPtr<FAsceHealthFragment>(Action.ActionTarget))
-						{
-							TargetHealth->CurrentHealth = FMath::Max(0.f, TargetHealth->CurrentHealth - ActionDef.Damage);
-							HandleDeath(Action.ActionTarget);
-							UE_LOG(LogTemp, Verbose, TEXT("[Skill] %lld → %lld 伤害 %.1f（剩余 HP %.1f）"),
-								static_cast<int64>(Self.AsNumber()), static_cast<int64>(Action.ActionTarget.AsNumber()),
-								ActionDef.Damage, TargetHealth->CurrentHealth);
-						}
-					}
+					AsceSkillCast::ApplyEffect(EntityManager, GetWorld(), Self, Action.ActionTarget
+						, Action.ActionTargetPos, Action.FacingYaw, AsceTeamId(Teams[i].TeamKey), ActionDef);
 				};
-
 				// `Channel`：周期结算（cost/CD 已在"真正释放"那一刻付过）
 				if (Action.ActionState == EAsceActionState::Channel)
 				{
@@ -239,29 +175,14 @@ void UAsceCombatProcessor::Execute(FMassEntityManager& EntityManager, FMassExecu
 				{
 					continue;   // 还在前摇，只是播动画
 				}
-				if (FAsceManaFragment* Mana = EntityManager.GetFragmentDataPtr<FAsceManaFragment>(Self))
+
+				// Trigger 时刻：扣蓝 + 写槽位 CD（共享 API）。蓝不够 ⇒ 释放失败：不扣、不落 CD、不生成
+				if (!AsceSkillCast::PayCostAndCooldown(EntityManager, Self, Action.ActionDefId, ActionDef, Now))
 				{
-					if (Mana->CurrentMana < ActionDef.ManaCost)
-					{
-						// Trigger 时蓝已不够 ⇒ 释放失败：不扣、不落 CD、不生成
-						Action.ActionState = EAsceActionState::Idle;
-						Action.ActionTarget.Reset();
-						++Action.Counter;
-						continue;
-					}
-					Mana->CurrentMana = FMath::Max(0.f, Mana->CurrentMana - ActionDef.ManaCost);
-				}
-				if (FAsceSkillSlotsFragment* Slots = EntityManager.GetFragmentDataPtr<FAsceSkillSlotsFragment>(Self))
-				{
-					// 技能 CD 记在槽位上（换槽 = 技能连同 CD 一起换位）；按 ActionId 找到当前所在槽位
-					for (int32 SlotIndex = 0; SlotIndex < FAsceSkillSlotsFragment::NumSkillSlots; ++SlotIndex)
-					{
-						if (Slots->Slots[SlotIndex].ActionId == Action.ActionDefId)
-						{
-							Slots->Slots[SlotIndex].NextReadyServerTime = Now + ActionDef.Cooldown;
-							break;
-						}
-					}
+					Action.ActionState = EAsceActionState::Idle;
+					Action.ActionTarget.Reset();
+					++Action.Counter;
+					continue;
 				}
 				SettleOnce();
 				Action.bTriggered = true;
@@ -320,8 +241,8 @@ void UAsceCombatProcessor::Execute(FMassEntityManager& EntityManager, FMassExecu
 								{
 									if (FAsceHealthFragment* TargetHealth = EntityManager.GetFragmentDataPtr<FAsceHealthFragment>(Action.ActionTarget))
 									{
-										TargetHealth->CurrentHealth = FMath::Max(0.f, TargetHealth->CurrentHealth - Combat.AttackDamage);
-										HandleDeath(Action.ActionTarget);
+										AsceSkillCast::ApplyDamage(EntityManager, GetWorld(), Action.ActionTarget, Combat.AttackDamage);
+										/* 死亡判定已在 ApplyDamage 内部处理 */
 										bApplied = true;
 										UE_LOG(LogTemp, Verbose, TEXT("[Combat] 结算：%lld → %lld 伤害 %.1f（剩余 HP %.1f）"),
 											static_cast<int64>(Self.AsNumber()), static_cast<int64>(Action.ActionTarget.AsNumber()),
@@ -458,7 +379,9 @@ void UAsceCombatProcessor::Execute(FMassEntityManager& EntityManager, FMassExecu
 			const float FacingYaw = FMath::RadiansToDegrees(FMath::Atan2(TargetLocation.Y - Location.Y, TargetLocation.X - Location.X));
 
 			Action.ActionState = EAsceActionState::Attack;
-			Action.ActionDefId = AttackActionId;
+			Action.StartServerTime = static_cast<float>(Now);   // 起轴时刻（锚点；随动作态通道下发）
+			// 有"攻击动作行"就用它的 id（动画/交付走行）；0 = 旧的 AttackCastConfig 路径
+			Action.ActionDefId = Combat.AttackActionId;
 			Action.ActionTarget = Target;
 			Action.ActionTargetPos = FVector2D(TargetLocation.X, TargetLocation.Y);
 			Action.TriggerTime = Now + Combat.AttackTriggerTime / PlayRate;

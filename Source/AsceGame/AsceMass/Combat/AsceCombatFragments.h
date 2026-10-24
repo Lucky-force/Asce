@@ -43,10 +43,10 @@ struct FAsceCombatFragment : public FMassFragment
 	EAsceRangeKind RangeKind = EAsceRangeKind::MeleeSurface;
 	UPROPERTY()
 	bool  bAutoAttack = true;                // 自动攻击开关（玩家可切；`S` 停止指令不影响它）
+
+	/** 攻击用的**动作行 id**（`FAsceActionDef::ActionId`；0 = 没配行，走旧的 `AttackCastConfig` 路径） */
 	UPROPERTY()
-	bool  bProjectile = false;               // 远程弹道（false = 即时命中）
-	UPROPERTY()
-	int32 ProjectileDefId = 0;
+	int32 AttackActionId = 0;
 
 	// ── 运行时（服务器专有，绝不复制）──
 	UPROPERTY()
@@ -103,6 +103,10 @@ struct FAsceActionFragment : public FMassFragment
 	/** 递增序号：每次"下发一次动作"++（客户端看到变了就播一次；也用于区分连续两次攻击） */
 	UPROPERTY()
 	uint32 Counter = 0;
+
+	/** 本次动作的起轴时刻（服务器世界时间；动作开始时写；随动作态通道下发） */
+	UPROPERTY()
+	float StartServerTime = 0.f;
 };
 
 /**
@@ -139,6 +143,11 @@ struct FAsceCombatVisualFragment : public FMassFragment
 	/** 本次动作朝向（度；动作开始定死，动作期间不变） */
 	UPROPERTY()
 	float FacingYaw = 0.f;
+
+	/** 本次动作的起轴时刻（回绕百分秒；与 FAsceActionFragment::StartServerTime 同一编码）
+	 *  客户端据此把时间轴标定到**服务器的**起点（见 Combat/技能编辑器设计.md §10.3） */
+	UPROPERTY()
+	uint16 ActionStartTimeQ = 0;
 };
 
 /**
@@ -178,6 +187,15 @@ struct FAsceAnimPlaybackFragment : public FMassFragment
 	/** 本次动作开始的世界时间（本地时钟） */
 	UPROPERTY()
 	float StartTime = 0.f;
+
+	/** 移动的"走/跑"档位（0=走 / 1=跑）：移动过程中速度会变，档位切换要重解析 clip 并重置播放 */
+	UPROPERTY()
+	uint8 MoveRunBucket = 0;
+
+	/** 动画变体选择种子（行为树的 `Asce Select Anim Variant` task 进入状态时写；
+	 *  表现 processor 取 `变体[Seed % Num]` —— 所以加/换变体只改数据，不改树、不改代码） */
+	UPROPERTY()
+	uint8 VariantSeed = 0;
 };
 
 /** 技能槽位（真实数据：指令只发槽位号，服务器按它解析技能） */

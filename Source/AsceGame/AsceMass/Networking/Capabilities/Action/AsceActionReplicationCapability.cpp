@@ -84,6 +84,8 @@ void FAsceActionReplicationCapability::ProcessChunk(FMassExecutionContext& Conte
 		const uint8 CounterQ = static_cast<uint8>(Action.Counter & 0xFFu);
 		const uint8 PlayRateQ = UE::AsceMass::Replication::QuantizeActionPlayRate(PlayRate);
 		const uint8 FacingQ = UE::AsceMass::Replication::QuantizeActionFacing(Action.FacingYaw);
+		// 起轴时刻（回绕百分秒）：客户端据此把时间轴标定到**服务器的**起点，而不是"收到边沿的时刻"
+		const uint16 StartTimeQ = UE::AsceMass::Replication::QuantizeActionStartTime(Action.StartServerTime);
 
 		// 是否已经在**本能力自己的bubble**里：查自己handler的NetID表，
 		// 不能看引擎共用的 AgentData.Handle（那是所有能力共享的单槽）
@@ -123,7 +125,7 @@ void FAsceActionReplicationCapability::ProcessChunk(FMassExecutionContext& Conte
 			{
 				// 周期同步：是否真的重新广播由 SetActionStateFromFragment 内部按字段比较判断，
 				// 只在动作切换的边沿标脏，不是无脑每帧发。
-				Bubble.SetActionStateFromFragment(ExistingHandle, ActionStateQ, ActionDefIdQ, CounterQ, PlayRateQ, FacingQ);
+				Bubble.SetActionStateFromFragment(ExistingHandle, ActionStateQ, ActionDefIdQ, CounterQ, PlayRateQ, FacingQ, StartTimeQ);
 				if (!InOutMarkers[EntityIdx].IsValid())
 				{
 					InOutMarkers[EntityIdx] = ExistingHandle;

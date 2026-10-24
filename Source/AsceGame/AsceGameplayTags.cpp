@@ -37,6 +37,11 @@ namespace AsceGameplayTags
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(InputTag_Skill3, "InputTag.Skill.3", "Skill slot 3 (E)")
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(InputTag_Stop, "InputTag.Stop", "Stop order (S)")
 
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Action_Idle, "Asce.Action.Idle", "行为树事件：回到待机（Idle）")
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Action_Move, "Asce.Action.Move", "行为树事件：进入移动（Move）")
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Action_Attack, "Asce.Action.Attack", "行为树事件：进入攻击（Attack）")
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Action_Cast, "Asce.Action.Cast", "行为树事件：进入施法（Casting/Channel 同一分支）")
+
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(UI_SelectionChanged, "Asce.UI.SelectionChanged", "RTS 选择集合变化（UI 检视器等监听）")
 
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(InitState_Spawned, "InitState.Spawned", "1: Actor/component has initially spawned and can be extended");
