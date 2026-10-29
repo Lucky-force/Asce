@@ -50,7 +50,7 @@ protected:
 	virtual EStateTreeRunStatus EnterState(FStateTreeExecutionContext& Context, const FStateTreeTransitionResult& Transitions) const override;
 	virtual void GetDependencies(UE::MassBehavior::FStateTreeDependencyBuilder& Builder) const override;
 
-	/** 结算要用"实体当前动作"（技能 id / 目标 / 目标点 / 朝向） */
+	/** 结算要用"实体当前动作"（技能 id / 目标 / 目标点 / 朝向）；**ReadWrite**（结算失败时要回写 Idle） */
 	TStateTreeExternalDataHandle<FAsceActionFragment, EStateTreeExternalDataRequirement::Optional> ActionHandle;
 	/** 生成物沿用施法者阵营 */
 	TStateTreeExternalDataHandle<FAsceTeamFragment, EStateTreeExternalDataRequirement::Optional> TeamHandle;

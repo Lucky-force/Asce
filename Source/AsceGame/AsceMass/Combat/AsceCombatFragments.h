@@ -34,17 +34,11 @@ struct FAsceCombatFragment : public FMassFragment
 	UPROPERTY()
 	float AttackDamage = 0.f;
 	UPROPERTY()
-	float AttackTotalTime = 1.f;             // 攻击动作总时长（秒；1.0x 基准，运行时按 PlayRate 缩放）
-	UPROPERTY()
-	float AttackTriggerTime = 1.f;           // 攻击结算时刻（秒；1.0x 基准，≤ AttackTotalTime）
-	UPROPERTY()
 	float AttackSpeed = 180.f;               // PlayRate = AttackSpeed / 200 + 0.1（180 → 1.0x）
 	UPROPERTY()
 	EAsceRangeKind RangeKind = EAsceRangeKind::MeleeSurface;
-	UPROPERTY()
-	bool  bAutoAttack = true;                // 自动攻击开关（玩家可切；`S` 停止指令不影响它）
 
-	/** 攻击用的**动作行 id**（`FAsceActionDef::ActionId`；0 = 没配行，走旧的 `AttackCastConfig` 路径） */
+	/** 攻击用的**动作行 id**（`FAsceActionDef::ActionId`；0 = 没配攻击行） */
 	UPROPERTY()
 	int32 AttackActionId = 0;
 
@@ -178,24 +172,40 @@ struct FAsceAnimPlaybackFragment : public FMassFragment
 	UPROPERTY()
 	bool bValid = false;
 
-	/** 上次动作（用于判定边沿） */
-	UPROPERTY()
-	uint32 LastCounter = 0;
-	UPROPERTY()
-	uint8 LastActionState = 0;
-
 	/** 本次动作开始的世界时间（本地时钟） */
 	UPROPERTY()
 	float StartTime = 0.f;
 
-	/** 移动的"走/跑"档位（0=走 / 1=跑）：移动过程中速度会变，档位切换要重解析 clip 并重置播放 */
+	/** ── 表现 cue（**表现层/逻辑层分层**：由行为树的 `Asce Play Anim Cue` task 在客户端**解析好帧段**后写入）──
+	 *  Mass fragment 必须 trivially copyable ⇒ cue 里**不放资产引用**，只放 AnimSet 内绝对帧；
+	 *  `CueCounter` 变 ⇒ 重播。`bCueActive=false` = 该实体还没有 cue（不播）。 */
 	UPROPERTY()
-	uint8 MoveRunBucket = 0;
+	uint32 CueCounter = 0;
 
-	/** 动画变体选择种子（行为树的 `Asce Select Anim Variant` task 进入状态时写；
-	 *  表现 processor 取 `变体[Seed % Num]` —— 所以加/换变体只改数据，不改树、不改代码） */
+	/** 表现 processor 侧记录：上次已消费的 cue 序号 */
 	UPROPERTY()
-	uint8 VariantSeed = 0;
+	uint32 LastCueCounter = 0;
+
+	UPROPERTY()
+	bool bCueActive = false;
+
+	UPROPERTY()
+	int32 CueAnimIndex = 0;
+
+	UPROPERTY()
+	int32 CueStartFrame = 0;
+
+	UPROPERTY()
+	int32 CueEndFrame = 0;
+
+	UPROPERTY()
+	float CueFrameRate = 30.f;
+
+	UPROPERTY()
+	float CuePlayRate = 1.f;
+
+	UPROPERTY()
+	bool bCueLoop = true;
 };
 
 /** 技能槽位（真实数据：指令只发槽位号，服务器按它解析技能） */

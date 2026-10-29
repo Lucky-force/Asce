@@ -30,15 +30,16 @@ bool FAsceSettleSkillTask::Link(FStateTreeLinker& Linker)
 
 void FAsceSettleSkillTask::GetDependencies(UE::MassBehavior::FStateTreeDependencyBuilder& Builder) const
 {
-	Builder.AddReadOnly<FAsceActionFragment>();
-	Builder.AddReadOnly<FAsceTeamFragment>();
+	// 用 handle 重载：保持 Optional 语义（没动作 fragment 的单位不报错）；结算失败时要回写 Idle ⇒ ReadWrite
+	Builder.AddReadWrite(ActionHandle);
+	Builder.AddReadOnly(TeamHandle);
 }
 
 EStateTreeRunStatus FAsceSettleSkillTask::EnterState(FStateTreeExecutionContext& Context, const FStateTreeTransitionResult& Transitions) const
 {
 	const FInstanceDataType& Data = Context.GetInstanceData(*this);
 	UWorld* World = Context.GetWorld();
-	const FAsceActionFragment* Action = Context.GetExternalDataPtr(ActionHandle);
+	FAsceActionFragment* Action = Context.GetExternalDataPtr(ActionHandle);
 	if (!World || !Action)
 	{
 		return EStateTreeRunStatus::Succeeded;   // 没在动作里：不阻塞树
@@ -48,8 +49,21 @@ EStateTreeRunStatus FAsceSettleSkillTask::EnterState(FStateTreeExecutionContext&
 	const FAsceTeamFragment* Team = Context.GetExternalDataPtr(TeamHandle);
 	const int32 TeamId = Team ? AsceTeamId(Team->TeamKey) : 0;
 
-	// 结算（内部按端早退：客户端直接 true）
+	// 结算（内部按端早退：客户端直接 true；攻击暂由 processor 结算 ⇒ 树里当 no-op）
 	const bool bSettled = AsceSkillCast::SettleFromAction(MassContext.GetEntityManager(), World
 		, MassContext.GetEntity(), *Action, TeamId, Data.bPayCost);
-	return bSettled ? EStateTreeRunStatus::Succeeded : EStateTreeRunStatus::Failed;
+	if (bSettled)
+	{
+		return EStateTreeRunStatus::Succeeded;
+	}
+
+	// 结算失败（蓝不够/配置错误）：把动作写回 Idle，让树正常收尾——避免卡在施法态。
+	// 客户端不写（动作态由复制驱动；`SettleFromAction` 在客户端本来就会返回 true）。
+	if (World->GetNetMode() != NM_Client)
+	{
+		Action->ActionState = EAsceActionState::Idle;
+		Action->ActionTarget.Reset();
+		++Action->Counter;
+	}
+	return EStateTreeRunStatus::Succeeded;
 }

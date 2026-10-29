@@ -63,7 +63,7 @@ namespace UE::AsceMass::Replication
  * "动作态"同步的payload（`技能系统设计.md` §6.1）：驱动客户端转身/动作表现，
  * 后续 VAT 动画（§9.1 ③）也读同一份数据。
  *
- * 5 个字段放**同一个** struct：状态与朝向一次到达，不依赖跨通道顺序
+ * 5+1 个字段放**同一个** struct：状态与朝向一次到达，不依赖跨通道顺序
  * （否则会出现"服务器已停+攻击，但速度/位置通道还慢一帧，客户端以为自己在 Move"）。
  * 全部由服务器发（Idle/Move 也是），客户端只读。
  *
@@ -77,14 +77,14 @@ struct FReplicatedActionStateData
 
 public:
 	void SetActionState(const uint8 InValue) { ActionState = InValue; }
-	void SetActionDefId(const uint8 InValue) { ActionDefId = InValue; }
+	void SetActionDefId(const uint16 InValue) { ActionDefId = InValue; }
 	void SetCounter(const uint8 InValue) { Counter = InValue; }
 	void SetPlayRateQ(const uint8 InValue) { PlayRateQ = InValue; }
 	void SetFacingQ(const uint8 InValue) { FacingQ = InValue; }
 	void SetStartTimeQ(const uint16 InValue) { StartTimeQ = InValue; }
 
 	uint8 GetActionState() const { return ActionState; }
-	uint8 GetActionDefId() const { return ActionDefId; }
+	uint16 GetActionDefId() const { return ActionDefId; }
 	uint8 GetCounter() const { return Counter; }
 	uint8 GetPlayRateQ() const { return PlayRateQ; }
 	uint8 GetFacingQ() const { return FacingQ; }
@@ -95,9 +95,9 @@ private:
 	UPROPERTY(Transient)
 	uint8 ActionState = 0;
 
-	/** 动作定义 id（攻击 = 内置 0；技能 id 需 < 256） */
+	/** 动作定义 id（`FAsceActionDef::ActionId`；攻击/技能行 id 上限 65535） */
 	UPROPERTY(Transient)
-	uint8 ActionDefId = 0;
+	uint16 ActionDefId = 0;
 
 	/** 递增序号（每次下发动作 ++；uint8 回绕，够客户端"变了就播一次"判断） */
 	UPROPERTY(Transient)
@@ -142,7 +142,7 @@ public:
 	}
 
 	/** 服务器侧：动作态变化就写进 Agent + 标脏（字段全等则不标，不是每帧推） */
-	void SetActionStateFromFragment(const FMassReplicatedAgentHandle Handle, const uint8 ActionState, const uint8 ActionDefId
+	void SetActionStateFromFragment(const FMassReplicatedAgentHandle Handle, const uint8 ActionState, const uint16 ActionDefId
 		, const uint8 Counter, const uint8 PlayRateQ, const uint8 FacingQ, const uint16 StartTimeQ)
 	{
 		check(this->AgentHandleManager.IsValidHandle(Handle));

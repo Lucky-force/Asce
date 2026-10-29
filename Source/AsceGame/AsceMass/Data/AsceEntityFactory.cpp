@@ -66,7 +66,7 @@ namespace
 		// 战斗参数（见 `Combat/技能系统设计.md`）：只写静态值；运行时状态由战斗 processor 推进
 		if (FAsceCombatFragment* Combat = EntityManager.GetFragmentDataPtr<FAsceCombatFragment>(Entity))
 		{
-			// 攻击 = 一条 `ReleaseMode = Auto` 的动作行（`AttackAction`）；没配才退回旧的 `AttackCastConfig`
+			// 攻击 = 一条 `ReleaseMode = Auto` 的动作行（`AttackAction`；攻击子树在行里的 `SkillTree`）
 			FAsceActionDef AttackDef;
 			const bool bHasAttackRow = FAsceActionDefLibrary::GetActionDefByRowName(Def.AttackAction.RowName, AttackDef);
 			if (bHasAttackRow && AttackDef.ReleaseMode != EAsceReleaseMode::Auto)
@@ -74,25 +74,11 @@ namespace
 				UE_LOG(LogTemp, Warning, TEXT("[Factory] AttackAction 引用的动作行 %s 的 ReleaseMode 不是 Auto（应配成【普通攻击】那种）"),
 					*Def.AttackAction.RowName.ToString());
 			}
-			const FAsceSkillCastConfig* AttackCast = bHasAttackRow
-				? AttackDef.CastConfig.GetPtr<FAsceSkillCastConfig>()
-				: nullptr;
-			const FAsceNormalCastConfig* LegacyAttackConfig = Def.AttackCastConfig.GetPtr<FAsceNormalCastConfig>();
-
 			// 数值：动作行的 `Range/Damage` 为 0 ⇒ 跟随**单位基础属性**（非 0 = 覆盖）
 			Combat->AttackActionId = bHasAttackRow ? AttackDef.ActionId : 0;
 			Combat->AttackRange = (bHasAttackRow && AttackDef.Range > 0.f) ? AttackDef.Range : Def.AttackRange;
 			Combat->AttackDamage = (bHasAttackRow && AttackDef.Damage > 0.f) ? AttackDef.Damage : Def.AttackDamage;
-			// 攻击时间线：优先动作行的 CastConfig；退回旧的 AttackCastConfig；都没有 ⇒ Total=1s / Trigger=Total
-			Combat->AttackTotalTime = FMath::Max(
-				AttackCast ? AttackCast->GetTotalCastTime()
-					: (LegacyAttackConfig ? LegacyAttackConfig->TotalCastTime : 1.f), 0.05f);
-			Combat->AttackTriggerTime = FMath::Clamp(
-				AttackCast ? AttackCast->GetTriggerTime()
-					: (LegacyAttackConfig ? LegacyAttackConfig->TriggerTime : Combat->AttackTotalTime),
-				0.f, Combat->AttackTotalTime);
 			Combat->AttackSpeed = Def.AttackSpeed;
-			Combat->bAutoAttack = Def.bAutoAttackDefault;
 		}
 		if (FAsceTeamFragment* Team = EntityManager.GetFragmentDataPtr<FAsceTeamFragment>(Entity))
 		{

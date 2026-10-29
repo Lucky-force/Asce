@@ -13,6 +13,7 @@
 #include "Teams/AsceTeamAgentInterface.h"   // GenericTeamIdToInteger
 #include "AsceMass/Fragments/AsceCoreFragments.h"
 #include "MassReplicationFragments.h"
+#include "MassStateTreeFragments.h"   // FMassStateTreeInstanceFragment（施法需要单位行为树）
 #include "AsceMass/Networking/AsceNetIDRegistrySubsystem.h"
 #include "AsceMass/FlowField/AscePathFindingSubsystem.h"
 #include "AsceMass/FlowField/AscePathFinder.h"
@@ -99,7 +100,7 @@ namespace
 				continue;
 			}
 			FAsceActionDef ActionDef;
-			if (!FAsceActionDefLibrary::GetActionDef(Slots->Slots[SlotId].ActionId, ActionDef) || !ActionDef.CastConfig.IsValid())
+			if (!FAsceActionDefLibrary::GetActionDef(Slots->Slots[SlotId].ActionId, ActionDef))
 			{
 				continue;
 			}
@@ -614,8 +615,7 @@ void UAsceOrderChannelComponent::ServerRequestSkillOrder_Implementation(const TA
 			continue;
 		}
 		FAsceActionDef ActionDef;
-		if (!FAsceActionDefLibrary::GetActionDef(Slots->Slots[SlotId].ActionId, ActionDef)
-			|| !ActionDef.CastConfig.IsValid())
+		if (!FAsceActionDefLibrary::GetActionDef(Slots->Slots[SlotId].ActionId, ActionDef))
 		{
 			RejectedUnits.Add({ NetID, EAsceOrderRejectReason::SkillCasterInvalid });   // 技能表查不到 / 没有动作管线配置
 			continue;
@@ -711,38 +711,44 @@ void UAsceOrderChannelComponent::ServerRequestSkillOrder_Implementation(const TA
 		}
 
 		// ── ③ 进动作（技能优先级最高：可顶掉攻击与施法；Trigger 前被打断 ⇒ 不结算，Trigger 后 ⇒ 保留）──
-		// 施法推进（Trigger：扣蓝/落 CD/effect 入队；持续施法进 Channel 后周期结算）在 `UAsceCombatProcessor` 里。
+		// 施法推进/结算完全由**行为树**驱动：单位树 Casting 状态里的 `Asce Run Ability Tree` 按 ActionId
+		// 选技能子树（`ActionDef.SkillTree`）；这里只负责写动作态 + 起轴。
 		FAsceActionFragment* Action = EntityManager.GetFragmentDataPtr<FAsceActionFragment>(Handle);
 		if (!Action)
 		{
 			RejectedUnits.Add({ NetID, EAsceOrderRejectReason::SkillCasterInvalid });
 			continue;
 		}
-		const FAsceSkillCastConfig* CastConfig = ActionDef.CastConfig.GetPtr<FAsceSkillCastConfig>();
-		const bool bChannel = (CastConfig && CastConfig->IsChannel());
-		const float TriggerDelay = FMath::Max(CastConfig ? CastConfig->GetTriggerTime() : 0.f, 0.f);
-		const float TotalTime = FMath::Max(CastConfig ? CastConfig->GetTotalCastTime() : 0.f, 0.f);
+		// 守卫：没有技能树/没挂单位树 ⇒ 施法会卡在 Casting（树侧没东西推进），直接拒绝
+		if (!ActionDef.SkillTree)
+		{
+			RejectedUnits.Add({ NetID, EAsceOrderRejectReason::SkillCasterInvalid });
+			UE_LOG(LogTemp, Warning, TEXT("[Skill] 技能 %d 没配 SkillTree（行为树）——拒绝施法"), ActionDef.ActionId);
+			continue;
+		}
+		if (!EntityManager.GetFragmentDataPtr<FMassStateTreeInstanceFragment>(Handle))
+		{
+			RejectedUnits.Add({ NetID, EAsceOrderRejectReason::SkillCasterInvalid });
+			UE_LOG(LogTemp, Warning, TEXT("[Skill] 单位 %lld 没有行为树（实体类型没配 StateTree）——拒绝施法"),
+				static_cast<int64>(Handle.AsNumber()));
+			continue;
+		}
 
 		const float FacingYaw = FMath::RadiansToDegrees(FMath::Atan2(AimLocation.Y - Location.Y, AimLocation.X - Location.X));
-		Action->ActionState = EAsceActionState::Casting;   // 持续施法也先走前摇
+		Action->ActionState = EAsceActionState::Casting;
 		Action->StartServerTime = static_cast<float>(Now);   // 起轴时刻（锚点；随动作态通道下发）
 		Action->ActionDefId = Slots->Slots[SlotId].ActionId;
 		Action->ActionTarget = TargetHandle;
 		Action->ActionTargetPos = FVector2D(AimLocation.X, AimLocation.Y);
 		Action->FacingYaw = FacingYaw;
-		Action->TriggerTime = Now + TriggerDelay;
-		Action->ActionEndTime = Now + TotalTime;
-		Action->bTriggered = false;
-		Action->NextTickTime = 0.0;   // 进入 Channel 时才设
 		++Action->Counter;
 
-		// cost / CD 在 **Trigger** 那一刻处理（见 `Combat/技能系统设计.md` §5）——这里不付费。
-
+		// cost / CD / effect 全部在技能子树的 Trigger 节点处理（见 `Combat/技能编辑器设计.md`）。
 		// 动作开始时对齐朝向（服务器权威朝向；客户端表现靠动作态通道的 FacingQ）
 		Transform->GetMutableTransform().SetRotation(FRotator(0.f, FacingYaw, 0.f).Quaternion());
 
-		UE_LOG(LogTemp, Verbose, TEXT("[Skill] %lld 开始施法：技能 %d（槽 %d，%s）"),
-			static_cast<int64>(Handle.AsNumber()), Action->ActionDefId, SlotId, bChannel ? TEXT("Channel") : TEXT("NormalCast"));
+		UE_LOG(LogTemp, Verbose, TEXT("[Skill] %lld 开始施法：技能 %d（槽 %d）"),
+			static_cast<int64>(Handle.AsNumber()), Action->ActionDefId, SlotId);
 	}
 
 	// 一次请求一条 RPC 把逐单位拒绝明细回传（空数组不发）——客户端据此撤销那些单位的预测表现

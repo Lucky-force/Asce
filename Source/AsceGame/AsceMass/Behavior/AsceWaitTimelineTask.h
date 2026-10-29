@@ -30,6 +30,9 @@ struct FAsceWaitTimelineTaskInstanceData
 	/** 等到这一刻（秒，相对起轴；0 = 立即通过） */
 	UPROPERTY(EditAnywhere, Category = "Parameter")
 	float Time = 0.f;
+
+	/** 诊断：是否已打印过长等待（进入时重置） */
+	bool bLoggedStuck = false;
 };
 
 USTRUCT(meta = (DisplayName = "Asce Wait Timeline", Category = "Asce"))

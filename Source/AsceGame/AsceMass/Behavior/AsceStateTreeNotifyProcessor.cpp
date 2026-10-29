@@ -14,6 +14,7 @@
 #include "AsceMass/Behavior/AsceStateTreeEvents.h"
 #include "AsceMass/Behavior/AsceTimelineLibrary.h"
 #include "AsceMass/Combat/AsceCombatFragments.h"
+#include "AsceMass/Fragments/AsceCoreFragments.h"                     // FAsceLifecycleFragment（死亡后不再驱动树）
 #include "AsceMass/Networking/Core/AsceReplicationActionHandlers.h"   // DequantizeActionStartAge（锚点反解）
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AsceStateTreeNotifyProcessor)
@@ -63,6 +64,8 @@ void UAsceStateTreeNotifyProcessor::ConfigureQueries(const TSharedRef<FMassEntit
 	// 服务器看权威动作态、客户端看复制下来的表现态（二选一）
 	EntityQuery.AddRequirement<FAsceActionFragment>(EMassFragmentAccess::ReadOnly, EMassFragmentPresence::Optional);
 	EntityQuery.AddRequirement<FAsceCombatVisualFragment>(EMassFragmentAccess::ReadOnly, EMassFragmentPresence::Optional);
+	// 死亡后不再驱动树（停时间轴、不发事件；实体随后被销毁/回收实例）
+	EntityQuery.AddRequirement<FAsceLifecycleFragment>(EMassFragmentAccess::ReadOnly, EMassFragmentPresence::Optional);
 }
 
 void UAsceStateTreeNotifyProcessor::Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context)
@@ -79,11 +82,19 @@ void UAsceStateTreeNotifyProcessor::Execute(FMassEntityManager& EntityManager, F
 		const TConstArrayView<FAsceActionFragment> Actions = Ctx.GetFragmentView<FAsceActionFragment>();
 		const TConstArrayView<FAsceCombatVisualFragment> Visuals = Ctx.GetFragmentView<FAsceCombatVisualFragment>();
 		const TArrayView<FAsceBehaviorFragment> Behaviors = Ctx.GetMutableFragmentView<FAsceBehaviorFragment>();
+		const TConstArrayView<FAsceLifecycleFragment> Lifecycles = Ctx.GetFragmentView<FAsceLifecycleFragment>();
 		const TConstArrayView<FMassEntityHandle> Entities = Ctx.GetEntities();
 		const int32 Num = Ctx.GetNumEntities();
 
 		for (int32 i = 0; i < Num; ++i)
 		{
+			// 已死亡：树不再跑（时间轴关掉、不发事件；实体很快进销毁流程）
+			if (Lifecycles.Num() == Num && Lifecycles[i].IsDying())
+			{
+				Behaviors[i].SetTimelineActive(false);
+				continue;
+			}
+
 			// 来源按端选：服务器权威态 / 客户端表现态（缺对应 fragment 就跳过这一项）
 			EAsceActionState State = EAsceActionState::Idle;
 			uint32 Counter = 0;
@@ -118,20 +129,24 @@ void UAsceStateTreeNotifyProcessor::Execute(FMassEntityManager& EntityManager, F
 			{
 				continue;   // 没变化
 			}
+			// Casting→Channel 是**同一段施法的子阶段**（树把它们统一成 Casting）：不应再发一次 `Action.Cast`，
+			// 否则树里若有对 Action.Cast 的自转移会重进状态（时间轴/结算节点重跑）。
+			const bool bChannelEntry = (State == EAsceActionState::Channel)
+				&& (Behavior.GetLastNotifiedActionState() == static_cast<uint8>(EAsceActionState::Casting));
 			Behavior.SetLastNotifiedActionState(NormalizedState);
 			Behavior.LastNotifiedCounter = static_cast<uint16>(Counter);
 
-			// 时间轴标量：进入 Casting/Channel 起轴（已有轴就不重起，Channel 延续同一条轴）；回其它状态清掉
+			// 时间轴标量：**Attack / Casting / Channel 都是"有时间轴的动作"**（攻击也是技能）。
+			// **每次动作边沿都重锚**（用服务器锚点）——否则"新技能顶掉旧施法"（Casting→Casting、Counter 变了）
+			// 会沿用旧起点，时间门槛全部提前命中。回其它状态清掉。
 			{
-				const bool bIsCast = (State == EAsceActionState::Casting || State == EAsceActionState::Channel);
-				if (bIsCast)
+				const bool bTimelineState = (State == EAsceActionState::Attack
+					|| State == EAsceActionState::Casting
+					|| State == EAsceActionState::Channel);
+				if (bTimelineState)
 				{
-					if (!Behavior.IsTimelineActive())
-					{
-						// 用**服务器的**起轴时刻（锚点）；没拿到锚点就退回"现在"
-						Behavior.TimelineStartWorldTime = (ActionStartWorldTime > 0.f) ? ActionStartWorldTime : ServerNow;
-						Behavior.SetTimelineActive(true);
-					}
+					Behavior.TimelineStartWorldTime = (ActionStartWorldTime > 0.f) ? ActionStartWorldTime : ServerNow;
+					Behavior.SetTimelineActive(true);
 				}
 				else
 				{
@@ -140,7 +155,7 @@ void UAsceStateTreeNotifyProcessor::Execute(FMassEntityManager& EntityManager, F
 			}
 
 			const FGameplayTag EventTag = ResolveActionEventTag(State);
-			if (EventTag.IsValid())
+			if (EventTag.IsValid() && !bChannelEntry)
 			{
 				AsceStateTree::SendEventToEntity(*World, EntityManager, Entities[i], EventTag, FConstStructView(), TEXT("AsceActionNotify"));
 			}

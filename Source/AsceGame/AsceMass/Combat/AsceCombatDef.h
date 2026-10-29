@@ -10,6 +10,7 @@
 #include "AsceCombatDef.generated.h"
 
 class UAnimSequence;
+class UStateTree;
 
 /**
  * 动作 / 技能定义（数据表行；服务器与客户端共用同一份）。
@@ -216,7 +217,12 @@ struct FAsceActionDef : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action")
 	FName SpawnGroupDefRow;
 
-	/** 动作管线配置（多态：普通 / 持续）：**时间字段 + 施法/持续动画的唯一来源**（`GetCastAnim()/GetChannelAnim()`；空 = 不播） */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action", meta = (BaseStruct = "/Script/AsceGame.AsceSkillCastConfig"))
-	FInstancedStruct CastConfig;
+	/** 动作管线配置（多态：普通 / 持续）——**注意：动作行不再带 CastConfig**（技能的时间轴/动画在技能子树里，
+	 *  攻击的时间线在单位 def 的旧 `AttackCastConfig` 兜底）。此字段已删除。 */
+	// FInstancedStruct CastConfig;  ← 已删除
+
+	/** **技能子树**（Mass StateTree schema）：`Casting` 状态里的 `Asce Run Ability Tree` 按本行 `ActionId` 选它来跑。
+	 *  技能树可被任意单位类型复用（自由组合），不参与 archetype。空 = 该技能不可释放（服务器校验会拒绝）。 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action")
+	TObjectPtr<UStateTree> SkillTree = nullptr;
 };

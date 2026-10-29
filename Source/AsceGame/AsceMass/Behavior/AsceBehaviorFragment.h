@@ -23,7 +23,7 @@
  * 用途（见 `Combat/技能编辑器设计.md` §4.1/§4.2）：
  *  - **时间轴标量**：`TimelineStartWorldTime` + `bTimelineActive`（进入 Casting/Channel 起轴，回其它状态清掉）；
  *  - **动作态通知边沿**：`LastNotified*`（`UAsceStateTreeNotifyProcessor` 判断"要不要给树发事件"）。
- *  - 动画变体种子不在这里——放 `FAsceAnimPlaybackFragment::VariantSeed`。
+ *  - 动画变体选择在表现 cue task（`Asce Play Anim Cue` 的 `Variants` 随机）——
  */
 USTRUCT()
 struct FAsceBehaviorFragment : public FMassFragment

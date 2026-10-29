@@ -12,6 +12,7 @@
 #include "MassStateTreeTypes.h"              // UE::Mass::Signals::NewStateTreeTaskRequired
 
 #include "AsceMass/Behavior/AsceBehaviorFragment.h"
+#include "AsceMass/Fragments/AsceCoreFragments.h"   // FAsceLifecycleFragment（死亡后不再唤醒树）
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AsceStateTreeTickDriver)
 
@@ -30,6 +31,7 @@ void UAsceStateTreeTickDriver::ConfigureQueries(const TSharedRef<FMassEntityMana
 	EntityQuery.RegisterWithProcessor(*this);
 	EntityQuery.AddRequirement<FMassStateTreeInstanceFragment>(EMassFragmentAccess::ReadOnly);
 	EntityQuery.AddRequirement<FAsceBehaviorFragment>(EMassFragmentAccess::ReadOnly);
+	EntityQuery.AddRequirement<FAsceLifecycleFragment>(EMassFragmentAccess::ReadOnly, EMassFragmentPresence::Optional);
 }
 
 void UAsceStateTreeTickDriver::Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context)
@@ -45,14 +47,21 @@ void UAsceStateTreeTickDriver::Execute(FMassEntityManager& EntityManager, FMassE
 		return;
 	}
 
-	TArray<FMassEntityHandle> ActiveEntities;
+	TArray<FMassEntityHandle>& ActiveEntities = ActiveEntitiesScratch;
+	ActiveEntities.Reset();
 	EntityQuery.ForEachEntityChunk(Context, [&ActiveEntities](FMassExecutionContext& Ctx)
 	{
 		const TConstArrayView<FAsceBehaviorFragment> Behaviors = Ctx.GetFragmentView<FAsceBehaviorFragment>();
+		const TConstArrayView<FAsceLifecycleFragment> Lifecycles = Ctx.GetFragmentView<FAsceLifecycleFragment>();
 		const TConstArrayView<FMassEntityHandle> Entities = Ctx.GetEntities();
 		const int32 Num = Ctx.GetNumEntities();
 		for (int32 i = 0; i < Num; ++i)
 		{
+			// 死亡后不再唤醒（树不再 tick；等销毁流程回收实例）
+			if (Lifecycles.Num() == Num && Lifecycles[i].IsDying())
+			{
+				continue;
+			}
 			if (Behaviors[i].IsTimelineActive())
 			{
 				ActiveEntities.Add(Entities[i]);

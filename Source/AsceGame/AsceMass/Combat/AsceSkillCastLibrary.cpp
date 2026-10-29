@@ -133,10 +133,12 @@ namespace AsceSkillCast
 			return;
 		}
 
-		// 直接伤害
+		// 直接伤害：动作行 `Damage == 0` ⇒ 跟随施法者的**单位攻击力**（基础属性；与工厂对攻击行的解析一致）
+		const FAsceCombatFragment* CasterCombat = EntityManager.GetFragmentDataPtr<FAsceCombatFragment>(Caster);
+		const float Damage = (Def.Damage > 0.f) ? Def.Damage : (CasterCombat ? CasterCombat->AttackDamage : 0.f);
 		if (Target.IsValid())
 		{
-			ApplyDamage(EntityManager, World, Target, Def.Damage);
+			ApplyDamage(EntityManager, World, Target, Damage);
 		}
 	}
 
@@ -147,6 +149,14 @@ namespace AsceSkillCast
 		if (!World || World->GetNetMode() == NM_Client)
 		{
 			return true;
+		}
+		// 施法者已死亡：不再结算（树也不再被 tick/发事件）
+		if (const FAsceLifecycleFragment* CasterLifecycle = EntityManager.GetFragmentDataPtr<FAsceLifecycleFragment>(Caster))
+		{
+			if (CasterLifecycle->IsDying())
+			{
+				return false;
+			}
 		}
 		FAsceActionDef Def;
 		if (!FAsceActionDefLibrary::GetActionDef(Action.ActionDefId, Def))

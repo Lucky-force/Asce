@@ -14,9 +14,12 @@
  * 因为 MassAI 是 AI 模块、AI 服务器权威）。这里三个**薄子类**把 `ExecutionFlags` 改成 `AllNetModes`，
  * 让**客户端也跑**（表现 task）——详见 `Combat/技能编辑器设计.md` §3.3。
  *
- * ⚠️ **必须同时在 `DefaultMass.ini` 里关掉引擎默认的两个**（activation / destructor）：
- *    听服世界的 exec flags = `Client|Server`，否则引擎版(Standalone|Server) 和我们的(Client)
- *    会在听服上**同时命中** ⇒ 实例数据重复分配。
+ * ⚠️ **必须同时在 `DefaultMass.ini` 里关掉引擎默认的 activation**，并**给项目子类显式开回来**
+ *     （`CLASS_Config` 会被子类继承，CDO 的 LoadConfig 先读父类 section）：
+ *     `[/Script/MassAIBehavior.MassStateTreeActivationProcessor] bAutoRegisterWithProcessingPhases=False`
+ *     `[/Script/AsceGame.AsceStateTreeActivationProcessor] bAutoRegisterWithProcessingPhases=True`
+ *     destructor 是 observer，注册走 `bAutoRegisterWithObserverRegistry`，不受这个 ini key 控制；
+ *     引擎版和子类会同时注册，但释放后会清 handle ⇒ 二次执行 no-op，无害。
  *
  * 分工：
  * - `UAsceStateTreeProcessor`：每帧 tick（动态 processor，走 `UMassBehaviorSettings::DynamicStateTreeProcessorClass`）；

@@ -29,4 +29,7 @@ protected:
 	virtual void Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context) override;
 
 	FMassEntityQuery EntityQuery;
+
+	/** 每帧复用（避免逐帧分配）：本帧需要唤醒的实体 */
+	TArray<FMassEntityHandle> ActiveEntitiesScratch;
 };

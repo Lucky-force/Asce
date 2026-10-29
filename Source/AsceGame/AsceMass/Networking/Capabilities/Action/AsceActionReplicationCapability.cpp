@@ -80,7 +80,7 @@ void FAsceActionReplicationCapability::ProcessChunk(FMassExecutionContext& Conte
 		}
 
 		const uint8 ActionStateQ = static_cast<uint8>(Action.ActionState);
-		const uint8 ActionDefIdQ = static_cast<uint8>(FMath::Clamp(Action.ActionDefId, 0, 255));
+		const uint16 ActionDefIdQ = static_cast<uint16>(FMath::Clamp(Action.ActionDefId, 0, 65535));
 		const uint8 CounterQ = static_cast<uint8>(Action.Counter & 0xFFu);
 		const uint8 PlayRateQ = UE::AsceMass::Replication::QuantizeActionPlayRate(PlayRate);
 		const uint8 FacingQ = UE::AsceMass::Replication::QuantizeActionFacing(Action.FacingYaw);
@@ -108,6 +108,7 @@ void FAsceActionReplicationCapability::ProcessChunk(FMassExecutionContext& Conte
 					Data.SetCounter(CounterQ);
 					Data.SetPlayRateQ(PlayRateQ);
 					Data.SetFacingQ(FacingQ);
+					Data.SetStartTimeQ(StartTimeQ);   // Add 路径也要带锚点（否则首次复制到客户端时锚点退化为"收到时"）
 					Bubble.CommitAdd(NetworkIDList[EntityIdx].NetID, ReplicatedAgent, Bubble.GetNowSeconds());
 
 					const FMassReplicatedAgentHandle NewHandle = Bubble.AddAgent(Context.GetEntity(EntityIdx), ReplicatedAgent);
