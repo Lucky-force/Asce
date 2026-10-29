@@ -173,6 +173,10 @@ struct FAsceCheatContext
 
 	/** 请求者的阵营（`AAscePlayerState::GetTeamId()`；取不到 = 0） */
 	int32 RequesterTeamId = 0;
+
+	/** 请求者**本机**光标下的世界点（客户端在客户端采、主机在主机采；专用服务器控制台没有） */
+	FVector CursorWorldLocation = FVector::ZeroVector;
+	bool bHasCursor = false;
 };
 
 namespace AsceCheat

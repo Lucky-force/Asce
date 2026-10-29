@@ -13,3 +13,11 @@ bool UAsceRTSCheatLibrary::RunFromLine(UObject* WorldContextObject, APlayerContr
 	return UAsceCheatLibrary::RunFromLine(WorldContextObject, Requester,
 		UAsceRTSCheatAction::StaticClass(), Line, OutSummary, OutError);
 }
+
+bool UAsceRTSCheatLibrary::RunFromLineAt(UObject* WorldContextObject, APlayerController* Requester,
+	const FString& Line, const bool bHasCursor, const FVector& CursorWorldLocation,
+	FString& OutSummary, FString& OutError)
+{
+	return UAsceCheatLibrary::RunFromLineAt(WorldContextObject, Requester,
+		UAsceRTSCheatAction::StaticClass(), Line, bHasCursor, CursorWorldLocation, OutSummary, OutError);
+}

@@ -5,11 +5,12 @@
 #include "CoreMinimal.h"
 #include "Widgets/SCompoundWidget.h"
 
+#include "Cheat/AsceCheatAction.h"
+
 class SEditableTextBox;
 class SScrollBox;
 class STextBlock;
 class SVerticalBox;
-class UAsceCheatAction;
 class UAsceCheatComponentBase;
 
 /**
@@ -80,6 +81,9 @@ private:
 	/** 只有动作名（按名字排序） */
 	TArray<FString> GetActionNames() const;
 
+	/** 动作的参数表缓存（`BuildArgs()` 不依赖 World；输入时不要每次重建） */
+	const TMap<FName, FAsceCheatActionArg>& GetActionArgs(const UAsceCheatAction* Action) const;
+
 	TWeakObjectPtr<UAsceCheatComponentBase> Component;
 	FSimpleDelegate OnCloseRequested;
 
@@ -87,6 +91,10 @@ private:
 	TSharedPtr<SVerticalBox> OutputBox;
 	TSharedPtr<SEditableTextBox> InputBox;
 	TSharedPtr<STextBlock> HintText;
+
+	/** 参数表 / 下拉候选缓存（只在打开的一次会话里有效） */
+	mutable TMap<const UAsceCheatAction*, TMap<FName, FAsceCheatActionArg>> ArgsCache;
+	mutable TMap<FString, TArray<FString>> SuggestionCache;
 
 	/** 命令历史（↑/↓） */
 	TArray<FString> History;

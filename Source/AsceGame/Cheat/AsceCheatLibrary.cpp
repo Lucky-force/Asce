@@ -19,21 +19,29 @@
 
 namespace
 {
-	/** 运行时开关：默认"Shipping 关、其它开"；内部包可在 ini 里开 */
+	/** 动作发现缓存：控制台每敲一个字都会查动作，不能每次都 GetDerivedClasses */
+	TMap<const UClass*, TArray<UAsceCheatAction*>> GActionCache;
+
+	/** cvar：主机/单机启动时是否自动给自己 `bCheatAllowed`；不参与服务端鉴权 */
 	TAutoConsoleVariable<int32> CVarAsceCheatEnable(
 		TEXT("Asce.Cheat.Enable"),
 		UE_BUILD_SHIPPING ? 0 : 1,
-		TEXT("1 = 允许执行 Asce 作弊（权威端 + per-player 权限；见 Cheat/作弊系统设计.md）"),
+		TEXT("1 = 主机/单机启动时自动授权自己作弊；客户端权限只由主机 asce.grant 控制（见 Cheat/作弊系统设计.md）"),
 		ECVF_Default);
 }
 
-bool UAsceCheatLibrary::IsCheatEnabled()
+bool UAsceCheatLibrary::IsCheatSupported()
 {
 #if !ASCE_CHEAT_ENABLED
 	return false;
 #else
-	return CVarAsceCheatEnable.GetValueOnGameThread() != 0;
+	return true;
 #endif
+}
+
+bool UAsceCheatLibrary::IsCheatEnabled()
+{
+	return IsCheatSupported() && CVarAsceCheatEnable.GetValueOnGameThread() != 0;
 }
 
 TArray<UAsceCheatAction*> UAsceCheatLibrary::GetActions(const TSubclassOf<UAsceCheatAction> ActionBase)
@@ -42,6 +50,11 @@ TArray<UAsceCheatAction*> UAsceCheatLibrary::GetActions(const TSubclassOf<UAsceC
 	if (!BaseClass)
 	{
 		return {};
+	}
+
+	if (const TArray<UAsceCheatAction*>* Cached = GActionCache.Find(BaseClass))
+	{
+		return *Cached;
 	}
 
 	TArray<UClass*> Classes;
@@ -73,7 +86,14 @@ TArray<UAsceCheatAction*> UAsceCheatLibrary::GetActions(const TSubclassOf<UAsceC
 		}
 		return A.GetDisplayName().ToString() < B.GetDisplayName().ToString();
 	});
+
+	GActionCache.Add(BaseClass, Result);
 	return Result;
+}
+
+void UAsceCheatLibrary::InvalidateActionCache()
+{
+	GActionCache.Reset();
 }
 
 UAsceCheatAction* UAsceCheatLibrary::FindAction(const FName ActionName, const TSubclassOf<UAsceCheatAction> ActionBase)
@@ -118,10 +138,17 @@ FString UAsceCheatLibrary::BuildActionListText(const TSubclassOf<UAsceCheatActio
 }
 
 bool UAsceCheatLibrary::Run(UObject* WorldContextObject, APlayerController* Requester, UAsceCheatAction* Action,
-	const TMap<FName, FString>& ProvidedArgs, FString& OutSummary, FString& OutError)
+	const TMap<FName, FString>& ProvidedArgs, FString& OutSummary, FString& OutError,
+	const bool bHasCursor, const FVector& CursorWorldLocation)
 {
 	OutSummary.Reset();
 	OutError.Reset();
+
+	if (!IsCheatSupported())
+	{
+		OutError = TEXT("作弊系统在当前构建中已关闭（ASCE_CHEAT_ENABLED=0）");
+		return false;
+	}
 
 	if (!Action)
 	{
@@ -167,6 +194,8 @@ bool UAsceCheatLibrary::Run(UObject* WorldContextObject, APlayerController* Requ
 	FAsceCheatContext Context;
 	Context.World = WorldContextObject ? WorldContextObject->GetWorld() : nullptr;
 	Context.Requester = Requester;
+	Context.CursorWorldLocation = CursorWorldLocation;
+	Context.bHasCursor = bHasCursor;
 	if (const AAscePlayerState* PlayerState = Requester ? Requester->GetPlayerState<AAscePlayerState>() : nullptr)
 	{
 		Context.RequesterTeamId = PlayerState->GetTeamId();
@@ -177,6 +206,13 @@ bool UAsceCheatLibrary::Run(UObject* WorldContextObject, APlayerController* Requ
 
 bool UAsceCheatLibrary::RunFromLine(UObject* WorldContextObject, APlayerController* Requester,
 	const TSubclassOf<UAsceCheatAction> ActionBase, const FString& Line, FString& OutSummary, FString& OutError)
+{
+	return RunFromLineAt(WorldContextObject, Requester, ActionBase, Line, false, FVector::ZeroVector, OutSummary, OutError);
+}
+
+bool UAsceCheatLibrary::RunFromLineAt(UObject* WorldContextObject, APlayerController* Requester,
+	const TSubclassOf<UAsceCheatAction> ActionBase, const FString& Line, const bool bHasCursor,
+	const FVector& CursorWorldLocation, FString& OutSummary, FString& OutError)
 {
 	OutSummary.Reset();
 	OutError.Reset();
@@ -212,7 +248,7 @@ bool UAsceCheatLibrary::RunFromLine(UObject* WorldContextObject, APlayerControll
 		return false;
 	}
 
-	return Run(WorldContextObject, Requester, Action, ProvidedArgs, OutSummary, OutError);
+	return Run(WorldContextObject, Requester, Action, ProvidedArgs, OutSummary, OutError, bHasCursor, CursorWorldLocation);
 }
 bool UAsceCheatLibrary::GrantCheat(UWorld* World, const FString& NameOrIndex, const bool bAllowed, FString& OutError)
 {
@@ -274,9 +310,9 @@ bool UAsceCheatLibrary::GrantCheat(UWorld* World, const FString& NameOrIndex, co
 
 void UAsceCheatLibrary::ToggleConsoleForLocalPlayer(UObject* WorldContextObject)
 {
-	if (!IsCheatEnabled())
+	if (!IsCheatSupported())
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[Cheat] 作弊未启用（Asce.Cheat.Enable=0）"));
+		UE_LOG(LogTemp, Warning, TEXT("[Cheat] 作弊系统在当前构建中已关闭（ASCE_CHEAT_ENABLED=0）"));
 		return;
 	}
 

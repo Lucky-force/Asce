@@ -47,6 +47,9 @@ void SAsceCheatConsole::Construct(const FArguments& InArgs)
 	Component = InArgs._CheatComponent;
 	OnCloseRequested = InArgs._OnCloseRequested;
 
+	// 控制台打开时刷新一次动作发现（热更新/后加载的类也能进来；之后按 ActionBase 缓存）
+	UAsceCheatLibrary::InvalidateActionCache();
+
 	if (UAsceCheatComponentBase* Comp = Component.Get())
 	{
 		Comp->SetConsoleOutputSink(FAsceCheatConsoleOutput::CreateSP(this, &SAsceCheatConsole::HandleConsoleOutput));
@@ -140,6 +143,15 @@ void SAsceCheatConsole::AppendLine(const FString& Line, const bool bIsError)
 void SAsceCheatConsole::HandleConsoleOutput(const FString& Text, const bool bIsError)
 {
 	AppendLine(Text, bIsError);
+}
+
+const TMap<FName, FAsceCheatActionArg>& SAsceCheatConsole::GetActionArgs(const UAsceCheatAction* Action) const
+{
+	if (const TMap<FName, FAsceCheatActionArg>* Cached = ArgsCache.Find(Action))
+	{
+		return *Cached;
+	}
+	return ArgsCache.Add(Action, Action ? Action->BuildArgs() : TMap<FName, FAsceCheatActionArg>());
 }
 
 // =============================================================================================
@@ -411,7 +423,7 @@ TArray<FString> SAsceCheatConsole::GetCandidates() const
 		return Result;
 	}
 
-	const TMap<FName, FAsceCheatActionArg> Args = Action->BuildArgs();
+	const TMap<FName, FAsceCheatActionArg>& Args = GetActionArgs(Action);
 
 	// 已给的参数
 	TSet<FName> GivenKeys;
@@ -434,7 +446,13 @@ TArray<FString> SAsceCheatConsole::GetCandidates() const
 		const UWorld* World = Component.IsValid() ? Component->GetWorld() : nullptr;
 		if (Arg && Arg->GetArgType())
 		{
-			for (const FString& Suggestion : Arg->GetArgType()->GetSuggestions(World))
+			const FString CacheKey = Action->GetActionName().ToString() + TEXT(".") + Key;
+			const TArray<FString>* Suggestions = SuggestionCache.Find(CacheKey);
+			if (!Suggestions)
+			{
+				Suggestions = &SuggestionCache.Add(CacheKey, Arg->GetArgType()->GetSuggestions(World));
+			}
+			for (const FString& Suggestion : *Suggestions)
 			{
 				if (StartsWithIgnoreCase(Suggestion, Value))
 				{
@@ -528,7 +546,7 @@ FString SAsceCheatConsole::BuildHintText() const
 		return FString::Printf(TEXT("找不到动作 [%s]（asce.list 看可用动作）"), *Tokens[Tokens.Num() - 1]);
 	}
 
-	const TMap<FName, FAsceCheatActionArg> Args = Action->BuildArgs();
+	const TMap<FName, FAsceCheatActionArg>& Args = GetActionArgs(Action);
 
 	TSet<FName> GivenKeys;
 	for (int32 Index = ArgStart; Index < Tokens.Num(); ++Index)

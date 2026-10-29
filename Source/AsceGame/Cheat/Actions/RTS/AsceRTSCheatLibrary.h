@@ -28,4 +28,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Asce|Cheat|RTS", meta = (WorldContext = "WorldContextObject"))
 	static bool RunFromLine(UObject* WorldContextObject, APlayerController* Requester,
 		const FString& Line, FString& OutSummary, FString& OutError);
+
+	/** C++ 入口：带请求者本机光标（客户端由 Server RPC 带上来；主机本机采集） */
+	static bool RunFromLineAt(UObject* WorldContextObject, APlayerController* Requester,
+		const FString& Line, bool bHasCursor, const FVector& CursorWorldLocation,
+		FString& OutSummary, FString& OutError);
 };

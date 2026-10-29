@@ -20,10 +20,10 @@
  *   `asce.grant <索引|玩家名> [0|1]`       —— **仅主机**：给某个玩家开关作弊权限（默认开）
  *
  * 本文件只做"找组件 + 转给它"：权限、路由、结果回显都在 `UAsceCheatComponentBase` 里；
- * 与（将来的）自建 Slate 控制台 UI 共用同一条路径。
+ * 与 Slate 控制台 UI 共用同一条路径。
  *
  * 命令用 `ECVF_Default`（不标 Cheat）：全构建都编（`ASCE_CHEAT_ENABLED` 默认 1），
- * 权限由 `Asce.Cheat.Enable` + per-player 授权决定（Shipping 默认关）。
+ * 权限只看组件上的 `bCheatAllowed`（主机启动时可由 cvar 给自己授权，客户端由主机 `asce.grant`）。
  */
 namespace
 {
@@ -55,9 +55,8 @@ namespace
 
 	void AsceCheatConsole_Cheat(const TArray<FString>& Args, UWorld* World)
 	{
-		if (!World || !UAsceCheatLibrary::IsCheatEnabled())
+		if (!World)
 		{
-			UE_LOG(LogTemp, Warning, TEXT("[Cheat] 作弊未启用（Asce.Cheat.Enable=0）"));
 			return;
 		}
 
@@ -76,7 +75,7 @@ namespace
 			{
 				FString Summary;
 				FString Error;
-				if (Component->ExecuteLine(Line, Summary, Error))
+				if (Component->ExecuteLine(Line, false, FVector::ZeroVector, Summary, Error))
 				{
 					UE_LOG(LogTemp, Log, TEXT("[Cheat] %s ⇒ %s"), *Line, Summary.IsEmpty() ? TEXT("OK") : *Summary);
 				}

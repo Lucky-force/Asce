@@ -21,6 +21,11 @@
 TArray<FString> FAsceCheatArgDefRow::GetSuggestions(const UWorld* World) const
 {
 	TArray<FString> Result;
+	if (bUnitsOnly && bBuildingsOnly)
+	{
+		return Result;   // 两个过滤互斥（UI 不应该同时勾；这里给空列表而不是误导性的“全部”）
+	}
+
 	TMap<FName, FAsceEntityDefRow> Rows;
 	if (!UAsceDataTableSubsystem::GetDefinitionMap<FAsceEntityDefRow>(Rows))
 	{
@@ -45,7 +50,15 @@ TArray<FString> FAsceCheatArgDefRow::GetSuggestions(const UWorld* World) const
 		}
 		Result.Add(Pair.Key.ToString());
 	}
-	Result.Sort([](const FString& A, const FString& B) { return FCString::Atoi(*A) < FCString::Atoi(*B); });
+	Result.Sort([](const FString& A, const FString& B)
+	{
+		// 行名可能是数字（10001）也可能是名字（Infantry）：两边都数字才按数值排，否则按字符串
+		if (A.IsNumeric() && B.IsNumeric())
+		{
+			return FCString::Atoi(*A) < FCString::Atoi(*B);
+		}
+		return A < B;
+	});
 	return Result;
 }
 

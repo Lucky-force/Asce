@@ -24,5 +24,7 @@ class ASCEGAME_API UAsceRTSCheatComponent : public UAsceCheatComponentBase
 
 public:
 	virtual TSubclassOf<UAsceCheatAction> GetActionBaseClass() const override { return UAsceRTSCheatAction::StaticClass(); }
-	virtual bool ExecuteLine(const FString& Line, FString& OutSummary, FString& OutError) override;
+	virtual bool ExecuteLine(const FString& Line, bool bHasCursor, const FVector& CursorWorldLocation
+		, FString& OutSummary, FString& OutError) override;
+	virtual bool GetRequestCursor(FVector& OutCursorWorldLocation) const override;
 };

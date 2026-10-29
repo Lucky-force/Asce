@@ -40,25 +40,8 @@ APlayerController* UAsceCheatComponentBase::GetOwnerPlayerController() const
 
 bool UAsceCheatComponentBase::IsCheatAvailable() const
 {
-	if (!UAsceCheatLibrary::IsCheatEnabled())
-	{
-		return false;
-	}
-
-	const UWorld* World = GetWorld();
-	if (!World)
-	{
-		return false;
-	}
-
-	if (World->GetNetMode() == NM_Client)
-	{
-		return bCheatAllowed;   // 客户端：看自己有没有被授权
-	}
-
-	// 权威端：只有"属主本机"（主机 / 单机）才算
-	const APlayerController* PC = GetOwnerPlayerController();
-	return PC && PC->IsLocalController();
+	// 运行时只认授权位：主机/单机由 cvar 在 BeginPlay 给自己授权；客户端只认复制下来的 bCheatAllowed
+	return UAsceCheatLibrary::IsCheatSupported() && bCheatAllowed;
 }
 
 void UAsceCheatComponentBase::SetCheatAllowed(const bool bAllowed)
@@ -77,33 +60,59 @@ void UAsceCheatComponentBase::OnRep_CheatAllowed()
 		*GetNameSafe(GetOwner()), bCheatAllowed ? TEXT("已开启") : TEXT("已关闭"));
 }
 
+void UAsceCheatComponentBase::BeginPlay()
+{
+	Super::BeginPlay();
+
+	// cvar 只做“主机/单机给自己授权”的初始值；客户端即使本地 cvar=1 也不能给自己授权
+	if (!GetOwner() || !GetOwner()->HasAuthority())
+	{
+		return;
+	}
+	const APlayerController* PC = GetOwnerPlayerController();
+	if (PC && PC->IsLocalController() && UAsceCheatLibrary::IsCheatEnabled())
+	{
+		SetCheatAllowed(true);
+	}
+}
+
 void UAsceCheatComponentBase::RequestLine(const FString& Line)
 {
 	if (!IsCheatAvailable())
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[Cheat] 没有作弊权限（需要：权威端/属主本机，或主机 asce.grant 授权）"));
+		UE_LOG(LogTemp, Warning, TEXT("[Cheat] 没有作弊权限（需要主机 asce.grant 授权）"));
 		return;
 	}
+
+	// 光标在**请求者本机**采集：主机在本机采；客户端采完随 RPC 发给服务器，避免用主机鼠标坐标
+	FVector CursorWorldLocation = FVector::ZeroVector;
+	const bool bHasCursor = GetRequestCursor(CursorWorldLocation);
 
 	if (const AActor* Owner = GetOwner(); Owner && Owner->HasAuthority())
 	{
-		ExecuteAndReport(Line);
+		ExecuteAndReport(Line, bHasCursor, CursorWorldLocation);
 		return;
 	}
 
-	Server_RunCheatLine(Line);
+	Server_RunCheatLine(Line, bHasCursor, CursorWorldLocation);
 }
 
-void UAsceCheatComponentBase::ExecuteAndReport(const FString& Line)
+void UAsceCheatComponentBase::ExecuteAndReport(const FString& Line, const bool bHasCursor, const FVector& CursorWorldLocation)
 {
 	FString Summary;
 	FString Error;
-	const bool bOk = ExecuteLine(Line, Summary, Error);
+	const bool bOk = ExecuteLine(Line, bHasCursor, CursorWorldLocation, Summary, Error);
 	ReportOutput(FString::Printf(TEXT("%s ⇒ %s"), *Line, bOk ? (Summary.IsEmpty() ? TEXT("OK") : *Summary) : *Error), !bOk);
 }
 
-void UAsceCheatComponentBase::Server_RunCheatLine_Implementation(const FString& Line)
+void UAsceCheatComponentBase::Server_RunCheatLine_Implementation(const FString& Line, const bool bHasCursor
+	, const FVector CursorWorldLocation)
 {
+	if (!UAsceCheatLibrary::IsCheatSupported())
+	{
+		Client_CheatResult(Line, FString(), TEXT("作弊系统在当前构建中已关闭"));
+		return;
+	}
 	if (!bCheatAllowed)
 	{
 		Client_CheatResult(Line, FString(), TEXT("没有作弊权限（需要主机 asce.grant 授权）"));
@@ -112,7 +121,7 @@ void UAsceCheatComponentBase::Server_RunCheatLine_Implementation(const FString& 
 
 	FString Summary;
 	FString Error;
-	const bool bOk = ExecuteLine(Line, Summary, Error);
+	const bool bOk = ExecuteLine(Line, bHasCursor, CursorWorldLocation, Summary, Error);
 	Client_CheatResult(Line, bOk ? Summary : FString(), bOk ? FString() : Error);
 }
 
@@ -167,15 +176,28 @@ void UAsceCheatComponentBase::OpenConsole()
 		return;
 	}
 
-	if (!IsCheatAvailable())
+	if (!UAsceCheatLibrary::IsCheatSupported())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Cheat] 作弊系统在当前构建中已关闭（ASCE_CHEAT_ENABLED=0）"));
+		return;
+	}
+
+	APlayerController* PC = GetOwnerPlayerController();
+	if (!PC || !PC->IsLocalController())
+	{
+		return;
+	}
+
+	// 主机/单机即使还没授权，也允许打开控制台做 `asce.grant`（发行包没有引擎控制台时靠这条路）
+	const bool bHostAdmin = GetOwner() && GetOwner()->HasAuthority();
+	if (!IsCheatAvailable() && !bHostAdmin)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[Cheat] 没有作弊权限，无法打开控制台"));
 		return;
 	}
 
-	APlayerController* PC = GetOwnerPlayerController();
 	UGameViewportClient* Viewport = GEngine ? GEngine->GameViewport : nullptr;
-	if (!PC || !PC->IsLocalController() || !Viewport || !FSlateApplication::IsInitialized())
+	if (!Viewport || !FSlateApplication::IsInitialized())
 	{
 		return;
 	}

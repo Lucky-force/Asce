@@ -41,7 +41,7 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Asce|Cheat")
 	bool IsCheatAvailable() const;
 
-	/** 是否被主机授权（服务端权威；客户端读复制值） */
+	/** 是否被主机授权（服务端权威；客户端读复制值）——**运行时唯一鉴权** */
 	UFUNCTION(BlueprintPure, Category = "Asce|Cheat")
 	bool IsCheatAllowed() const { return bCheatAllowed; }
 
@@ -56,8 +56,12 @@ public:
 	virtual TSubclassOf<UAsceCheatAction> GetActionBaseClass() const PURE_VIRTUAL(UAsceCheatComponentBase::GetActionBaseClass, return nullptr;);
 
 	/** 本模式的执行入口（子类覆写 → 调本模式函数库） */
-	virtual bool ExecuteLine(const FString& Line, FString& OutSummary, FString& OutError)
+	virtual bool ExecuteLine(const FString& Line, bool bHasCursor, const FVector& CursorWorldLocation
+		, FString& OutSummary, FString& OutError)
 		PURE_VIRTUAL(UAsceCheatComponentBase::ExecuteLine, return false;);
+
+	/** 采集**请求者本机**光标下的世界点（客户端在本机采、主机在主机采；默认没有） */
+	virtual bool GetRequestCursor(FVector& OutCursorWorldLocation) const { return false; }
 
 	/** 本模式的动作列表文本（控制台 `asce.list`） */
 	FString BuildActionListText() const;
@@ -79,18 +83,19 @@ public:
 	void SetConsoleOutputSink(FAsceCheatConsoleOutput InSink);
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 protected:
 	/** 执行并把结果打到本机控制台（Slate 面板打开时也同步给它） */
-	void ExecuteAndReport(const FString& Line);
+	void ExecuteAndReport(const FString& Line, bool bHasCursor, const FVector& CursorWorldLocation);
 
 	/** 统一输出：日志 + （若有）Slate 面板 */
 	void ReportOutput(const FString& Text, bool bIsError);
 
-	/** 客户端 → 服务端：请求执行一行 */
+	/** 客户端 → 服务端：请求执行一行（带上请求者本机光标，服务端不要用主机鼠标代替） */
 	UFUNCTION(Server, Reliable)
-	void Server_RunCheatLine(const FString& Line);
+	void Server_RunCheatLine(const FString& Line, bool bHasCursor, FVector CursorWorldLocation);
 
 	/** 服务端 → 发起客户端：回传结果（由发起端打印） */
 	UFUNCTION(Client, Reliable)

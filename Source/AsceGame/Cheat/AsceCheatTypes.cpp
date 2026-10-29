@@ -150,9 +150,10 @@ bool FAsceCheatArgEntity::Validate(const FString& Content, FString& OutError) co
 		OutError = TEXT("不是有效实体句柄");
 		return false;
 	}
-	if (FCString::Atoi64(*Content) == 0)
+	const int64 EntityNumber = FCString::Atoi64(*Content);
+	if (EntityNumber <= 0)
 	{
-		OutError = TEXT("实体句柄不能为 0");
+		OutError = TEXT("实体句柄必须 > 0");
 		return false;
 	}
 	return true;

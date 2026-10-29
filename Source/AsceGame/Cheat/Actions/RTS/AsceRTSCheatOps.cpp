@@ -83,7 +83,13 @@ bool AsceRTSCheatOps::SpawnUnits(UWorld* World, const FName DefRowName, const FV
 		return false;
 	}
 
-	const int32 SafeCount = FMath::Clamp(Count, 1, UAsceSpawnQueueSubsystem::MaxRequestsPerFrame);
+	if (Count <= 0)
+	{
+		OutError = TEXT("数量必须 ≥ 1");
+		return false;
+	}
+
+	const int32 SafeCount = FMath::Min(Count, UAsceSpawnQueueSubsystem::MaxRequestsPerFrame);
 	const bool bSpread = SafeCount > 1 && SpreadRadius > 0.f;
 
 	for (int32 Index = 0; Index < SafeCount; ++Index)

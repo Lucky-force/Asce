@@ -94,6 +94,11 @@ bool UAsceRTSCheatActionSpawnUnits::Execute(const FAsceCheatContext& Context, co
 	{
 		Center = PosArg->GetVector();
 	}
+	else if (Context.bHasCursor)
+	{
+		// 客户端/主机各自在**本机**采集，随请求传上来；不要用服务器 PC 的鼠标
+		Center = Context.CursorWorldLocation;
+	}
 	else if (!AsceRTSCheatOps::GetCursorWorldLocation(Context.Requester, Center, OutError))
 	{
 		return false;
@@ -178,9 +183,20 @@ bool UAsceRTSCheatActionPlaceBuilding::Execute(const FAsceCheatContext& Context,
 	const FAsceCheatActionArg* CellYArg = FindArg(Args, TEXT("CellY"));
 
 	FIntPoint CenterCell = FIntPoint::ZeroValue;
-	if (HasContent(CellXArg) && HasContent(CellYArg))
+	const bool bHasCellX = HasContent(CellXArg);
+	const bool bHasCellY = HasContent(CellYArg);
+	if (bHasCellX != bHasCellY)
+	{
+		OutError = TEXT("CellX 和 CellY 必须同时给（或都不给 = 用光标）");
+		return false;
+	}
+	if (bHasCellX)
 	{
 		CenterCell = FIntPoint(CellXArg->GetInt(), CellYArg->GetInt());
+	}
+	else if (Context.bHasCursor)
+	{
+		CenterCell = AsceRTSCheatOps::WorldToLogicalCell(Context.CursorWorldLocation);
 	}
 	else
 	{
