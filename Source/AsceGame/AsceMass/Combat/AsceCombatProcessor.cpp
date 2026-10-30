@@ -31,11 +31,13 @@ UAsceCombatProcessor::UAsceCombatProcessor()
 void UAsceCombatProcessor::ConfigureQueries(const TSharedRef<FMassEntityManager>& EntityManager)
 {
 	EntityQuery.RegisterWithProcessor(*this);
-	EntityQuery.AddRequirement<FAsceCombatFragment>(EMassFragmentAccess::ReadWrite);
+	EntityQuery.AddRequirement<FAsceCombatFragment>(EMassFragmentAccess::ReadWrite, EMassFragmentPresence::Optional);
+	// 攻击属性（射程 / 攻击动作行）在属性 fragment 里；运行时 fragment 只放目标与扫描节流
+	EntityQuery.AddRequirement<FAsceCombatAttributesFragment>(EMassFragmentAccess::ReadOnly, EMassFragmentPresence::Optional);
 	EntityQuery.AddRequirement<FAsceActionFragment>(EMassFragmentAccess::ReadWrite);
 	EntityQuery.AddRequirement<FAsceTeamFragment>(EMassFragmentAccess::ReadOnly);
 	EntityQuery.AddRequirement<FTransformFragment>(EMassFragmentAccess::ReadWrite);   // 动作开始时要写朝向
-	EntityQuery.AddRequirement<FAgentRadiusFragment>(EMassFragmentAccess::ReadOnly);
+	EntityQuery.AddRequirement<FAgentRadiusFragment>(EMassFragmentAccess::ReadOnly, EMassFragmentPresence::Optional);
 	// 血量/移动命令用 Optional：没有的不参与（不能因为缺一个 fragment 就让单位从战斗查询里消失）
 	EntityQuery.AddRequirement<FAsceHealthFragment>(EMassFragmentAccess::ReadWrite, EMassFragmentPresence::Optional);
 	EntityQuery.AddRequirement<FAsceMoveOrderFragment>(EMassFragmentAccess::ReadOnly, EMassFragmentPresence::Optional);
@@ -64,27 +66,31 @@ void UAsceCombatProcessor::Execute(FMassEntityManager& EntityManager, FMassExecu
 
 	EntityQuery.ForEachEntityChunk(Context, [&](FMassExecutionContext& Ctx)
 	{
+		const int32 Num = Ctx.GetNumEntities();
 		const TArrayView<FAsceCombatFragment> Combats = Ctx.GetMutableFragmentView<FAsceCombatFragment>();
+		const bool bHasCombat = Combats.Num() == Num;
+		const TConstArrayView<FAsceCombatAttributesFragment> CombatAttrs = Ctx.GetFragmentView<FAsceCombatAttributesFragment>();
+		const bool bHasCombatAttrs = CombatAttrs.Num() == Num;
 		const TArrayView<FAsceActionFragment> Actions = Ctx.GetMutableFragmentView<FAsceActionFragment>();
 		const TArrayView<FTransformFragment> Transforms = Ctx.GetMutableFragmentView<FTransformFragment>();
 		const TConstArrayView<FAsceTeamFragment> Teams = Ctx.GetFragmentView<FAsceTeamFragment>();
 		const TConstArrayView<FAgentRadiusFragment> Radii = Ctx.GetFragmentView<FAgentRadiusFragment>();
+		const bool bHasRadius = Radii.Num() == Num;
 		const TArrayView<FAsceHealthFragment> Healths = Ctx.GetMutableFragmentView<FAsceHealthFragment>();
 		const TConstArrayView<FAsceMoveOrderFragment> MoveOrders = Ctx.GetFragmentView<FAsceMoveOrderFragment>();
 		const TArrayView<FAsceLifecycleFragment> Lifecycles = Ctx.GetMutableFragmentView<FAsceLifecycleFragment>();
 		const TConstArrayView<FMassEntityHandle> Entities = Ctx.GetEntities();
-		const int32 Num = Ctx.GetNumEntities();
 
 		TArray<FMassEntityHandle> Candidates;   // 复用（每个 chunk 一次分配）
 
 		for (int32 i = 0; i < Num; ++i)
 		{
-			FAsceCombatFragment& Combat = Combats[i];
+			FAsceCombatFragment* Combat = bHasCombat ? &Combats[i] : nullptr;
 			FAsceActionFragment& Action = Actions[i];
 
 			const FMassEntityHandle Self = Entities[i];
 			const FVector Location = Transforms[i].GetTransform().GetLocation();
-			const float Radius = Radii[i].Radius;
+			const float Radius = bHasRadius ? Radii[i].Radius : 0.f;
 			const int32 MyTeamId = AsceTeamId(Teams[i].TeamKey);
 			// 移动中（有移动命令）⇒ 不扫描、且攻击会被打断（打断不结算）
 			const bool bMoving = MoveOrders.Num() > 0 && MoveOrders[i].bHasOrder;
@@ -126,11 +132,16 @@ void UAsceCombatProcessor::Execute(FMassEntityManager& EntityManager, FMassExecu
 			{
 				continue;
 			}
-			if (Now < Combat.NextScanTime)
+			if (!Combat || !bHasCombatAttrs)
 			{
 				continue;
 			}
-			Combat.NextScanTime = Now + ScanIntervalSeconds;
+			const FAsceCombatAttributesFragment& CombatAttr = CombatAttrs[i];
+			if (Now < Combat->NextScanTime)
+			{
+				continue;
+			}
+			Combat->NextScanTime = Now + ScanIntervalSeconds;
 
 			// 视线用的迷雾键：本端阵营表把 TeamId 映射成打包键（与迷雾贡献同一套）
 			const int32 FogKey = GameState ? GameState->GetTeamKey(MyTeamId) : Teams[i].TeamKey;
@@ -140,15 +151,15 @@ void UAsceCombatProcessor::Execute(FMassEntityManager& EntityManager, FMassExecu
 			float BestDistSq = TNumericLimits<float>::Max();
 
 			TArray<FMassEntityHandle> SearchList;
-			if (Combat.DesignatedTarget.IsValid() && EntityManager.IsEntityValid(Combat.DesignatedTarget))
+			if (Combat->DesignatedTarget.IsValid() && EntityManager.IsEntityValid(Combat->DesignatedTarget))
 			{
-				SearchList.Add(Combat.DesignatedTarget);
+				SearchList.Add(Combat->DesignatedTarget);
 			}
 			else
 			{
-				Combat.DesignatedTarget.Reset();
+				Combat->DesignatedTarget.Reset();
 				Candidates.Reset();
-				Grid->FindEntities(FVector2D(Location.X, Location.Y), Combat.AttackRange + Radius, Candidates);
+				Grid->FindEntities(FVector2D(Location.X, Location.Y), CombatAttr.AttackRange + Radius, Candidates);
 				SearchList = Candidates;
 			}
 
@@ -185,7 +196,7 @@ void UAsceCombatProcessor::Execute(FMassEntityManager& EntityManager, FMassExecu
 					CandidateRadius = CandidateRadiusFragment->Radius;
 				}
 				const float Dist2D = FVector::Dist2D(Location, CandidateLocation);
-				if (Dist2D > Combat.AttackRange + Radius + CandidateRadius)
+				if (Dist2D > CombatAttr.AttackRange + Radius + CandidateRadius)
 				{
 					continue;
 				}
@@ -215,7 +226,7 @@ void UAsceCombatProcessor::Execute(FMassEntityManager& EntityManager, FMassExecu
 
 			Action.ActionState = EAsceActionState::Attack;
 			Action.StartServerTime = static_cast<float>(Now);   // 起轴时刻（锚点；随动作态通道下发）
-			Action.ActionDefId = Combat.AttackActionId;
+			Action.ActionDefId = CombatAttr.AttackActionId;
 			Action.ActionTarget = Target;
 			Action.ActionTargetPos = FVector2D(TargetLocation.X, TargetLocation.Y);
 			Action.FacingYaw = FacingYaw;

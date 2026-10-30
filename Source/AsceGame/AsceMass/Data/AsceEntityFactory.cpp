@@ -63,8 +63,8 @@ namespace
 				SkillSlots->Slots[SlotIndex].NextReadyServerTime = 0.0;
 			}
 		}
-		// 战斗参数（见 `Combat/技能系统设计.md`）：只写静态值；运行时状态由战斗 processor 推进
-		if (FAsceCombatFragment* Combat = EntityManager.GetFragmentDataPtr<FAsceCombatFragment>(Entity))
+		// 战斗属性（见 `Combat/技能系统设计.md`）：只写静态值；运行时状态由战斗 processor 推进
+		if (FAsceCombatAttributesFragment* Combat = EntityManager.GetFragmentDataPtr<FAsceCombatAttributesFragment>(Entity))
 		{
 			// 攻击 = 一条 `ReleaseMode = Auto` 的动作行（`AttackAction`；攻击子树在行里的 `SkillTree`）
 			FAsceActionDef AttackDef;
@@ -79,6 +79,7 @@ namespace
 			Combat->AttackRange = (bHasAttackRow && AttackDef.Range > 0.f) ? AttackDef.Range : Def.AttackRange;
 			Combat->AttackDamage = (bHasAttackRow && AttackDef.Damage > 0.f) ? AttackDef.Damage : Def.AttackDamage;
 			Combat->AttackSpeed = Def.AttackSpeed;
+			Combat->RangeKind = bHasAttackRow ? AttackDef.RangeKind : EAsceRangeKind::MeleeSurface;
 		}
 		if (FAsceTeamFragment* Team = EntityManager.GetFragmentDataPtr<FAsceTeamFragment>(Entity))
 		{
@@ -91,12 +92,6 @@ namespace
 		if (FAsceHeightFragment* Height = EntityManager.GetFragmentDataPtr<FAsceHeightFragment>(Entity))
 		{
 			Height->Height = Def.Height;
-		}
-		if (FAsceMovementTuningFragment* Tuning = EntityManager.GetFragmentDataPtr<FAsceMovementTuningFragment>(Entity))
-		{
-			Tuning->MaxSpeed = Def.MaxSpeed;
-			Tuning->MaxAcceleration = Def.MaxAcceleration;
-			Tuning->DefaultDesiredSpeed = Def.DefaultDesiredSpeed;
 		}
 		if (FAsceVisionViewFragment* View = EntityManager.GetFragmentDataPtr<FAsceVisionViewFragment>(Entity))
 		{

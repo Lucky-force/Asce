@@ -33,7 +33,7 @@ void UAsceMovementSteeringProcessor::ConfigureQueries(const TSharedRef<FMassEnti
 	EntityQuery.RegisterWithProcessor(*this);
 	EntityQuery.AddRequirement<FAsceMovementSimStateFragment>(EMassFragmentAccess::ReadOnly);
 	EntityQuery.AddRequirement<FAsceMoveOrderFragment>(EMassFragmentAccess::ReadWrite);
-	EntityQuery.AddRequirement<FAsceMovementTuningFragment>(EMassFragmentAccess::ReadOnly);
+	EntityQuery.AddConstSharedRequirement<FAsceMovementSharedFragment>();
 	EntityQuery.AddRequirement<FTransformFragment>(EMassFragmentAccess::ReadOnly);
 	EntityQuery.AddRequirement<FMassDesiredMovementFragment>(EMassFragmentAccess::ReadWrite);
 	EntityQuery.AddSubsystemRequirement<UAscePathFindingSubsystem>(EMassFragmentAccess::ReadWrite);
@@ -46,7 +46,7 @@ void UAsceMovementSteeringProcessor::Execute(FMassEntityManager& EntityManager, 
 	{
 		const TConstArrayView<FAsceMovementSimStateFragment> SimStates = Ctx.GetFragmentView<FAsceMovementSimStateFragment>();
 		const TArrayView<FAsceMoveOrderFragment> Orders = Ctx.GetMutableFragmentView<FAsceMoveOrderFragment>();
-		const TConstArrayView<FAsceMovementTuningFragment> Tunings = Ctx.GetFragmentView<FAsceMovementTuningFragment>();
+		const FAsceMovementSharedFragment& MovementParams = Ctx.GetConstSharedFragment<FAsceMovementSharedFragment>();
 		const TConstArrayView<FTransformFragment> Transforms = Ctx.GetFragmentView<FTransformFragment>();
 		const TArrayView<FMassDesiredMovementFragment> DesiredMovements = Ctx.GetMutableFragmentView<FMassDesiredMovementFragment>();
 
@@ -111,8 +111,12 @@ void UAsceMovementSteeringProcessor::Execute(FMassEntityManager& EntityManager, 
 			{
 				SteeringDirection2D.Normalize();
 			}
+			// 指令给了速度就用（clamp 到 2×基础），否则用基础速度
+			const float MaxSpeed = MovementParams.BaseMoveSpeed * 2.f;
+			const float DesiredSpeed = Orders[i].DesiredSpeed > 0.f
+				? FMath::Min(Orders[i].DesiredSpeed, MaxSpeed)
+				: MovementParams.BaseMoveSpeed;
 
-			const float DesiredSpeed = FMath::Min(Tunings[i].DefaultDesiredSpeed, Tunings[i].MaxSpeed);
 			DesiredMovement.DesiredVelocity = FVector(SteeringDirection2D.X, SteeringDirection2D.Y, 0.f) * DesiredSpeed;
 		}
 	});

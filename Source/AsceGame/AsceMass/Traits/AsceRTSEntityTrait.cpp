@@ -11,9 +11,12 @@
 #include "UObject/Package.h"            // GetTransientPackage
 #include "AsceMass/Behavior/AsceBehaviorFragment.h"
 #include "AsceMass/Data/AsceEntityDefLibrary.h"
+#include "AsceMass/Data/AsceUnitDef.h"
+#include "GameModes/AsceGameplaySettings.h"
 #include "AsceMass/Networking/Core/AsceUnitReplicator.h"
 #include "AsceMass/Networking/Capabilities/Transform/AsceTransformReplication.h"
 #include "../Fragments/AsceCoreFragments.h"
+#include "../Fragments/AsceMovementFragments.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AsceRTSEntityTrait)
 
@@ -72,8 +75,17 @@ void UAsceRTSEntityTrait::BuildTemplate(FMassEntityTemplateBuildContext& BuildCo
 		UStateTree* BehaviorTree = DefBase ? DefBase->StateTree.LoadSynchronous() : nullptr;
 		if (DefBase && !DefBase->StateTree.IsNull() && BehaviorTree == nullptr)
 		{
-			UE_LOG(LogTemp, Warning, TEXT("[Behavior] 实体类型 %s 配了 StateTree 但加载失败（软引用无效/资产缺失）—— 该类型不会有行为树"),
+			UE_LOG(LogTemp, Warning, TEXT("[Behavior] 实体类型 %s 的 StateTree 加载失败（行无效/资产缺失），该类型不挂行为树"),
 				*UniqueType.RowName.ToString());
+		}
+		// 单位类型没配树 ⇒ 用项目配置里的默认单位树（建筑等其它类型不回落）
+		if (!BehaviorTree && DefBase && DefBase->StateTree.IsNull() && bHasRow
+			&& DefRow.Def.GetPtr<FAsceRTSUnitDef>() != nullptr)
+		{
+			if (const UAsceGameplaySettings* Settings = GetDefault<UAsceGameplaySettings>())
+			{
+				BehaviorTree = Settings->DefaultUnitStateTree.LoadSynchronous();
+			}
 		}
 		if (BehaviorTree)
 		{
@@ -92,6 +104,15 @@ void UAsceRTSEntityTrait::BuildTemplate(FMassEntityTemplateBuildContext& BuildCo
 				// 外层动作态 → 树事件的边沿检测（`UAsceStateTreeNotifyProcessor`）
 				BuildContext.AddFragment<FAsceBehaviorFragment>();
 			}
+		}
+
+		// 单位类型：基础移动速度是"类型级常量" ⇒ 烘焙成 const shared（客户端同值，不需要复制）
+		if (const FAsceRTSUnitDef* UnitDef = bHasRow ? DefRow.Def.GetPtr<FAsceRTSUnitDef>() : nullptr)
+		{
+			FAsceMovementSharedFragment SharedMovement;
+			SharedMovement.BaseMoveSpeed = FMath::Max(UnitDef->BaseMoveSpeed, 1.f);
+			FMassEntityManager& EntityManager = UE::Mass::Utils::GetEntityManagerChecked(World);
+			BuildContext.AddConstSharedFragment(EntityManager.GetOrCreateConstSharedFragment(SharedMovement));
 		}
 	}
 

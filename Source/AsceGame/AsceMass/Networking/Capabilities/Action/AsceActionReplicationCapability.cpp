@@ -18,7 +18,7 @@ void FAsceActionReplicationCapability::AddRequirements(FMassEntityQuery& EntityQ
 	// archetype 有没有该 fragment，不保证 Query 绑定过视图；少了声明 GetFragmentView 会直接命中
 	// CHECK_IF_VALID 的 checkf("Requested fragment type not bound")。
 	// （与 AsceUnitReplicator::AddRequirements 里 FAgentRadiusFragment/FAsceGridFootprintFragment 同理）
-	EntityQuery.AddRequirement<FAsceCombatFragment>(EMassFragmentAccess::ReadOnly, EMassFragmentPresence::Any);
+	EntityQuery.AddRequirement<FAsceCombatAttributesFragment>(EMassFragmentAccess::ReadOnly, EMassFragmentPresence::Any);
 }
 
 void FAsceActionReplicationCapability::ProcessChunk(FMassExecutionContext& Context, FMassReplicationContext& ReplicationContext
@@ -54,10 +54,10 @@ void FAsceActionReplicationCapability::ProcessChunk(FMassExecutionContext& Conte
 	const TConstArrayView<FMassReplicationLODFragment> LODList = Context.GetFragmentView<FMassReplicationLODFragment>();
 
 	// 攻击的播放速度来自 Combat.AttackSpeed（技能 v1 固定 1.0；后续按动作def的动画段算）
-	TConstArrayView<FAsceCombatFragment> CombatList;
-	if (Context.DoesArchetypeHaveFragment<FAsceCombatFragment>())
+	TConstArrayView<FAsceCombatAttributesFragment> CombatList;
+	if (Context.DoesArchetypeHaveFragment<FAsceCombatAttributesFragment>())
 	{
-		CombatList = Context.GetFragmentView<FAsceCombatFragment>();
+		CombatList = Context.GetFragmentView<FAsceCombatAttributesFragment>();
 	}
 
 	// 生命周期（服务端）：Add/Remove 成功时增减 bubble 引用计数

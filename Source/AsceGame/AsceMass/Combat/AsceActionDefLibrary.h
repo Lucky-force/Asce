@@ -15,7 +15,7 @@
  *   攻击行会有自己的 `ActionId`（>0），单位 def 用行名指向它。
  * - 索引**不做热更**（表在运行时不变）；编辑器里改了表要重进 PIE。
  */
-struct FAsceActionDefLibrary
+struct ASCEGAME_API FAsceActionDefLibrary
 {
 	/** 按 `ActionId` 查一行（O(1)）；表没登记 / 查不到 → false（不写 OutDef） */
 	static bool GetActionDef(int32 ActionId, FAsceActionDef& OutDef);
@@ -25,4 +25,8 @@ struct FAsceActionDefLibrary
 
 	/** 清索引（改表后想立即生效时手动调；正常运行不需要） */
 	static void InvalidateCache();
+
+	/** 取该动作要跑的技能子树：动作行自己的 `SkillTree`；攻击（`ReleaseMode == Auto`）没配时按
+	 *  `RangeKind` 回落 `UAsceGameplaySettings` 的默认近战/远程攻击树。找不到返回 nullptr。 */
+	static class UStateTree* ResolveSkillTree(const FAsceActionDef& ActionDef);
 };

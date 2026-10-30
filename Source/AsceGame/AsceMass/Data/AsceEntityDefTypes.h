@@ -60,4 +60,11 @@ struct FAsceEntityDefRow : public FTableRowBase
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "UI")
 	TSoftObjectPtr<UTexture2D> HeadIcon;
+
+#if WITH_EDITORONLY_DATA
+	/** **编辑器专用**：该类型的模块配置资产（`UAsceUnitModuleConfig`，声明在 AsceEditor）。
+	 *  只给"单位模块化编辑器"读写；cook 时整段剥离，运行时不存在这个字段。 */
+	UPROPERTY(EditAnywhere, Category = "Authoring")
+	FSoftObjectPath ModuleConfig;
+#endif
 };

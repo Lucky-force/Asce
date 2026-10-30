@@ -411,10 +411,9 @@ void UAsceEntityInspectorController::BuildStatRowsInternal(TArray<FAsceInspector
 	{
 		AddRow(LOCTEXT("Height", "高度"), FString::Printf(TEXT("%.0f"), Height->Height));
 	}
-	if (const FAsceMovementTuningFragment* Tuning = EntityManager->GetFragmentDataPtr<FAsceMovementTuningFragment>(PrimaryEntity))
+	if (const FAsceMovementSharedFragment* Movement = EntityManager->GetConstSharedFragmentDataPtr<FAsceMovementSharedFragment>(PrimaryEntity))
 	{
-		AddRow(LOCTEXT("MaxSpeed", "最大速度"), FString::Printf(TEXT("%.0f"), Tuning->MaxSpeed));
-		AddRow(LOCTEXT("DesiredSpeed", "期望速度"), FString::Printf(TEXT("%.0f"), Tuning->DefaultDesiredSpeed));
+		AddRow(LOCTEXT("BaseMoveSpeed", "基础速度"), FString::Printf(TEXT("%.0f"), Movement->BaseMoveSpeed));
 	}
 	if (const FAsceVisionViewFragment* Vision = EntityManager->GetFragmentDataPtr<FAsceVisionViewFragment>(PrimaryEntity))
 	{

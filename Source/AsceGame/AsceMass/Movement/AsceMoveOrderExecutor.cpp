@@ -14,6 +14,7 @@ void FAsceMoveOrderExecutor::ApplyMergedMoveOrder(
 	const TArray<FVector2D>& EntityWorldLocations2D,
 	const FVector2D& GoalWorldLocation,
 	float AcceptanceRadiusSquared,
+	float DesiredSpeed,
 	int32 OrderSequence)
 {
 	if (ValidHandles.Num() == 0)
@@ -48,6 +49,7 @@ void FAsceMoveOrderExecutor::ApplyMergedMoveOrder(
 		MoveOrder->TargetLocation = FVector(GoalWorldLocation.X, GoalWorldLocation.Y, 0.f);
 		// Fragment存的是平方值，调用方传入的也必须是半径的平方（见AsceOrderFragments.h说明）。
 		MoveOrder->AcceptanceRadiusSquared = AcceptanceRadiusSquared;
+		MoveOrder->DesiredSpeed = DesiredSpeed;
 		MoveOrder->bHasOrder = true;
 		MoveOrder->OrderSequence = OrderSequence;
 

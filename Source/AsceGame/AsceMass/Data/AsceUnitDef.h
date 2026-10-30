@@ -24,14 +24,10 @@ struct FAsceRTSUnitDef : public FAsceEntityDefBase
 
 	// ── 移动 ──
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Movement")
-	float MaxSpeed = 300.f;
+	/** 基础移动速度（cm/s）：最大速度 = 2×基础；奔跑阈值 = 1.7×基础 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Movement", meta = (ClampMin = "1.0"))
+	float BaseMoveSpeed = 150.f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Movement")
-	float MaxAcceleration = 350.f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Movement")
-	float DefaultDesiredSpeed = 200.f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Movement")
 	float Radius = 75.f;
@@ -52,7 +48,7 @@ struct FAsceRTSUnitDef : public FAsceEntityDefBase
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Attributes")
 	float MaxMana = 100.f;
 
-	// ── 战斗（写入 FAsceCombatFragment；见 `Combat/技能系统设计.md`）──
+	// ── 战斗（写入 FAsceCombatAttributesFragment；见 `Combat/技能系统设计.md`）──
 
 	/** 攻击距离（cm）；v1 固定"近战表面/圆心"口径，高度口径后补 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Attributes")
@@ -84,4 +80,43 @@ struct FAsceRTSUnitDef : public FAsceEntityDefBase
 	/** 该单位类型的动画集（cue task 用它把动画资产解析成帧段；见 `Combat/AsceAnimDef.h`） */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation")
 	TSoftObjectPtr<UAsceAnimSet> AnimSet;
+
+	// ── 状态 → 动画（**手配数据**，不走烘焙；cue 任务用 Source=DefVariants 按状态读） ──
+	// 数组 = 变体，播放时随机选一个；帧段仍由 AnimSet.Clips 查（序列 → 烘焙帧）。
+
+	/** 待机 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation|State")
+	TArray<TSoftObjectPtr<UAnimSequence>> IdleAnims;
+
+	/** 待机小动作（IdleBreak）：Idle 状态里每隔一段随机时间播一个 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation|State")
+	TArray<TSoftObjectPtr<UAnimSequence>> IdleBreakAnims;
+
+	/** 普通移动 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation|State")
+	TArray<TSoftObjectPtr<UAnimSequence>> MoveAnims;
+
+	/** 快速奔跑 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation|State")
+	TArray<TSoftObjectPtr<UAnimSequence>> RunAnims;
+
+	/** 受伤后移动 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation|State")
+	TArray<TSoftObjectPtr<UAnimSequence>> InjuredMoveAnims;
+
+	/** 攻击（每次从数组里随机选一个） */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation|State")
+	TArray<TSoftObjectPtr<UAnimSequence>> AttackAnims;
+
+	/** 死亡 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation|State")
+	TArray<TSoftObjectPtr<UAnimSequence>> DyingAnims;
+
+	/** 被控制（预留） */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation|State")
+	TArray<TSoftObjectPtr<UAnimSequence>> ControlledAnims;
+
+	/** 眩晕（预留） */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation|State")
+	TArray<TSoftObjectPtr<UAnimSequence>> StunnedAnims;
 };

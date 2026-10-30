@@ -19,14 +19,7 @@ class UAsceRTSUnitTrait : public UMassEntityTraitBase
 
 public:
 	// ── 移动默认值 ──
-	UPROPERTY(EditAnywhere, Category = "Movement")
-	float MaxSpeed = 300.f;
 
-	UPROPERTY(EditAnywhere, Category = "Movement")
-	float MaxAcceleration = 350.f;
-
-	UPROPERTY(EditAnywhere, Category = "Movement")
-	float DefaultDesiredSpeed = 200.f;
 
 	UPROPERTY(EditAnywhere, Category = "Movement")
 	float Radius = 75.f;

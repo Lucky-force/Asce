@@ -20,12 +20,6 @@ void UAsceRTSUnitTrait::BuildTemplate(FMassEntityTemplateBuildContext& BuildCont
 	BuildContext.AddFragment<FMassDesiredMovementFragment>();
 	BuildContext.AddTag<FMassCodeDrivenMovementTag>();
 
-	// 移动调参（per-entity）；这里的值是默认值，生成时会被实体定义表覆盖
-	FAsceMovementTuningFragment& Tuning = BuildContext.AddFragment_GetRef<FAsceMovementTuningFragment>();
-	Tuning.MaxSpeed = MaxSpeed;
-	Tuning.MaxAcceleration = MaxAcceleration;
-	Tuning.DefaultDesiredSpeed = DefaultDesiredSpeed;
-
 	FAgentRadiusFragment& RadiusFragment = BuildContext.AddFragment_GetRef<FAgentRadiusFragment>();
 	RadiusFragment.Radius = Radius;
 	FAsceHeightFragment& HeightFragment = BuildContext.AddFragment_GetRef<FAsceHeightFragment>();
@@ -53,8 +47,10 @@ void UAsceRTSUnitTrait::BuildTemplate(FMassEntityTemplateBuildContext& BuildCont
 	}
 	if (bCanAttack)
 	{
-		// 战斗（**服务器权威**）：攻击参数（这里的值是默认值，生成时被实体定义表覆盖）+
-		// 动作状态由下方无条件挂载的 FAsceActionFragment 承担。见 `Combat/技能系统设计.md`
+		// 战斗属性（走值复制通道下发，客户端要拿攻速算动画 PlayRate、拿射程画范围圈）
+		// + 战斗运行时（服务器专有：指定目标 / 扫描节流）
+		// 这里的值是默认值，生成时被实体定义表覆盖。见 `Combat/技能系统设计.md`
+		BuildContext.AddFragment<FAsceCombatAttributesFragment>();
 		BuildContext.AddFragment<FAsceCombatFragment>();
 	}
 	if (bIsInteractable)

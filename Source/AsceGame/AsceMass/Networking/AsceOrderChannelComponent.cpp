@@ -267,7 +267,7 @@ namespace
 // RequestMoveOrder（客户端本地入口，非RPC）
 // ──────────────────────────────────────────
 
-void UAsceOrderChannelComponent::RequestMoveOrder(const TArray<FMassEntityHandle>& LocalSelectedHandles, FVector2D GoalWorldLocation, float AcceptanceRadiusSquared)
+void UAsceOrderChannelComponent::RequestMoveOrder(const TArray<FMassEntityHandle>& LocalSelectedHandles, FVector2D GoalWorldLocation, float AcceptanceRadiusSquared, float DesiredSpeed)
 {
 	if (LocalSelectedHandles.Num() == 0)
 	{
@@ -310,7 +310,7 @@ void UAsceOrderChannelComponent::RequestMoveOrder(const TArray<FMassEntityHandle
 		return;
 	}
 
-	ServerRequestMoveOrder(NetIDs, GoalWorldLocation, AcceptanceRadiusSquared, OrderSequence);
+	ServerRequestMoveOrder(NetIDs, GoalWorldLocation, AcceptanceRadiusSquared, DesiredSpeed, OrderSequence);
 
 	// 本地预测默认关闭：客户端不跑移动模拟/碰撞，位置完全由服务器同步驱动（见架构决策）。
 	// 要恢复"点击立刻动"时打开 bEnableClientPrediction，并配套处理 ack 对齐与预测期碰撞抑制。
@@ -359,7 +359,7 @@ void UAsceOrderChannelComponent::RequestMoveOrder(const TArray<FMassEntityHandle
 		return;
 	}
 
-	FAsceMoveOrderExecutor::ApplyMergedMoveOrder(EntityManager, *PathFinder, ValidHandles, EntityWorldLocations2D, GoalWorldLocation, OrderSequence);
+	FAsceMoveOrderExecutor::ApplyMergedMoveOrder(EntityManager, *PathFinder, ValidHandles, EntityWorldLocations2D, GoalWorldLocation, AcceptanceRadiusSquared, DesiredSpeed, OrderSequence);
 
 	// 记下这次本地预测实际生效的 entity，供后续拒绝回执反查（超过容量丢最旧一条）
 	RecordPendingLocalOrder(PendingLocalOrders, PendingLocalOrdersCapacity, OrderSequence, MoveTemp(ValidHandles));
@@ -382,7 +382,7 @@ int32 UAsceOrderChannelComponent::GetRequesterTeamId()
 	return TeamAgent ? AsceNormalizeTeamId(GenericTeamIdToInteger(TeamAgent->GetGenericTeamId())) : AsceNeutralTeamId;
 }
 
-bool UAsceOrderChannelComponent::ServerRequestMoveOrder_Validate(const TArray<FMassNetworkID>& SelectedNetIDs, FVector2D GoalWorldLocation, float AcceptanceRadiusSquared, int32 OrderSequence)
+bool UAsceOrderChannelComponent::ServerRequestMoveOrder_Validate(const TArray<FMassNetworkID>& SelectedNetIDs, FVector2D GoalWorldLocation, float AcceptanceRadiusSquared, float DesiredSpeed, int32 OrderSequence)
 {
 	// 只做"值本身是否合法/请求规模是否离谱"这类无关业务的硬性校验，
 	// 校验不通过会触发引擎自带的作弊检测断线流程，所以像"NetID查不到entity"这种正常业务失败
@@ -398,7 +398,7 @@ bool UAsceOrderChannelComponent::ServerRequestMoveOrder_Validate(const TArray<FM
 	return true;
 }
 
-void UAsceOrderChannelComponent::ServerRequestMoveOrder_Implementation(const TArray<FMassNetworkID>& SelectedNetIDs, FVector2D GoalWorldLocation, float AcceptanceRadiusSquared, int32 OrderSequence)
+void UAsceOrderChannelComponent::ServerRequestMoveOrder_Implementation(const TArray<FMassNetworkID>& SelectedNetIDs, FVector2D GoalWorldLocation, float AcceptanceRadiusSquared, float DesiredSpeed, int32 OrderSequence)
 {
 	const UWorld* World = GetWorld();
 	if (!IsValid(World))
@@ -476,7 +476,7 @@ void UAsceOrderChannelComponent::ServerRequestMoveOrder_Implementation(const TAr
 
 	// 第二轮：Server和Client本地预测共用同一份写入逻辑，真正利用"Mergeable"能力——
 	// 这一批entity共享同一个目标，只发起一次A*请求。
-	FAsceMoveOrderExecutor::ApplyMergedMoveOrder(EntityManager, *PathFinder, ValidHandles, EntityWorldLocations2D, GoalWorldLocation, AcceptanceRadiusSquared, OrderSequence);
+	FAsceMoveOrderExecutor::ApplyMergedMoveOrder(EntityManager, *PathFinder, ValidHandles, EntityWorldLocations2D, GoalWorldLocation, AcceptanceRadiusSquared, DesiredSpeed, OrderSequence);
 }
 
 // ──────────────────────────────────────────
@@ -720,10 +720,10 @@ void UAsceOrderChannelComponent::ServerRequestSkillOrder_Implementation(const TA
 			continue;
 		}
 		// 守卫：没有技能树/没挂单位树 ⇒ 施法会卡在 Casting（树侧没东西推进），直接拒绝
-		if (!ActionDef.SkillTree)
+		if (!FAsceActionDefLibrary::ResolveSkillTree(ActionDef))
 		{
 			RejectedUnits.Add({ NetID, EAsceOrderRejectReason::SkillCasterInvalid });
-			UE_LOG(LogTemp, Warning, TEXT("[Skill] 技能 %d 没配 SkillTree（行为树）——拒绝施法"), ActionDef.ActionId);
+			UE_LOG(LogTemp, Warning, TEXT("[Skill] 动作 %d 没有 SkillTree（也没有默认回落）被拒绝施法"), ActionDef.ActionId);
 			continue;
 		}
 		if (!EntityManager.GetFragmentDataPtr<FMassStateTreeInstanceFragment>(Handle))

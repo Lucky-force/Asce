@@ -34,5 +34,6 @@ struct FAsceMoveOrderExecutor
 		const TArray<FVector2D>& EntityWorldLocations2D,
 		const FVector2D& GoalWorldLocation,
 		float AcceptanceRadiusSquared = 2500.f,
+		float DesiredSpeed = 0.f,
 		int32 OrderSequence = 0);
 };

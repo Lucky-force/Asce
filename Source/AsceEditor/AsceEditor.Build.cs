@@ -52,7 +52,12 @@ public class AsceEditor : ModuleRules
 				"CollectionManager",
 				"SourceControl",
 				"Chaos",
-				"PropertyEditor"
+				"PropertyEditor",
+				// 模块化编辑器（AsceEntityModularEditor/）直接用到 Mass fragment 的 StaticStruct
+				"MassCommon",
+				"MassEntity",
+				"MassMovement",
+				"MassSpawner",
 			}
         );
 

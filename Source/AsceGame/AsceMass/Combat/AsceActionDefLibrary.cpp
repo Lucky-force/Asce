@@ -3,6 +3,8 @@
 #include "AsceActionDefLibrary.h"
 
 #include "DataTableSystem/AsceDataTableSubsystem.h"
+#include "GameModes/AsceGameplaySettings.h"
+#include "StateTree.h"
 
 namespace
 {
@@ -71,4 +73,24 @@ void FAsceActionDefLibrary::InvalidateCache()
 	GActionDefRows.Reset();
 	GActionDefsById.Reset();
 	GBuilt = false;
+}
+UStateTree* FAsceActionDefLibrary::ResolveSkillTree(const FAsceActionDef& ActionDef)
+{
+	if (ActionDef.SkillTree)
+	{
+		return ActionDef.SkillTree;
+	}
+	if (ActionDef.ReleaseMode != EAsceReleaseMode::Auto)
+	{
+		return nullptr;   // 技能必须自己配树；只有"攻击"才有默认树回落
+	}
+
+	const UAsceGameplaySettings* Settings = GetDefault<UAsceGameplaySettings>();
+	if (!Settings)
+	{
+		return nullptr;
+	}
+	return ActionDef.RangeKind == EAsceRangeKind::MeleeSurface
+		? Settings->DefaultMeleeAttackTree.LoadSynchronous()
+		: Settings->DefaultRangedAttackTree.LoadSynchronous();
 }

@@ -76,14 +76,15 @@ bool FAsceRunAbilityTreeTask::ResolveActionDef(FStateTreeExecutionContext& Conte
 			ActionId, static_cast<int64>(Entity.AsNumber()));
 		return false;
 	}
+	OutDef.SkillTree = FAsceActionDefLibrary::ResolveSkillTree(OutDef);
 	if (!OutDef.SkillTree)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[Ability] 动作 %d 没配 SkillTree（技能子树）"), ActionId);
+		UE_LOG(LogTemp, Warning, TEXT("[Ability] 动作 %d 没有 SkillTree（也不是可回落的攻击），跳过"), ActionId);
 		return false;
 	}
 	if (!OutDef.SkillTree->IsReadyToRun())
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[Ability] 动作 %d 的 SkillTree %s 未编译（IsReadyToRun=false）"),
+		UE_LOG(LogTemp, Warning, TEXT("[Ability] 动作 %d 的 SkillTree %s 未加载（IsReadyToRun=false）"),
 			ActionId, *OutDef.SkillTree->GetName());
 		return false;
 	}

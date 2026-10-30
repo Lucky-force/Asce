@@ -13,7 +13,10 @@
  * 战斗 / 动作 / 技能 fragment（见 `技能系统设计.md`）。
  *
  * 分工：
- *  - `FAsceCombatFragment`：**服务器权威**的攻击参数与运行时（不复制；挂载 = 该实体能主动攻击）。
+ *  - `FAsceCombatAttributesFragment`：攻击**属性**（攻击距离/伤害/攻速/远程近战/攻击动作行 id），
+ *    走通用值复制通道下发到客户端（客户端要拿它算攻击动画 PlayRate、画攻击范围）；
+ *    挂载 = 该实体能主动攻击。
+ *  - `FAsceCombatFragment`：**运行时**（服务器权威，不复制）：指定目标 / 扫描节流。
  *  - `FAsceActionFragment`：**服务器权威**的"当前动作"（唯一真相；客户端靠动作态通道复制下来的边沿驱动表现）。
  *  - `FAsceCombatVisualFragment`：**客户端表现**（动作态复制通道写入；驱动转身/VAT）。
  *  - `FAsceSkillSlotsFragment`：槽位（**真实数据，要复制到客户端**；技能的 CD 等运行时状态随槽位）。
@@ -22,13 +25,12 @@
  * 字段统一加 `UPROPERTY`（反射用：UI 采样器/inspector/调试可视化；这些 fragment 本身不参与网络复制）。
  */
 
-/** 攻击能力（服务器权威，不复制）。挂了这个 fragment = 能主动攻击；不挂 = 只能被打。 */
+/** 攻击属性（生成时从 def 写死；走值复制通道给客户端）。挂了这个 fragment = 能主动攻击；不挂 = 只能被打。 */
 USTRUCT()
-struct FAsceCombatFragment : public FMassFragment
+struct FAsceCombatAttributesFragment : public FMassFragment
 {
 	GENERATED_BODY()
 
-	// ── 静态（生成时从 def 写死）──
 	UPROPERTY()
 	float AttackRange = 0.f;                 // cm
 	UPROPERTY()
@@ -41,8 +43,14 @@ struct FAsceCombatFragment : public FMassFragment
 	/** 攻击用的**动作行 id**（`FAsceActionDef::ActionId`；0 = 没配攻击行） */
 	UPROPERTY()
 	int32 AttackActionId = 0;
+};
 
-	// ── 运行时（服务器专有，绝不复制）──
+/** 战斗运行时状态（服务器权威，不复制） */
+USTRUCT()
+struct FAsceCombatFragment : public FMassFragment
+{
+	GENERATED_BODY()
+
 	UPROPERTY()
 	FMassEntityHandle DesignatedTarget;      // 指定目标（持久：目标不死/不取消就一直记，且范围内优先）
 	UPROPERTY()

@@ -134,7 +134,7 @@ namespace AsceSkillCast
 		}
 
 		// 直接伤害：动作行 `Damage == 0` ⇒ 跟随施法者的**单位攻击力**（基础属性；与工厂对攻击行的解析一致）
-		const FAsceCombatFragment* CasterCombat = EntityManager.GetFragmentDataPtr<FAsceCombatFragment>(Caster);
+		const FAsceCombatAttributesFragment* CasterCombat = EntityManager.GetFragmentDataPtr<FAsceCombatAttributesFragment>(Caster);
 		const float Damage = (Def.Damage > 0.f) ? Def.Damage : (CasterCombat ? CasterCombat->AttackDamage : 0.f);
 		if (Target.IsValid())
 		{

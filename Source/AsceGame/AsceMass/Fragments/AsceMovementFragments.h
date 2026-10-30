@@ -38,21 +38,18 @@ struct FAsceMovementSimStateFragment : public FMassFragment
 };
 
 /**
- * 每实体移动调参：数值来自**实体定义表**（`FAsceRTSUnitDef`），
- * 由 `UAsceEntityFactory::SpawnEntitiesByDef` 生成时写入；trait 只给默认值（兜底）。
- * 用 per-entity fragment 而不是引擎的 const shared `FMassMovementParameters`：
- * 同一 trait 资产要支持多种类型（速度/加速度不同），shared 值按 archetype/chunk 共享、没法逐实体区分。
+ * 每类型移动参数（**const shared**）：基础速度是"类型级常量"，同一类型的实体共用一份。
+ * 值在**模板构建期**由 trait 从实体定义（`FAsceRTSUnitDef::BaseMoveSpeed`）烘焙进来
+ * ⇒ 客户端各自加载同一份模板，值一致，不需要复制。
  */
 USTRUCT()
-struct FAsceMovementTuningFragment : public FMassFragment
+struct FAsceMovementSharedFragment : public FMassConstSharedFragment
 {
 	GENERATED_BODY()
 
-	float MaxSpeed = 300.f;
-	float MaxAcceleration = 350.f;
-	float DefaultDesiredSpeed = 200.f;
+	/** 基础移动速度（cm/s）：最大速度 = 2×基础；奔跑阈值 = 1.7×基础 */
+	float BaseMoveSpeed = 150.f;
 };
-
 /**
  * 客户端专用：网络位置误差校正的"待修正目标"状态，由UAsceMovementCorrectionProcessor消费。
  *

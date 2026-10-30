@@ -116,7 +116,7 @@ public:
 	 *    Standalone/ListenServer下Owner本身就是Authority，RPC会在本地同步直接跑到
 	 *    _Implementation，这里就不再重复执行一遍，避免PathPlan被多Acquire一次导致引用计数泄漏。
 	 */
-	void RequestMoveOrder(const TArray<FMassEntityHandle>& LocalSelectedHandles, FVector2D GoalWorldLocation, float AcceptanceRadiusSquared);
+	void RequestMoveOrder(const TArray<FMassEntityHandle>& LocalSelectedHandles, FVector2D GoalWorldLocation, float AcceptanceRadiusSquared, float DesiredSpeed = 0.f);
 
 	/** `S` 停止指令（客户端入口）：清移动命令 + 取消施法（**不影响自动攻击开关**）。
 	 *  v1 不做本地预测（服务器立即生效，位置修正会跟上）。见 `Combat/技能系统设计.md` §3.2 */
@@ -141,7 +141,7 @@ public:
 	 * OrderSequence由调用方自行递增分配，仅用于拒绝回执让客户端知道具体是哪一次下单被拒绝，
 	 * 服务器不校验其单调性/唯一性（不作为防作弊依据，纯粹是客户端自己的关联ID）。 */
 	UFUNCTION(Server, Reliable, WithValidation)
-	void ServerRequestMoveOrder(const TArray<FMassNetworkID>& SelectedNetIDs, FVector2D GoalWorldLocation, float AcceptanceRadiusSquared, int32 OrderSequence);
+	void ServerRequestMoveOrder(const TArray<FMassNetworkID>& SelectedNetIDs, FVector2D GoalWorldLocation, float AcceptanceRadiusSquared, float DesiredSpeed, int32 OrderSequence);
 
 	/** `S` 停止指令（服务器权威）：逐单位清移动命令 + 取消施法 */
 	UFUNCTION(Server, Reliable, WithValidation)
@@ -179,8 +179,8 @@ private:
 	// 指挥授权用 TeamId 比较（跨端一致；TeamIndex 只是各端自己的下标）
 	int32 GetRequesterTeamId();
 
-	bool ServerRequestMoveOrder_Validate(const TArray<FMassNetworkID>& SelectedNetIDs, FVector2D GoalWorldLocation, float AcceptanceRadiusSquared, int32 OrderSequence);
-	void ServerRequestMoveOrder_Implementation(const TArray<FMassNetworkID>& SelectedNetIDs, FVector2D GoalWorldLocation, float AcceptanceRadiusSquared, int32 OrderSequence);
+	bool ServerRequestMoveOrder_Validate(const TArray<FMassNetworkID>& SelectedNetIDs, FVector2D GoalWorldLocation, float AcceptanceRadiusSquared, float DesiredSpeed, int32 OrderSequence);
+	void ServerRequestMoveOrder_Implementation(const TArray<FMassNetworkID>& SelectedNetIDs, FVector2D GoalWorldLocation, float AcceptanceRadiusSquared, float DesiredSpeed, int32 OrderSequence);
 
 
 	bool ServerRequestStopOrder_Validate(const TArray<FMassNetworkID>& SelectedNetIDs, int32 OrderSequence);

@@ -32,6 +32,10 @@ struct FAsceMoveOrderFragment : public FMassFragment
 	UPROPERTY(BlueprintReadWrite)
 	bool bHasOrder = false;
 
+	/** 本次移动指令的速度（cm/s）：0 = 用基础速度；>0 时 clamp 到 2×基础（奔跑） */
+	UPROPERTY(BlueprintReadWrite)
+	float DesiredSpeed = 0.f;
+
 	// 由UAsceOrderChannelComponent::ServerRequestMoveOrder下单时递增写入，配合ClientRejectOrder
 	// 回传"具体是哪一次下单被拒绝"，避免玩家连续下达多个命令时，客户端收到拒绝回执却不知道对应哪一次。
 	UPROPERTY(BlueprintReadOnly)

@@ -16,9 +16,10 @@ class UStateTree;
  * 动作 / 技能定义（数据表行；服务器与客户端共用同一份）。
  *
  * 见 `技能系统设计.md`：
- *  - **攻击 = 内置动作定义**（自动触发、无蓝耗；配置在单位 def 的 `AttackCastConfig`），技能 = 玩家触发的动作定义；
- *    两者共用同一套"占时 → Trigger 结算 → 打断"管线。
- *  - "**真正释放（Trigger）**" = 处理 cost + CD + effect 的那一帧：普通 = `TriggerTime`；持续 = 前摇结束。
+ *  - **攻击 = 一条 `ReleaseMode = Auto` 的动作行**（由单位 def 的 `AttackAction` 引用，自动触发、无蓝耗），
+ *    技能 = 玩家触发的动作行（`Manual`）；两者共用同一套"动作行 → 子树 → Trigger 结算 → 打断"管线。
+ *  - 动作行的 `SkillTree` 是**唯一的行为来源**（做什么、播哪个动画、多久、什么时候结算都写在树的节点里）。
+ *  - "**真正释放（Trigger）**" = 处理 cost + CD + effect 的那一帧（锚点 = `FAsceActionFragment::StartServerTime`）。
  */
 
 /** 动作状态（唯一真相在服务器；客户端按复制下来的边沿驱动表现） */
@@ -169,7 +170,7 @@ struct FAsceChannelCastConfig : public FAsceSkillCastConfig
 	virtual float GetTickInterval() const override { return TickInterval; }
 };
 
-/** 动作定义（技能行；**攻击不入本表**——攻击配置在单位 def 的 `AttackCastConfig`） */
+/** 动作定义（**攻击和技能都在本表**：`ReleaseMode = Auto` 的那几行就是攻击） */
 USTRUCT(BlueprintType)
 struct FAsceActionDef : public FTableRowBase
 {
@@ -217,8 +218,8 @@ struct FAsceActionDef : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asce|Action")
 	FName SpawnGroupDefRow;
 
-	/** 动作管线配置（多态：普通 / 持续）——**注意：动作行不再带 CastConfig**（技能的时间轴/动画在技能子树里，
-	 *  攻击的时间线在单位 def 的旧 `AttackCastConfig` 兜底）。此字段已删除。 */
+	/** 动作管线配置：**已删除**。动作行不再带 CastConfig / 时长字段——
+	 *  时间轴、动画、结算时刻都由 `SkillTree` 里的节点表达（攻击也一样）。 */
 	// FInstancedStruct CastConfig;  ← 已删除
 
 	/** **技能子树**（Mass StateTree schema）：`Casting` 状态里的 `Asce Run Ability Tree` 按本行 `ActionId` 选它来跑。

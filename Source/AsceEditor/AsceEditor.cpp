@@ -4,6 +4,7 @@
 
 #include "AbilitySystemGlobals.h"
 #include "AssetToolsModule.h"
+#include "AsceEntityModularEditor/AsceUnitModuleEditorPanel.h"
 #include "DataTableSystem/AsceRowNameWrapper.h"
 #include "DataValidationModule.h"
 #include "Development/AsceDeveloperSettings.h"
@@ -223,6 +224,7 @@ class FAsceEditorModule : public FDefaultGameModuleImpl
 			if (FSlateApplication::IsInitialized())
 			{
 				ToolMenusHandle = UToolMenus::RegisterStartupCallback(FSimpleMulticastDelegate::FDelegate::CreateStatic(&RegisterGameEditorMenus));
+				UToolMenus::RegisterStartupCallback(FSimpleMulticastDelegate::FDelegate::CreateStatic(&RegisterAsceUnitModuleEditorMenus));
 			}
 
 			FEditorDelegates::BeginPIE.AddRaw(this, &ThisClass::OnBeginPIE);
@@ -327,6 +329,6 @@ private:
 	FDelegateHandle ToolMenusHandle;
 };
 
-IMPLEMENT_MODULE(FAsceEditorModule, LyraEditor);
+IMPLEMENT_MODULE(FAsceEditorModule, AsceEditor);
 
 #undef LOCTEXT_NAMESPACE
