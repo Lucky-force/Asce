@@ -206,12 +206,11 @@ private:
 
 ## 9. 待办 / 后续可选优化
 
-- **【待办】单位运行时属性同步**：`FAsceCombatFragment`（攻速/攻击力/射程…）与移动/视野等**运行时属性**目前只在服务器，
-  客户端拿不到（`FAsceCombatFragment` 是服务器权威、不复制）。等被动技能/装备/buff 要改这些属性时，需要把它们同步给客户端
-  —— 像 Health/Mana 那样开一条"属性"值通道（`TAsceValueReplicationCapability`），或在属性变化的边沿推一次。
-  - **触发条件**：做"改攻速/攻击力"的 buff 或被动物品时。
-  - **连带收益**：客户端一旦能拿到攻速 ⇒ **删掉动作 payload 里的 `PlayRateQ`**（客户端本地按 `AttackSpeed/200+0.1`
-    自己算；技能播放速度放进技能表/动作 def，反正动作表也要下发到客户端）。
+- **【已完成】攻击属性同步**：`FAsceCombatAttributesFragment`（攻速/攻击力/射程/近远程/攻击动作行）
+  已按 Health/Mana 的方式开了值通道（`Networking/Capabilities/Combat/AsceCombatAttributesReplication.h`，
+  `NumFields = 5`；枚举/ActionId 按 float 编解码），服务端改属性客户端表现跟着走。
+  - **连带**：客户端现在能自己算 `PlayRate = AttackSpeed/200 + 0.1` ⇒ 动作 payload 的 `PlayRateQ` 属冗余，可以删。
+  - 移动（`BaseMoveSpeed`）与视野（`SightRadius`）**仍然不复制**：前者是 const shared（两端烘焙同值），后者雾在服务端算。
 - **payload 精简**（尾数）：
   - ✅ 已去掉 Action 的 `UnitTypeId` —— 单位类型是**实体模板常量**（`UAsceRTSEntityTrait::UniqueType` →
     `FAsceUnitDefFragment.UniqueTypeId`，两端注册模板时写入），客户端 spawn 即有；与"被动通道不复制 TemplateID"同源

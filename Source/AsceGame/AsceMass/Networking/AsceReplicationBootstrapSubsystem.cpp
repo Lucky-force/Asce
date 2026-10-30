@@ -10,6 +10,8 @@
 #include "AsceMass/Networking/Capabilities/Health/AsceHealthReplicationCapability.h"
 #include "AsceMass/Networking/Capabilities/Mana/AsceManaReplication.h"
 #include "AsceMass/Networking/Capabilities/Mana/AsceManaReplicationCapability.h"
+#include "AsceMass/Networking/Capabilities/Combat/AsceCombatAttributesReplication.h"
+#include "AsceMass/Networking/Capabilities/Combat/AsceCombatAttributesReplicationCapability.h"
 #include "AsceMass/Networking/Capabilities/Team/AsceTeamReplication.h"
 #include "AsceMass/Networking/Capabilities/Team/AsceTeamReplicationCapability.h"
 #include "AsceMass/Networking/Capabilities/Action/AsceActionReplication.h"
@@ -45,6 +47,7 @@ namespace
 		UAsceUnitReplicator::RegisterCapability(MakeUnique<FAsceVelocityReplicationCapability>());
 		UAsceUnitReplicator::RegisterCapability(MakeUnique<FAsceHealthReplicationCapability>());
 		UAsceUnitReplicator::RegisterCapability(MakeUnique<FAsceManaReplicationCapability>());
+		UAsceUnitReplicator::RegisterCapability(MakeUnique<FAsceCombatAttributesReplicationCapability>());
 		UAsceUnitReplicator::RegisterCapability(MakeUnique<FAsceTeamReplicationCapability>());
 		UAsceUnitReplicator::RegisterCapability(MakeUnique<FAsceActionReplicationCapability>());
 		UAsceUnitReplicator::RegisterCapability(MakeUnique<FAsceSkillPanelReplicationCapability>());

@@ -157,6 +157,9 @@ public:
 	const FAsceManaClientBubbleSerializer& GetAsceSerializer() const { return AsceSerializer; }
 
 protected:
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+
+protected:
 	UPROPERTY(Transient, Replicated)
 	FAsceManaClientBubbleSerializer AsceSerializer;
 };
