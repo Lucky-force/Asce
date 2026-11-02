@@ -209,7 +209,8 @@ private:
 - **【已完成】攻击属性同步**：`FAsceCombatAttributesFragment`（攻速/攻击力/射程/近远程/攻击动作行）
   已按 Health/Mana 的方式开了值通道（`Networking/Capabilities/Combat/AsceCombatAttributesReplication.h`，
   `NumFields = 5`；枚举/ActionId 按 float 编解码），服务端改属性客户端表现跟着走。
-  - **连带**：客户端现在能自己算 `PlayRate = AttackSpeed/200 + 0.1` ⇒ 动作 payload 的 `PlayRateQ` 属冗余，可以删。
+  - **连带**：客户端现在能自己算 `PlayRate = AttackSpeed / BaseAttackSpeed`（`BaseAttackSpeed` 在单位 def 里，
+    两端同值）⇒ 动作 payload 的 `PlayRateQ` 属冗余，可以删。
   - 移动（`BaseMoveSpeed`）与视野（`SightRadius`）**仍然不复制**：前者是 const shared（两端烘焙同值），后者雾在服务端算。
 - **payload 精简**（尾数）：
   - ✅ 已去掉 Action 的 `UnitTypeId` —— 单位类型是**实体模板常量**（`UAsceRTSEntityTrait::UniqueType` →

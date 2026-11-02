@@ -30,3 +30,7 @@ replay_*.log
 
 # 其它
 kilo.json
+
+# 第三方论文与翻译（版权风险，不进仓库）
+Docs/
+*.pdf
