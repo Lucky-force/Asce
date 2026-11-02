@@ -113,6 +113,10 @@ void AAsceWorldMapReplicatorActor::InitializeMapDimensions()
 		const bool bFlushChanged = LayeredCostField.FlushAll(WorldMapData);
 		ensureMsgf(!bFlushChanged, TEXT("BaseLand 快照后 FlushAll 不应产生任何变更（层组合结果必须等于当前 CostFields）"));
 
+		// 播种**贴墙代价**（地形墙也算）：半径 d 内 cost += (7 - d)，然后统一写回
+		LayeredCostField.RebuildProximityCost(WorldMapData);
+		LayeredCostField.FlushAll(WorldMapData);
+
 		UE_LOG(LogFlowField, Log,
 			TEXT("[AsceLayeredCostField] 建层 %u x %u，BaseLand 快照完成（Flush 变更=%s）（sizeof(TMap<uint32,FAsceSpecialCostCell>)=%d, sizeof(FAsceCostOp)=%d）"),
 			static_cast<uint32>(FlowGridX), static_cast<uint32>(FlowGridY),

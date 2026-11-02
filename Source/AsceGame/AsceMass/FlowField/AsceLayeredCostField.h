@@ -98,6 +98,9 @@ public:
 	/** 组合某格的最终 cost（越界按阻挡，与 FWorldMapData::IsCellBlocked 一致）。 */
 	uint8 ComposeCellCost(uint32 GridIndex) const;
 
+	/** 按 `WorldMapData` 当前的 blocked 状态重建贴墙代价层（bake 基线建立后播种一次）。 */
+	void RebuildProximityCost(const FWorldMapData& WorldMapData);
+
 	/** 组合某格并与 WorldMapData 现值比较，**不同才** 写回；返回是否真的改了。 */
 	bool FlushCell(uint32 GridIndex, FWorldMapData& WorldMapData);
 
@@ -121,9 +124,25 @@ public:
 		return IsValidIndex(GridIndex) && static_cast<bool>(SpecialContributionBitMap[static_cast<int32>(GridIndex)]);
 	}
 
+	ASCE_INLINE uint16 GetProximityCost(uint32 GridIndex) const
+	{
+		return IsValidIndex(GridIndex) ? ProximityCost[static_cast<int32>(GridIndex)] : 0;
+	}
+
 	/** 稀疏条目/条目总数（调试用） */
 	ASCE_INLINE int32 GetSpecialCellCount() const { return SpecialContributions.Num(); }
 	int32 GetSpecialOpCount() const;
+
+	// ── 贴墙代价层参数 ──
+
+	/** 影响半径（格，Chebyshev）：只处理紧邻的 8 格（防止"贴墙卡住"，不做大范围绕行）。 */
+	static constexpr int32 ProximityRadius = 1;
+
+	/** 每个相邻的 block 格给 +1（多个方向叠加，最多 8）。 */
+	static constexpr int32 ProximityBonus = 1;
+
+	/** 可通行 cost 上限：`FCostField` 的 bit7 是墙标志，超过 127 会变成墙。 */
+	static constexpr uint8 MaxPassableCost = 127;
 
 private:
 	/** 地形烘焙基线：完整 cost 值（含 bit7 墙位） */
@@ -131,6 +150,18 @@ private:
 
 	/** 建筑占用：0 = 无，`AsceCostField::BlockedCost` = 阻挡 */
 	TArray<uint8> BuildingCost;
+
+	/**
+	 * 贴墙代价层（**派生量**：由"哪些格子被 block"决定，多个来源精确叠加）。
+	 * 紧邻 8 格每个 block 贡献 +1（单格最多 +8），uint16 存不会饱和；组合时和 base 相加后 clamp 到 `MaxPassableCost`。
+	 */
+	TArray<uint16> ProximityCost;
+
+	/** 给某格周围 R 格加/减一份贴墙代价（Sign = +1 变 block / -1 解除 block） */
+	void AddProximityAround(uint32 GridIndex, int32 Sign);
+
+	/** 把某格周围 R 格的最终 cost 写回（block 状态变化后邻居代价会变） */
+	bool FlushNeighborhood(uint32 GridIndex, FWorldMapData& WorldMapData);
 
 	/** 1 bit/格：该格是否存在 special 贡献（dense，用作 TMap 的 O(1) 短路） */
 	TBitArray<> SpecialContributionBitMap;

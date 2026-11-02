@@ -293,10 +293,11 @@ void AAsceFlowFieldDebugger::FlowFieldDebugDumpCell(float WorldX, float WorldY)
 	const uint32 GridIndex = WorldMapData->GridLocationToGridIndex(GridLoc);
 	const int32 CellIndex = static_cast<int32>(GridIndex);
 	UE_LOG(LogFlowField, Log,
-		TEXT("[DebugSpecial] cell(%d,%d) idx=%u base=%u building=%u hasSpecial=%d composed=%u costField=%u (special 条目=%d)"),
+		TEXT("[DebugSpecial] cell(%d,%d) idx=%u base=%u building=%u proximity=%u hasSpecial=%d composed=%u costField=%u (special 条目=%d)"),
 		GridLoc.X, GridLoc.Y, GridIndex,
 		LayeredCostField->GetBaseCost(GridIndex),
 		LayeredCostField->GetBuildingCost(GridIndex),
+		LayeredCostField->GetProximityCost(GridIndex),
 		LayeredCostField->HasSpecialContribution(GridIndex) ? 1 : 0,
 		LayeredCostField->ComposeCellCost(GridIndex),
 		WorldMapData->CostFields.IsValidIndex(CellIndex) ? WorldMapData->CostFields[CellIndex].Cost : 0,

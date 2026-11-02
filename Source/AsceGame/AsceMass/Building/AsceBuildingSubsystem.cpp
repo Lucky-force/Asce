@@ -339,7 +339,8 @@ bool UAsceBuildingSubsystem::ValidatePlacement(const FAsceBuildingPlacement& Pla
 		return false;
 	}
 
-	// ① 目标格必须是"纯可通行"（cost == 1）：既排除地形墙/地形代价，也排除已建成建筑（建筑写阻挡值）
+	// ① 目标格不能被阻挡（地形墙 / 已有建筑）。**地形代价与贴墙代价都不影响放置**：
+	//    cost 只是寻路的软权重（越大越不想走），不是"不可建"的判据。
 	for (int32 y = Min.Y; y <= Max.Y; ++y)
 	{
 		for (int32 x = Min.X; x <= Max.X; ++x)
@@ -347,11 +348,6 @@ bool UAsceBuildingSubsystem::ValidatePlacement(const FAsceBuildingPlacement& Pla
 			if (Map->IsCellBlocked(x, y))
 			{
 				SetError(OutError, FString::Printf(TEXT("目标格 (%d,%d) 被阻挡（地形或已有建筑）"), x, y));
-				return false;
-			}
-			if (!Map->IsCellCleanPassable(x, y))
-			{
-				SetError(OutError, FString::Printf(TEXT("目标格 (%d,%d) 不是纯可通行格（地形代价/特殊占用），暂不可建"), x, y));
 				return false;
 			}
 		}
