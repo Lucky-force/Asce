@@ -66,7 +66,8 @@ EStateTreeRunStatus FAscePlayAttackAnimTask::EnterState(FStateTreeExecutionConte
 	float PlayRate = 1.f;
 	if (const FAsceCombatAttributesFragment* Combat = MassContext.GetEntityManager().GetFragmentDataPtr<FAsceCombatAttributesFragment>(MassContext.GetEntity()))
 	{
-		PlayRate = FMath::Clamp(Combat->AttackSpeed / 200.f + 0.1f, 0.01f, 4.f);
+		const float BaseAttackSpeed = UnitDef.BaseAttackSpeed > 0.f ? UnitDef.BaseAttackSpeed : 180.f;
+		PlayRate = FMath::Clamp(Combat->AttackSpeed / BaseAttackSpeed, 0.05f, 4.f);
 	}
 
 	AsceAnimCue::PlaySequence(*Playback, AnimSet, *Sequence, /*bLoop*/ false, PlayRate * Data.PlayRateScale);

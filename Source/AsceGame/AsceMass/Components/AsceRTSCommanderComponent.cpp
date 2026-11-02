@@ -777,5 +777,6 @@ void UAsceRTSCommanderComponent::IssueMoveOrder(const FVector& TargetLocation, c
 		EntityWorldLocations2D,
 		FVector2D(TargetLocation.X, TargetLocation.Y),
 		AcceptanceRadiusSquared,
+		/*DesiredSpeed*/ 0.f,
 		++LocalOrderSequence);
 }

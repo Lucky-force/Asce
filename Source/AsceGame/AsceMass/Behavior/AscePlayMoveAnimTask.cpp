@@ -93,11 +93,15 @@ EStateTreeRunStatus FAscePlayMoveAnimTask::UpdateAnimation(FStateTreeExecutionCo
 		Speed2D = static_cast<float>(Velocity->Value.Size2D());
 	}
 
-	FAsceRTSUnitDef UnitDef;
-	if (!AsceAnimCue::GetUnitDef(MassContext, UnitDef))
+	if (!Data.bHasCachedUnitDef)
 	{
-		return EStateTreeRunStatus::Running;
+		if (!AsceAnimCue::GetUnitDef(MassContext, Data.CachedUnitDef))
+		{
+			return EStateTreeRunStatus::Running;
+		}
+		Data.bHasCachedUnitDef = true;
 	}
+	const FAsceRTSUnitDef& UnitDef = Data.CachedUnitDef;
 
 	const float RunThreshold = UnitDef.BaseMoveSpeed * RunSpeedMultiplier;
 	const EBucket Bucket = bInjured
@@ -110,17 +114,17 @@ EStateTreeRunStatus FAscePlayMoveAnimTask::UpdateAnimation(FStateTreeExecutionCo
 	}
 	Data.CurrentBucket = static_cast<int32>(Bucket);
 
-	const TArray<TSoftObjectPtr<UAnimSequence>>* Animations = &UnitDef.MoveAnims;
-	if (Bucket == EBucket::Injured)
+	const TSoftObjectPtr<UAnimSequence>* Sequence = &UnitDef.MoveAnim;
+	if (Bucket == EBucket::Injured && !UnitDef.InjuredMoveAnim.IsNull())
 	{
-		Animations = UnitDef.InjuredMoveAnims.Num() > 0 ? &UnitDef.InjuredMoveAnims : &UnitDef.MoveAnims;
+		Sequence = &UnitDef.InjuredMoveAnim;
 	}
-	else if (Bucket == EBucket::Run)
+	else if (Bucket == EBucket::Run && !UnitDef.RunAnim.IsNull())
 	{
-		Animations = UnitDef.RunAnims.Num() > 0 ? &UnitDef.RunAnims : &UnitDef.MoveAnims;
+		Sequence = &UnitDef.RunAnim;
 	}
 
-	if (const TSoftObjectPtr<UAnimSequence>* Sequence = AsceAnimCue::PickRandom(*Animations))
+	if (!Sequence->IsNull())
 	{
 		AsceAnimCue::PlaySequence(*Playback, UnitDef.AnimSet.LoadSynchronous(), *Sequence, /*bLoop*/ true, Data.PlayRateScale);
 	}

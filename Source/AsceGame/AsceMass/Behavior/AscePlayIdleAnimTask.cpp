@@ -94,9 +94,9 @@ EStateTreeRunStatus FAscePlayIdleAnimTask::EnterState(FStateTreeExecutionContext
 	}
 
 	const UAsceAnimSet* AnimSet = UnitDef.AnimSet.LoadSynchronous();
-	if (const TSoftObjectPtr<UAnimSequence>* IdleSequence = AsceAnimCue::PickRandom(UnitDef.IdleAnims))
+	if (!UnitDef.IdleAnim.IsNull())
 	{
-		AsceAnimCue::PlaySequence(*Playback, AnimSet, *IdleSequence, /*bLoop*/ true, Data.PlayRateScale);
+		AsceAnimCue::PlaySequence(*Playback, AnimSet, UnitDef.IdleAnim, /*bLoop*/ true, Data.PlayRateScale);
 	}
 
 	return EStateTreeRunStatus::Running;
@@ -132,9 +132,9 @@ EStateTreeRunStatus FAscePlayIdleAnimTask::Tick(FStateTreeExecutionContext& Cont
 			if (AsceAnimCue::GetUnitDef(MassContext, UnitDef))
 			{
 				const UAsceAnimSet* AnimSet = UnitDef.AnimSet.LoadSynchronous();
-				if (const TSoftObjectPtr<UAnimSequence>* IdleSequence = AsceAnimCue::PickRandom(UnitDef.IdleAnims))
+				if (!UnitDef.IdleAnim.IsNull())
 				{
-					AsceAnimCue::PlaySequence(*Playback, AnimSet, *IdleSequence, /*bLoop*/ true, Data.PlayRateScale);
+					AsceAnimCue::PlaySequence(*Playback, AnimSet, UnitDef.IdleAnim, /*bLoop*/ true, Data.PlayRateScale);
 				}
 			}
 		}

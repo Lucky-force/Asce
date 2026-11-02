@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "MassStateTreeTypes.h"
+#include "AsceMass/Data/AsceUnitDef.h"
 
 #include "AscePlayMoveAnimTask.generated.h"
 
@@ -25,13 +26,20 @@ struct FAscePlayMoveAnimTaskInstanceData
 
 	/** 当前动画桶（0=受伤移动 / 1=奔跑 / 2=普通移动）；变化时重选动画 */
 	int32 CurrentBucket = INDEX_NONE;
+
+	/** 单位定义缓存：每帧不重复拷贝 def / 从表查询 */
+	UPROPERTY()
+	FAsceRTSUnitDef CachedUnitDef;
+
+	UPROPERTY()
+	bool bHasCachedUnitDef = false;
 };
 
 /**
  * **移动动画**：按当前状态选动画（循环）：
- *  - 生命值 < 15% ⇒ 受伤移动（`InjuredMoveAnims`）；
- *  - 否则当前速度 ≥ 1.7 × 基础速度 ⇒ 奔跑（`RunAnims`）；
- *  - 否则普通移动（`MoveAnims`）。
+ *  - 生命值 < 15% ⇒ 受伤移动（`InjuredMoveAnim`）；
+ *  - 否则当前速度 ≥ 1.7 × 基础速度 ⇒ 奔跑（`RunAnim`）；
+ *  - 否则普通移动（`MoveAnim`）。
  *
  * 受伤优先级高于奔跑。基础速度 = `FAsceRTSUnitDef::BaseMoveSpeed`（最大速度 = 2×基础）。
  * 动画数据在实体定义表；帧段在 `UAsceAnimSet::Clips`；客户端写 cue。

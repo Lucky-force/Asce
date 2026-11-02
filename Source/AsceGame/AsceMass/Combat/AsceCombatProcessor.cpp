@@ -137,6 +137,11 @@ void UAsceCombatProcessor::Execute(FMassEntityManager& EntityManager, FMassExecu
 				continue;
 			}
 			const FAsceCombatAttributesFragment& CombatAttr = CombatAttrs[i];
+			// 没有攻击动作行 = 这个单位不能主动攻击（纯施法/模块未配攻击），不要进入 Attack
+			if (CombatAttr.AttackActionId <= 0)
+			{
+				continue;
+			}
 			if (Now < Combat->NextScanTime)
 			{
 				continue;

@@ -34,10 +34,10 @@ struct FAscePlayIdleAnimTaskInstanceData
 };
 
 /**
- * **Idle 动画**：进入状态播 idle（循环，多变异随机一个）；
+ * **Idle 动画**：进入状态播单条 `IdleAnim`（循环）；
  * 每隔一段**随机间隔**从 `IdleBreakAnims` 里随机一个播一次（播 break 期间不累计间隔）。
  *
- * - 动画数据在实体定义表（`IdleAnims` / `IdleBreakAnims`）；
+ * - 动画数据在实体定义表（`IdleAnim` / `IdleBreakAnims`）；
  * - 间隔写死一个随机区间（`[MinIdleBreakInterval, MaxIdleBreakInterval]`，每轮重新摇）；
  * - 保持 `Running` 占住状态（靠事件转移离开）；专用服务器只占状态不写 cue。
  */

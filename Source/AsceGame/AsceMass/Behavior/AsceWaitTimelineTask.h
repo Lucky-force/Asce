@@ -8,10 +8,23 @@
 #include "AsceWaitTimelineTask.generated.h"
 
 struct FAsceBehaviorFragment;
+struct FAsceUnitDefFragment;
 namespace UE::MassBehavior
 {
 	struct FStateTreeDependencyBuilder;
 }
+
+/** 时间轴等待的速率来源 */
+UENUM()
+enum class EAsceTimelineScaleMode : uint8
+{
+	/** 恒定不变：Time 原样使用 */
+	Constant UMETA(DisplayName = "恒定不变"),
+	/** 速率 = AttackSpeed / BaseAttackSpeed（1.0 = 原速） */
+	AttackSpeed UMETA(DisplayName = "攻击速度 / 基础攻击速度"),
+	/** 速率 = 1 + CastSpeedPercent / 100（百分比加成） */
+	CastSpeed UMETA(DisplayName = "施法速度百分比加成")
+};
 
 /**
  * **等到时间轴的某一刻**（`Combat/技能编辑器设计.md` §10.3 的"节点时间门槛"）。
@@ -27,9 +40,16 @@ struct FAsceWaitTimelineTaskInstanceData
 {
 	GENERATED_BODY()
 
-	/** 等到这一刻（秒，相对起轴；0 = 立即通过） */
+	/** 等到哪一刻（秒，相对起轴；0 = 立即通过） */
 	UPROPERTY(EditAnywhere, Category = "Parameter")
 	float Time = 0.f;
+
+	/** 速率来源：攻击速度比 / 施法速度百分比 / 恒定 */
+	UPROPERTY(EditAnywhere, Category = "Parameter")
+	EAsceTimelineScaleMode ScaleMode = EAsceTimelineScaleMode::Constant;
+
+	/** 运行时：缩放后真正要等到的绝对时间（进入时算） */
+	float TargetTime = 0.f;
 
 	/** 诊断：是否已打印过长等待（进入时重置） */
 	bool bLoggedStuck = false;
@@ -51,6 +71,11 @@ protected:
 	virtual EStateTreeRunStatus Tick(FStateTreeExecutionContext& Context, const float DeltaTime) const override;
 	virtual void GetDependencies(UE::MassBehavior::FStateTreeDependencyBuilder& Builder) const override;
 
+	/** 按 ScaleMode 计算速率（攻击/施法数据在 def/战斗属性里；缺失回 1） */
+	float ResolveTimeScale(FStateTreeExecutionContext& Context, const FInstanceDataType& Data) const;
+
 	/** `FAsceBehaviorFragment`（外部数据：读起轴时刻） */
 	TStateTreeExternalDataHandle<FAsceBehaviorFragment, EStateTreeExternalDataRequirement::Optional> TimelineHandle;
+	/** `FAsceUnitDefFragment`（外部数据：读基础攻速/施法速度百分比） */
+	TStateTreeExternalDataHandle<FAsceUnitDefFragment, EStateTreeExternalDataRequirement::Optional> UnitDefHandle;
 };
