@@ -6,6 +6,9 @@ Saved/
 Build/
 Plugins/
 
+# 资产类内容由 Diversion 托管，不进 Git
+Content/
+
 # 只在用户级别的文件夹
 .svs/
 .vs/
@@ -16,6 +19,10 @@ Plugins/
 *.user
 *.sln.DotSettings.user
 *.sln
+*.VC.db
+*.opensdf
+*.sdf
+*.suo
 
 # 日志/录制
 *.log
