@@ -53,6 +53,16 @@ bool UAsceUnitModuleConfig::ApplyToDef(FAsceEntityDefRow& Row, TArray<FText>& Ou
 
 bool UAsceUnitModuleConfig::IsDirty() const
 {
-	FAsceUnitModuleBuildResult Result = AsceUnitModuleGenerator::Build(Modules);
+	// 从没应用过（SourceHash == 0）不算"改过"：面板会显示成"首次未应用"，
+	// 否则新建的配置一打开就报"模块已改，未应用"（hash 必然 ≠ 0）。
+	if (!HasBeenApplied())
+	{
+		return false;
+	}
+	const FAsceUnitModuleBuildResult Result = AsceUnitModuleGenerator::Build(Modules);
+	if (!Result.IsValid())
+	{
+		return true;
+	}
 	return Result.SourceHash != SourceHash;
 }

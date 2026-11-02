@@ -61,6 +61,7 @@ public class AsceEditor : ModuleRules
 				"MassLOD",
 				"MassRepresentation",
 				"MassActors",
+				"AssetRegistry",
 				"AssetTools",
 				"DeveloperSettings",
 			}

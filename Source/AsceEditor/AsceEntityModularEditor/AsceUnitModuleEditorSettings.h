@@ -29,5 +29,9 @@ public:
 	UPROPERTY(EditAnywhere, config, Category = "Directories", meta = (RelativeToGameContentDir))
 	FDirectoryPath EntityTemplateDirectory;
 
+	/** 表下拉只列**资产名以这个前缀开头**的 DataTable（默认 `SDT`）；留空 = 不按名字过滤 */
+	UPROPERTY(EditAnywhere, config, Category = "DataTable")
+	FString DataTablePrefix = TEXT("SDT");
+
 	virtual FName GetCategoryName() const override { return FName(TEXT("Asce")); }
 };

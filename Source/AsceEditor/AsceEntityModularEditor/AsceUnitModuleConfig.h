@@ -46,6 +46,9 @@ public:
 	 */
 	bool ApplyToDef(FAsceEntityDefRow& Row, TArray<FText>& OutErrors);
 
+	/** 是否已经应用过（`SourceHash != 0`）；新建 / 从没点过应用的配置是 false */
+	bool HasBeenApplied() const { return SourceHash != 0; }
+
 	/** 模块列表在应用后是否被改过（需要重新 `ApplyToDef`） */
 	bool IsDirty() const;
 };
