@@ -30,6 +30,7 @@ public:
 	 *  由 UAsceFogRenderSubsystem 的 "AsceFogCreateTextures" 渲染命令在创建纹理后直接调用
 	 *  （FRHICommandListImmediate 只能在渲染线程用，纹理创建不能放 GT Tick）。
 	 *  注意：不清 pending delta——"丢弃旧批次"由 GT 侧在请求重建前调 ClearPendingDelta() 负责。 */
+	/** 视口尺寸变化时置脏；由 FogRenderSubsystem 消费并重建 ViewExtension。 */
 	void SetSource_RenderThread(FTextureRHIRef InFogRaw, FTextureRHIRef InFogSmooth, FIntPoint InGridSize, float InCellSizeCm,
 		FVector2D InWorldOrigin, float InDarkness);
 
@@ -42,7 +43,6 @@ public:
 		int32 InTileWordsPerTile, int32 InTilesX, int32 InTileCells);
 
 	// ISceneViewExtension
-	virtual void SetupViewFamily(FSceneViewFamily& InViewFamily) override {}
 	virtual void SetupView(FSceneViewFamily& InViewFamily, FSceneView& InView) override {}
 	virtual bool IsActiveThisFrame_Internal(const FSceneViewExtensionContext& Context) const override;
 	virtual void SubscribeToPostProcessingPass(EPostProcessingPass PassId, const FSceneView& View,
@@ -76,4 +76,11 @@ private:
 	int32 TileWordsPerTile = 128;
 	int32 TilesX = 0;
 	int32 TileCells = 64;
+
+	// Render-thread only: last viewport signature logged by Asce.Fog.LogViewport.
+	FIntPoint LastLoggedSceneExtent = FIntPoint::ZeroValue;
+	FIntRect LastLoggedSceneRect;
+	FIntRect LastLoggedViewRect;
+	FIntRect LastLoggedUnconstrainedViewRect;
+	FIntPoint LastLoggedDepthExtent = FIntPoint::ZeroValue;
 };

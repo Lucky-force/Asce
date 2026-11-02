@@ -22,8 +22,8 @@ int TileWords;
 
 // 全屏 PS 输入
 Texture2D SceneColorTexture;
-SamplerState SceneColorSampler;
 Texture2D SceneDepthTexture;
+SamplerState SceneColorSampler;
 Texture2D<float> FogTexture;
 SamplerState FogSampler;   // Bilinear + Clamp：让迷雾边界平滑过渡
 
@@ -36,7 +36,10 @@ Texture2D<float> FogCornerTexture;
 RWTexture2D<float> FogSmoothUAV;
 
 int2 GridSize;      // (GridW, GridH)，供 PS 用
-float2 WorldOrigin; // 雾格子(0,0)在世界 XY 的角点（cm）
+float2 WorldOrigin;
+float4 SceneColorViewRect;
+int2 SceneColorExtent;
+int2 SceneDepthExtent;
 float  CellSize;    // 每格边长（cm）
 float  Darkness;    // 不可见处压黑强度（1=全黑）
 
@@ -97,26 +100,32 @@ void MainPS(
     // 注意：UV 是 SceneColor/Depth 纹理的**绝对 UV**（含 view rect 偏移）⇒ 深度 Load 与
     // SV_Position 反投影必须乘 **BufferSize**；不能用 ViewSize（那只是 view rect 尺寸：
     // 相机 MaintainX/Y 约束 / letterbox 时 view rect ≠ buffer，乘 ViewSize 会按比例缩放 + 偏移）。
-    int2 PixelCoord = int2(UV * PrimaryView.BufferSizeAndInvSize.xy);
-    float Depth = SceneDepthTexture.Load(int3(PixelCoord, 0)).r;
+    float2 ScenePixel = UV * float2(SceneColorExtent);
+    float2 ViewRectMin = SceneColorViewRect.xy;
+    float2 ViewRectSize = SceneColorViewRect.zw;
+    float2 ViewportUV = saturate((ScenePixel - ViewRectMin) / ViewRectSize);
+
+    // SceneDepth 和 SVPositionToTranslatedWorld 都使用 render view 的像素空间。
+    // SceneColor 的 ViewRect 只用于求 ViewportUV，不能拿 SceneColor 的 extent 去缩放 depth。
+    int2 ViewPixel = int2(View.ViewRectMin.xy + ViewportUV * View.ViewSizeAndInvSize.xy);
+    int2 DepthPixel = clamp(ViewPixel, int2(0, 0), SceneDepthExtent - 1);
+    float Depth = SceneDepthTexture.Load(int3(DepthPixel, 0)).r;
+
     if (Depth > 0.0f)
     {
-        // SV_Position(像素中心+0.5) + DeviceZ → TranslatedWorld（等价 ReconstructTranslatedWorldPositionFromDeviceZ）
-        float4 Homogeneous = mul(float4(PixelCoord + 0.5, Depth, 1), PrimaryView.SVPositionToTranslatedWorld);
+        int2 ProjectionPixel = ViewPixel;
+        float4 Homogeneous = mul(float4(ProjectionPixel + 0.5, Depth, 1), PrimaryView.SVPositionToTranslatedWorld);
         float3 TranslatedWorld = Homogeneous.xyz / Homogeneous.w;
 
-        // TranslatedWorld → 绝对世界（cm）：减去 PreViewTranslation。
-        // PreViewTranslation 是 LWC（High+Low），合成后降精度到 float（雾格查询精度足够）。
         const float3 PreViewTranslation = DFDemote(MakeDFVector3(PrimaryView.PreViewTranslationHigh, PrimaryView.PreViewTranslationLow));
         float3 World = TranslatedWorld - PreViewTranslation;
 
-        // 连续格坐标 → 归一化 UV（落在像素中心，跨界时硬件双线性插值出 1 格宽的平滑过渡）。
         float2 FogCoord = (World.xy - WorldOrigin) / CellSize;
         if (all(FogCoord >= 0.0f) && all(FogCoord < float2(GridSize)))
         {
             float2 FogUV = FogCoord / float2(GridSize);
             float Visible = FogTexture.SampleLevel(FogSampler, FogUV, 0).r;
-            Visible = smoothstep(0.0f, 1.0f, Visible);   // 线性渐变再做一次S曲线，过渡更柔和
+            Visible = smoothstep(0.0f, 1.0f, Visible);
             Scene *= lerp(1.0f - Darkness, 1.0f, Visible);
         }
     }

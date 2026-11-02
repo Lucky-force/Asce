@@ -1,4 +1,4 @@
-﻿// Fill out your copyright notice in the Description page of Project Settings.
+// Fill out your copyright notice in the Description page of Project Settings.
 
 #include "AsceFogViewExtension.h"
 
@@ -9,7 +9,22 @@
 #include "RHIStaticStates.h"
 #include "RenderingThread.h"
 #include "Engine/World.h"
+#include "UnrealClient.h"
 #include "Algo/BinarySearch.h"
+#include "HAL/IConsoleManager.h"
+
+namespace
+{
+	TAutoConsoleVariable<int32> CVarAsceFogLogViewport(
+		TEXT("Asce.Fog.LogViewport"), 1,
+		TEXT("Log SceneColor/Depth/viewport dimensions when they change. 0 = off."),
+		ECVF_Cheat);
+
+	FString RectToString(const FIntRect& Rect)
+	{
+		return FString::Printf(TEXT("(%d,%d)-(%d,%d)"), Rect.Min.X, Rect.Min.Y, Rect.Max.X, Rect.Max.Y);
+	}
+}
 
 // MOD-POINT 2026-09-10 15:01:23
 // MOD-POINT 2026-09-10 16:20:00  阶段 2b：RDG Compute(BitMap→Fog) + Fullscreen(压黑 SceneColor)
@@ -212,12 +227,49 @@ FScreenPassTexture FAsceFogViewExtension::PostProcessPassAfterTonemap_RenderThre
 			GraphBuilder, SceneColor, View.GetOverwriteLoadAction(), TEXT("AsceFog"));
 	}
 
+	if (Output.IsValid())
+	{
+		Output.ViewRect = SceneColor.ViewRect;
+	}
+
 	FRDGTextureRef DepthTexture = Inputs.SceneTextures.SceneTextures
 		? Inputs.SceneTextures.SceneTextures->GetContents()->SceneDepthTexture
 		: nullptr;
 	if (!DepthTexture)
 	{
 		return Output;
+	}
+
+	if (CVarAsceFogLogViewport.GetValueOnRenderThread() != 0 && SceneColor.Texture)
+	{
+		const FIntPoint SceneExtent = SceneColor.Texture->Desc.Extent;
+		const FIntPoint DepthExtent = DepthTexture->Desc.Extent;
+		const bool bChanged = SceneExtent != LastLoggedSceneExtent
+			|| SceneColor.ViewRect != LastLoggedSceneRect
+			|| View.UnscaledViewRect != LastLoggedViewRect
+			|| View.UnconstrainedViewRect != LastLoggedUnconstrainedViewRect
+			|| DepthExtent != LastLoggedDepthExtent;
+		if (bChanged)
+		{
+			LastLoggedSceneExtent = SceneExtent;
+			LastLoggedSceneRect = SceneColor.ViewRect;
+			LastLoggedViewRect = View.UnscaledViewRect;
+			LastLoggedUnconstrainedViewRect = View.UnconstrainedViewRect;
+			LastLoggedDepthExtent = DepthExtent;
+
+			UE_LOG(LogTemp, Warning,
+				TEXT("[AsceFogViewport] SceneExtent=(%d,%d) SceneViewRect=%s OutputExtent=(%d,%d) OutputViewRect=%s ViewRect=%s Unconstrained=%s DepthExtent=(%d,%d) Grid=%s WorldOrigin=(%.1f,%.1f) Cell=%.1f"),
+				SceneExtent.X, SceneExtent.Y,
+				*RectToString(SceneColor.ViewRect),
+				Output.Texture ? Output.Texture->Desc.Extent.X : 0,
+				Output.Texture ? Output.Texture->Desc.Extent.Y : 0,
+				*RectToString(Output.ViewRect),
+				*RectToString(View.UnscaledViewRect),
+				*RectToString(View.UnconstrainedViewRect),
+				DepthExtent.X, DepthExtent.Y,
+				*FString::Printf(TEXT("%dx%d"), GridSize.X, GridSize.Y),
+				WorldOrigin.X, WorldOrigin.Y, CellSizeCm);
+		}
 	}
 
 	// 2) Fullscreen PS：采样持久 Fog 压黑 SceneColor
@@ -232,6 +284,13 @@ FScreenPassTexture FAsceFogViewExtension::PostProcessPassAfterTonemap_RenderThre
 		PSParams->FogSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 		PSParams->GridSize = GridSize;
 		PSParams->WorldOrigin = FVector2f((float)WorldOrigin.X, (float)WorldOrigin.Y);
+		PSParams->SceneColorViewRect = FVector4f(
+			(float)SceneColor.ViewRect.Min.X,
+			(float)SceneColor.ViewRect.Min.Y,
+			(float)SceneColor.ViewRect.Width(),
+			(float)SceneColor.ViewRect.Height());
+		PSParams->SceneColorExtent = SceneColor.Texture->Desc.Extent;
+		PSParams->SceneDepthExtent = DepthTexture->Desc.Extent;
 		PSParams->CellSize = CellSizeCm;
 		PSParams->Darkness = Darkness;
 		PSParams->RenderTargets[0] = Output.GetRenderTargetBinding();
