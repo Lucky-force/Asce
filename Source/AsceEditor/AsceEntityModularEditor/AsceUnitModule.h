@@ -10,6 +10,7 @@
 
 class UAnimSequence;
 struct FAsceRTSUnitDef;
+class UMassEntityConfigAsset;
 
 /**
  * 构建上下文：让模块能读到**其它模块的参数**（如 Vision 读 Volume 的 Height），
@@ -144,6 +145,9 @@ struct FAsceUnitModule
 
 	/** 模块参数 → def 的非 fragment 字段（`AnimSet` / `AttackAction` / `SkillSlots`） */
 	virtual void WriteDefRow(FAsceRTSUnitDef& Row) const {}
+
+	/** 模块写入 EntityTemplate 上的 trait（例如 Visualization 写 MassMovableVisualizationTrait） */
+	virtual void WriteToTemplate(UMassEntityConfigAsset& ConfigAsset) const {}
 
 	/** 保存/编辑期校验 */
 	virtual void Validate(TArray<FText>& OutErrors) const {}

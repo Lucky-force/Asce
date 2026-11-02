@@ -12,7 +12,10 @@
 #include "AsceEntityModularEditor/Modules/AsceUnitModuleMovement.h"
 #include "AsceEntityModularEditor/Modules/AsceUnitModuleSkills.h"
 #include "AsceEntityModularEditor/Modules/AsceUnitModuleVision.h"
+#include "AsceEntityModularEditor/Modules/AsceUnitModuleVisualization.h"
 #include "AsceEntityModularEditor/Modules/AsceUnitModuleVolume.h"
+
+#include "AsceMass/Data/AsceUnitDef.h"
 
 namespace
 {
@@ -79,6 +82,7 @@ const TArray<const UScriptStruct*>& AsceUnitModuleRegistry::GetModuleTypes()
 		FAsceUnitModuleVision::StaticStruct(),
 		FAsceUnitModuleActionState::StaticStruct(),
 		FAsceUnitModuleAnimation::StaticStruct(),
+		FAsceUnitModuleVisualization::StaticStruct(),
 		FAsceUnitModuleCombat::StaticStruct(),
 		FAsceUnitModuleSkills::StaticStruct(),
 		FAsceUnitModuleInteraction::StaticStruct(),
@@ -144,6 +148,12 @@ void AsceUnitModuleRegistry::BuildComposition(const TArray<FInstancedStruct>& Mo
 
 void AsceUnitModuleRegistry::ApplyDefFields(const TArray<FInstancedStruct>& Modules, FAsceRTSUnitDef& Row)
 {
+	// 模块列表是单位定义的唯一真相：先清空所有模块字段，再按当前选择重写，
+	// 否则取消某个模块后旧字段（AttackAction/AnimSet/SkillSlots…）会残留在行里。
+	const TSoftObjectPtr<UStateTree> SavedStateTree = Row.StateTree;
+	Row = FAsceRTSUnitDef();
+	Row.StateTree = SavedStateTree;
+
 	TMap<FName, const FAsceUnitModule*> Collected;
 	TArray<FText> Ignored;
 	CollectSelected(Modules, Collected, Ignored);

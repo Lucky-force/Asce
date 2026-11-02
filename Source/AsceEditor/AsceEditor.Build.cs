@@ -58,6 +58,11 @@ public class AsceEditor : ModuleRules
 				"MassEntity",
 				"MassMovement",
 				"MassSpawner",
+				"MassLOD",
+				"MassRepresentation",
+				"MassActors",
+				"AssetTools",
+				"DeveloperSettings",
 			}
         );
 

@@ -5,6 +5,7 @@
 #include "AsceMass/Fragments/AsceCoreFragments.h"
 #include "AsceMass/Vision/AsceVisionDefines.h"
 #include "AsceMass/Vision/AsceVisionFragments.h"
+#include "AsceMass/Data/AsceUnitDef.h"
 
 #include "AsceEntityModularEditor/Modules/AsceUnitModuleVolume.h"
 
@@ -31,6 +32,11 @@ void FAsceUnitModuleVision::Contribute(const FAsceUnitModuleBuildContext& Contex
 	View.EyeHeightCm = static_cast<uint16>(FMath::Clamp(Height.Height, 0.f, static_cast<float>(MAX_uint16)));
 
 	AsceUnitModuleUtil::AddFragment<FAsceVisionFogStateFragment>(OutFragments);
+}
+
+void FAsceUnitModuleVision::WriteDefRow(FAsceRTSUnitDef& Row) const
+{
+	Row.SightRadius = SightRadius;
 }
 
 void FAsceUnitModuleVision::CollectPreview(FAsceUnitModulePreviewActions& Actions) const

@@ -3,6 +3,7 @@
 #include "AsceEntityModularEditor/Modules/AsceUnitModuleHealth.h"
 
 #include "AsceMass/Fragments/AsceCoreFragments.h"
+#include "AsceMass/Data/AsceUnitDef.h"
 
 FName FAsceUnitModuleHealth::GetModuleId() const
 {
@@ -20,4 +21,9 @@ void FAsceUnitModuleHealth::Contribute(const FAsceUnitModuleBuildContext& Contex
 	FAsceHealthFragment& Health = AsceUnitModuleUtil::AddFragment<FAsceHealthFragment>(OutFragments);
 	Health.MaxHealth = MaxHealth;
 	Health.CurrentHealth = MaxHealth;
+}
+
+void FAsceUnitModuleHealth::WriteDefRow(FAsceRTSUnitDef& Row) const
+{
+	Row.MaxHealth = MaxHealth;
 }

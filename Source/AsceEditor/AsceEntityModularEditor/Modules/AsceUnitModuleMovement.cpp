@@ -23,9 +23,9 @@ FText FAsceUnitModuleMovement::GetDisplayName() const
 void FAsceUnitModuleMovement::WriteDefRow(FAsceRTSUnitDef& Row) const
 {
 	Row.BaseMoveSpeed = BaseMoveSpeed;
-	Row.MoveAnims = MoveAnims;
-	Row.RunAnims = RunAnims;
-	Row.InjuredMoveAnims = InjuredMoveAnims;
+	Row.MoveAnim = MoveAnim;
+	Row.RunAnim = RunAnim;
+	Row.InjuredMoveAnim = InjuredMoveAnim;
 }
 
 void FAsceUnitModuleMovement::Contribute(const FAsceUnitModuleBuildContext& Context
@@ -49,33 +49,16 @@ void FAsceUnitModuleMovement::Contribute(const FAsceUnitModuleBuildContext& Cont
 
 void FAsceUnitModuleMovement::CollectPreview(FAsceUnitModulePreviewActions& Actions) const
 {
-	int32 VariantIndex = 0;
-	for (const TSoftObjectPtr<UAnimSequence>& Animation : MoveAnims)
+	if (!MoveAnim.IsNull())
 	{
-		if (!Animation.IsNull())
-		{
-			Actions.AddAnimation(MoveAnims.Num() > 1
-				? FString::Printf(TEXT("Move #%d"), ++VariantIndex) : FString(TEXT("Move")), Animation);
-		}
+		Actions.AddAnimation(TEXT("Move"), MoveAnim);
 	}
-
-	VariantIndex = 0;
-	for (const TSoftObjectPtr<UAnimSequence>& Animation : RunAnims)
+	if (!RunAnim.IsNull())
 	{
-		if (!Animation.IsNull())
-		{
-			Actions.AddAnimation(RunAnims.Num() > 1
-				? FString::Printf(TEXT("Run #%d"), ++VariantIndex) : FString(TEXT("Run")), Animation);
-		}
+		Actions.AddAnimation(TEXT("Run"), RunAnim);
 	}
-
-	VariantIndex = 0;
-	for (const TSoftObjectPtr<UAnimSequence>& Animation : InjuredMoveAnims)
+	if (!InjuredMoveAnim.IsNull())
 	{
-		if (!Animation.IsNull())
-		{
-			Actions.AddAnimation(InjuredMoveAnims.Num() > 1
-				? FString::Printf(TEXT("InjuredMove #%d"), ++VariantIndex) : FString(TEXT("InjuredMove")), Animation);
-		}
+		Actions.AddAnimation(TEXT("InjuredMove"), InjuredMoveAnim);
 	}
 }

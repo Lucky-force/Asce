@@ -9,7 +9,7 @@
 
 class FPreviewScene;
 class UAsceAnimSet;
-struct FAsceAnimClip;
+class UAnimSequence;
 struct FAsceAnimClip;
 class UInstancedStaticMeshComponent;
 
@@ -22,7 +22,7 @@ public:
 	/** 用"模块汇总出来的预览产物"刷新几何（圆/胶囊/盒） */
 	void ApplyPreview(const FAsceUnitModulePreviewActions& Actions);
 
-	/** 设置要预览的动画（VAT：ISM + 每实例 custom data 的帧号）；AnimSet/ClipIndex 无效时清空 */
+	/** 设置要预览的动画（VAT ISM + per-instance custom data 帧号） */
 	void SetAnim(UAsceAnimSet* InAnimSet, const FAsceAnimClip& Clip);
 
 	virtual void Draw(const FSceneView* View, FPrimitiveDrawInterface* PDI) override;
@@ -40,6 +40,8 @@ private:
 
 	TStrongObjectPtr<UAsceAnimSet> AnimSet;
 	TWeakObjectPtr<UInstancedStaticMeshComponent> MeshComponent;
+	int32 CachedClipStart = INDEX_NONE;
+	int32 CachedClipEnd = INDEX_NONE;
 	int32 ClipFirstFrame = 0;
 	int32 ClipLastFrame = 0;
 	float ClipFrameRate = 30.f;
@@ -64,7 +66,7 @@ public:
 	/** 刷新预览参数 */
 	void ApplyPreview(const FAsceUnitModulePreviewActions& Actions);
 
-	/** 设置要预览的动画（VAT：ISM 一实例 + per-instance custom data 帧号） */
+	/** 设置要预览的动画（VAT ISM + per-instance custom data 帧号） */
 	void SetAnim(UAsceAnimSet* InAnimSet, const FAsceAnimClip& Clip);
 
 protected:

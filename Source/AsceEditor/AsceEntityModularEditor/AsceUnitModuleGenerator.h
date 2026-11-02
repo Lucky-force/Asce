@@ -7,6 +7,7 @@
 
 class UMassEntityConfigAsset;
 struct FAsceEntityDefRow;
+struct FAsceUnitModule;
 
 /** 一次"模块 → 数据"的构建结果 */
 struct FAsceUnitModuleBuildResult
@@ -22,6 +23,9 @@ struct FAsceUnitModuleBuildResult
 
 	/** 模块列表的稳定哈希（用于"派生数据被手改"的漂移检测；P4 存进配置资产） */
 	uint32 SourceHash = 0;
+
+	/** 当前模块实例（WriteToTemplate 用；生命周期跟随 Build 的输入） */
+	TArray<const FAsceUnitModule*> Modules;
 
 	bool IsValid() const { return Errors.Num() == 0; }
 };
@@ -43,6 +47,9 @@ namespace AsceUnitModuleGenerator
 
 	/** 把构建结果写进 trait DA（会 `Modify()` + `MarkPackageDirty()`） */
 	bool WriteToTemplateAsset(UMassEntityConfigAsset* ConfigAsset, const FAsceUnitModuleBuildResult& Result, TArray<FText>& OutErrors);
+
+	/** 补齐模板默认 trait：AsceRTSEntityTrait / DistanceLODCollector / MovableVisualization + Assorted MassActor（不覆盖已有 Fragments） */
+	bool EnsureDefaultTemplateTraits(UMassEntityConfigAsset* ConfigAsset, FName RowName, TArray<FText>& OutErrors);
 
 	/** 把模块写进实体定义行（`Row.Def` 必须是 `FAsceRTSUnitDef`） */
 	bool WriteToDefRow(const TArray<FInstancedStruct>& Modules, FAsceEntityDefRow& Row, TArray<FText>& OutErrors);

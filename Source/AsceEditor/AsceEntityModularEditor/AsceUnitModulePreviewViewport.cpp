@@ -21,7 +21,16 @@ FAsceUnitModulePreviewClient::FAsceUnitModulePreviewClient(FPreviewScene* InPrev
 {
 	SetViewLocation(FVector(-650.f, -150.f, 600.f));
 	SetViewRotation(FRotator(-35.f, 20.f, 0.f));
+	// 参考 SSCS/动画预览：默认实时 + 手动 Tick 预览 world；关掉高级特性，
+	// 预览 scene 上的 Lumen/SSGI/TAA 等很容易产生整屏闪烁/发黑。
 	SetRealtime(true);
+	EngineShowFlags.DisableAdvancedFeatures();
+	EngineShowFlags.Game = 0;
+	EngineShowFlags.SetSnap(0);
+	EngineShowFlags.SetSelectionOutline(true);
+	EngineShowFlags.SetSeparateTranslucency(true);
+	EngineShowFlags.SetCompositeEditorPrimitives(true);
+	EngineShowFlags.SetTemporalAA(false);
 }
 
 void FAsceUnitModulePreviewClient::ApplyPreview(const FAsceUnitModulePreviewActions& Actions)
@@ -59,7 +68,9 @@ void FAsceUnitModulePreviewClient::Draw(const FSceneView* View, FPrimitiveDrawIn
 	}
 	for (const FAsceUnitModulePreviewActions::FCapsulePreview& Capsule : Capsules)
 	{
-		DrawWireCapsule(PDI, Base, FVector::ForwardVector, FVector::RightVector, FVector::UpVector
+		// 单位原点在地面：把胶囊整体抬到地面以上，否则下半截会埋进地面
+		const FVector CapsuleBase(0.f, 0.f, Capsule.HalfHeightCm);
+		DrawWireCapsule(PDI, CapsuleBase, FVector::ForwardVector, FVector::RightVector, FVector::UpVector
 			, Capsule.Color, Capsule.RadiusCm, Capsule.HalfHeightCm, 16, SDPG_World);
 	}
 	for (const FAsceUnitModulePreviewActions::FBoxPreview& Box : Boxes)
@@ -70,32 +81,43 @@ void FAsceUnitModulePreviewClient::Draw(const FSceneView* View, FPrimitiveDrawIn
 
 void FAsceUnitModulePreviewClient::SetAnim(UAsceAnimSet* InAnimSet, const FAsceAnimClip& Clip)
 {
-	AnimSet.Reset();
-	ClipFirstFrame = 0;
-	ClipLastFrame = 0;
-	FrameAccumulator = 0.f;
-	CurrentFrame = INDEX_NONE;
-	PreviousFrame = INDEX_NONE;
-
-	if (InAnimSet)
+	const int32 NewStart = Clip.StartFrame;
+	const int32 NewEnd = FMath::Max(Clip.EndFrame, Clip.StartFrame);
+	if (AnimSet.Get() == InAnimSet && CachedClipStart == NewStart && CachedClipEnd == NewEnd)
 	{
-		AnimSet.Reset(InAnimSet);
-		ClipFirstFrame = Clip.StartFrame;
-		ClipLastFrame = FMath::Max(Clip.EndFrame, ClipFirstFrame);
-		ClipFrameRate = FMath::Max(InAnimSet->FrameRate, 1.f);
-		PlayRate = 1.f;
-		EnsureMeshComponent(InAnimSet);
-		ApplyFrame(/*bForce*/ true);
+		return;   // 同一个动画，不要每次 RefreshPreview 都重建组件/重启动画
+	}
+
+	AnimSet.Reset();
+	CachedClipStart = NewStart;
+	CachedClipEnd = NewEnd;
+	ClipFirstFrame = NewStart;
+	ClipLastFrame = NewEnd;
+	FrameAccumulator = 0.f;
+	CurrentFrame = NewStart;
+	PreviousFrame = NewStart;
+
+	if (!InAnimSet)
+	{
+		if (UInstancedStaticMeshComponent* Component = MeshComponent.Get())
+		{
+			Component->ClearInstances();
+			Component->SetVisibility(false);
+		}
 		return;
 	}
 
-	// 清掉预览网格
+	AnimSet.Reset(InAnimSet);
+	ClipFrameRate = FMath::Max(InAnimSet->FrameRate, 1.f);
+	PlayRate = 1.f;
 	if (UInstancedStaticMeshComponent* Component = MeshComponent.Get())
 	{
-		Component->ClearInstances();
+		Component->SetVisibility(true);
 	}
+	EnsureMeshComponent(InAnimSet);
+	ApplyFrame(/*bForce*/ true);
+	Invalidate();
 }
-
 void FAsceUnitModulePreviewClient::EnsureMeshComponent(const UAsceAnimSet* InAnimSet)
 {
 	UInstancedStaticMeshComponent* Component = MeshComponent.Get();
@@ -113,6 +135,7 @@ void FAsceUnitModulePreviewClient::EnsureMeshComponent(const UAsceAnimSet* InAni
 		Component->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 		Scene->AddComponent(Component, FTransform::Identity);
 		MeshComponent = Component;
+		Component->SetVisibility(true);
 	}
 
 	if (!Component)
@@ -159,6 +182,15 @@ void FAsceUnitModulePreviewClient::Tick(const float DeltaSeconds)
 {
 	FEditorViewportClient::Tick(DeltaSeconds);
 
+	// 预览场景不是编辑器世界，UE 的 SCS/动画预览都在客户端 Tick 里手动推进它
+	if (FPreviewScene* Scene = GetPreviewScene())
+	{
+		if (UWorld* World = Scene->GetWorld())
+		{
+			World->Tick(IsRealtime() ? LEVELTICK_ViewportsOnly : LEVELTICK_TimeOnly, DeltaSeconds);
+		}
+	}
+
 	if (ClipLastFrame > ClipFirstFrame)
 	{
 		const int32 FrameCount = ClipLastFrame - ClipFirstFrame + 1;
@@ -186,12 +218,18 @@ void FAsceUnitModulePreviewClient::Tick(const float DeltaSeconds)
 void SAsceUnitModulePreviewViewport::Construct(const FArguments& InArgs)
 {
 	PreviewScene = MakeShared<FPreviewScene>(FPreviewScene::ConstructionValues());
+	if (UWorld* World = PreviewScene->GetWorld())
+	{
+		World->SetBegunPlay(false);
+	}
 	SEditorViewport::Construct(SEditorViewport::FArguments());
 }
 
 TSharedRef<FEditorViewportClient> SAsceUnitModulePreviewViewport::MakeEditorViewportClient()
 {
 	PreviewClient = MakeShared<FAsceUnitModulePreviewClient>(PreviewScene.Get(), SharedThis(this));
+	PreviewClient->bSetListenerPosition = false;
+	PreviewClient->VisibilityDelegate.BindSP(this, &SAsceUnitModulePreviewViewport::IsVisible);
 	return PreviewClient.ToSharedRef();
 }
 

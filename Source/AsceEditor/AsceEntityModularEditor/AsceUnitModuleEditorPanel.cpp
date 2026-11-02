@@ -3,11 +3,18 @@
 #include "AsceEntityModularEditor/AsceUnitModuleEditorPanel.h"
 
 #include "Engine/DataTable.h"
+#include "AssetToolsModule.h"
+#include "Factories/DataAssetFactory.h"
 #include "FileHelpers.h"
+#include "IAssetTools.h"
+#include "MassEntityConfigAsset.h"
 #include "MassEntitySettings.h"
+#include "ScopedTransaction.h"
 #include "Framework/Application/SlateApplication.h"
 #include "IDetailsView.h"
 #include "Misc/PackageName.h"
+#include "Misc/Paths.h"
+#include "Misc/MessageDialog.h"
 #include "Templates/GuardValueAccessors.h"
 #include "PropertyEditorModule.h"
 #include "Styling/CoreStyle.h"
@@ -18,14 +25,18 @@
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SScrollBox.h"
+#include "Widgets/Layout/SSplitter.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/SWindow.h"
 #include "Widgets/Text/STextBlock.h"
 
 #include "AsceMass/Combat/AsceAnimDef.h"
 #include "AsceMass/Data/AsceEntityDefTypes.h"
+#include "AsceMass/Data/AsceUnitDef.h"
+#include "AsceMass/Traits/AsceRTSEntityTrait.h"
 
 #include "AsceEntityModularEditor/AsceUnitModuleConfig.h"
+#include "AsceEntityModularEditor/AsceUnitModuleEditorSettings.h"
 #include "AsceEntityModularEditor/AsceUnitModuleGenerator.h"
 #include "AsceEntityModularEditor/AsceUnitModulePreviewViewport.h"
 #include "AsceEntityModularEditor/Modules/AsceUnitModuleAnimation.h"
@@ -69,6 +80,7 @@ void SAsceUnitModuleEditor::Construct(const FArguments& InArgs)
 		.Padding(6.f)
 		[
 			SNew(SVerticalBox)
+			// 顶部：编辑会话（表/行/配置资产）
 			+ SVerticalBox::Slot()
 			.AutoHeight()
 			[
@@ -111,115 +123,140 @@ void SAsceUnitModuleEditor::Construct(const FArguments& InArgs)
 					]
 				]
 			]
-			+ SVerticalBox::Slot()
-			.AutoHeight()
-			.Padding(0.f, 6.f, 0.f, 0.f)
-			[
-				SNew(SHorizontalBox)
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				.VAlign(VAlign_Center)
-				[
-					SNew(STextBlock).Text(LOCTEXT("ClipLabel", "预览动画："))
-				]
-				+ SHorizontalBox::Slot()
-				.FillWidth(1.f)
-				[
-					SAssignNew(ClipCombo, SComboBox<TSharedPtr<FString>>)
-					.OptionsSource(&ClipItems)
-					.OnGenerateWidget_Lambda([](TSharedPtr<FString> Item)
-					{
-						return SNew(STextBlock).Text(FText::FromString(Item.IsValid() ? *Item : FString()));
-					})
-					.OnSelectionChanged_Lambda([this](TSharedPtr<FString> Item, ESelectInfo::Type)
-					{
-						if (!Item.IsValid())
-						{
-							return;
-						}
-						PlayPreviewEntry(ClipItems.IndexOfByKey(Item));
-					})
-					[
-						SNew(STextBlock).Text_Lambda([this]()
-						{
-							return ClipCombo.IsValid() && ClipCombo->GetSelectedItem().IsValid()
-								? FText::FromString(*ClipCombo->GetSelectedItem())
-								: FText::GetEmpty();
-						})
-					]
-				]
-			]
-			+ SVerticalBox::Slot()
-			.AutoHeight()
-			.Padding(0.f, 6.f)
-			[
-				SNew(SBox)
-				.HeightOverride(320.f)
-				[
-					SAssignNew(PreviewViewport, SAsceUnitModulePreviewViewport)
-				]
-			]
+			// 主区：左预览 / 右配置 outline（可拖分隔条）
 			+ SVerticalBox::Slot()
 			.FillHeight(1.f)
+			.Padding(0.f, 4.f, 0.f, 0.f)
 			[
-				SNew(SScrollBox)
-				+ SScrollBox::Slot()
+				SNew(SSplitter)
+				.Orientation(Orient_Horizontal)
+				+ SSplitter::Slot()
+				.Value(0.46f)
 				[
-					ConfigDetails.ToSharedRef()
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0.f, 0.f, 4.f, 4.f)
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						.VAlign(VAlign_Center)
+						[
+							SNew(STextBlock).Text(LOCTEXT("ClipLabel", "预览动画："))
+						]
+						+ SHorizontalBox::Slot()
+						.FillWidth(1.f)
+						[
+							SAssignNew(ClipCombo, SComboBox<TSharedPtr<FString>>)
+							.OptionsSource(&ClipItems)
+							.OnGenerateWidget_Lambda([](TSharedPtr<FString> Item)
+							{
+								return SNew(STextBlock).Text(FText::FromString(Item.IsValid() ? *Item : FString()));
+							})
+							.OnSelectionChanged_Lambda([this](TSharedPtr<FString> Item, ESelectInfo::Type)
+							{
+								if (!Item.IsValid())
+								{
+									return;
+								}
+								PlayPreviewEntry(ClipItems.IndexOfByKey(Item));
+							})
+							[
+								SNew(STextBlock).Text_Lambda([this]()
+								{
+									return ClipCombo.IsValid() && ClipCombo->GetSelectedItem().IsValid()
+										? FText::FromString(*ClipCombo->GetSelectedItem())
+										: FText::GetEmpty();
+								})
+							]
+						]
+					]
+					+ SVerticalBox::Slot()
+					.FillHeight(1.f)
+					[
+						SAssignNew(PreviewViewport, SAsceUnitModulePreviewViewport)
+					]
 				]
-			]
-			+ SVerticalBox::Slot()
-			.AutoHeight()
-			.Padding(0.f, 4.f)
-			[
-				SAssignNew(StatsText, STextBlock)
-				.AutoWrapText(true)
-				.ColorAndOpacity(FSlateColor(FLinearColor(0.75f, 0.75f, 0.75f)))
-				.Text(this, &SAsceUnitModuleEditor::GetStatsText)
-			]
-			+ SVerticalBox::Slot()
-			.AutoHeight()
-			[
-				SAssignNew(StatusText, STextBlock)
-				.AutoWrapText(true)
-				.ColorAndOpacity(FSlateColor(FLinearColor(1.f, 0.45f, 0.35f)))
-				.Text(this, &SAsceUnitModuleEditor::GetStatusText)
-			]
-			+ SVerticalBox::Slot()
-			.AutoHeight()
-			.Padding(0.f, 2.f)
-			[
-				SAssignNew(ReportText, STextBlock)
-				.AutoWrapText(true)
-				.ColorAndOpacity(FSlateColor(FLinearColor(0.6f, 0.8f, 1.f)))
-				.Text_Lambda([this]() { return FText::FromString(StatsReport); })
-			]
-			+ SVerticalBox::Slot()
-			.AutoHeight()
-			.Padding(0.f, 6.f, 0.f, 0.f)
-			[
-				SNew(SHorizontalBox)
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				.Padding(0.f, 0.f, 6.f, 0.f)
+				+ SSplitter::Slot()
+				.Value(0.54f)
 				[
-					SNew(SButton)
-					.Text(LOCTEXT("Apply", "应用到 def / 模板"))
-					.OnClicked(this, &SAsceUnitModuleEditor::OnApplyClicked)
-				]
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				[
-					SNew(SButton)
-					.Text(LOCTEXT("Save", "保存配置资产"))
-					.OnClicked(this, &SAsceUnitModuleEditor::OnSaveClicked)
-				]
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				[
-					SNew(SButton)
-					.Text(LOCTEXT("Stats", "统计全表 archetype 组合"))
-					.OnClicked(this, &SAsceUnitModuleEditor::OnStatsClicked)
+					SNew(SVerticalBox)
+					// 右侧：模块配置 outline（滚动）
+					+ SVerticalBox::Slot()
+					.FillHeight(1.f)
+					.Padding(4.f, 0.f, 0.f, 0.f)
+					[
+						SNew(SScrollBox)
+						+ SScrollBox::Slot()
+						[
+							ConfigDetails.ToSharedRef()
+						]
+					]
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(4.f, 4.f, 0.f, 0.f)
+					[
+						SAssignNew(StatsText, STextBlock)
+						.AutoWrapText(true)
+						.ColorAndOpacity(FSlateColor(FLinearColor(0.75f, 0.75f, 0.75f)))
+						.Text(this, &SAsceUnitModuleEditor::GetStatsText)
+					]
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(4.f, 2.f, 0.f, 0.f)
+					[
+						SAssignNew(StatusText, STextBlock)
+						.AutoWrapText(true)
+						.ColorAndOpacity(FSlateColor(FLinearColor(1.f, 0.45f, 0.35f)))
+						.Text(this, &SAsceUnitModuleEditor::GetStatusText)
+					]
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(4.f, 2.f, 0.f, 0.f)
+					[
+						SAssignNew(ReportText, STextBlock)
+						.AutoWrapText(true)
+						.ColorAndOpacity(FSlateColor(FLinearColor(0.6f, 0.8f, 1.f)))
+						.Text_Lambda([this]() { return FText::FromString(StatsReport); })
+					]
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(4.f, 6.f, 0.f, 0.f)
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						.Padding(0.f, 0.f, 6.f, 0.f)
+						[
+							SNew(SButton)
+							.Text(LOCTEXT("Apply", "应用到 def / 模板"))
+							.OnClicked(this, &SAsceUnitModuleEditor::OnApplyClicked)
+						]
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						.Padding(0.f, 0.f, 6.f, 0.f)
+						[
+							SNew(SButton)
+							.Text(LOCTEXT("Save", "保存所有资产"))
+							.OnClicked(this, &SAsceUnitModuleEditor::OnSaveClicked)
+						]
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						.Padding(0.f, 0.f, 6.f, 0.f)
+						[
+							SNew(SButton)
+							.Text(LOCTEXT("ApplyGlobalVisual", "全局 LOD 应用到所有单位模板"))
+							.OnClicked(this, &SAsceUnitModuleEditor::OnApplyGlobalVisualizationClicked)
+						]
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						[
+							SNew(SButton)
+							.Text(LOCTEXT("Stats", "统计全表 archetype 组合"))
+							.OnClicked(this, &SAsceUnitModuleEditor::OnStatsClicked)
+						]
+					]
 				]
 			]
 		]
@@ -309,13 +346,22 @@ void SAsceUnitModuleEditor::LoadConfigForRow()
 	}
 	LastErrors.Reset();
 
-	if (FAsceEntityDefRow* Row = GetSelectedRow())
+	FAsceEntityDefRow* Row = GetSelectedRow();
+	if (!Row || !Row->Def.GetPtr<FAsceRTSUnitDef>())
 	{
-		Config = UAsceUnitModuleConfig::LoadForDef(*Row);
+		if (ConfigDetails.IsValid())
+		{
+			ConfigDetails->SetObject(nullptr);
+		}
+		RefreshPreview();
+		return;
 	}
-	if (!Config && Session)
+
+	EnsureEntityTemplateForRow(*Row, Session->RowName);
+	Config = UAsceUnitModuleConfig::LoadForDef(*Row);
+	if (!Config)
 	{
-		Config = Session->ModuleConfig;
+		Config = EnsureModuleConfigForRow(*Row, Session->RowName);
 	}
 	if (Config)
 	{
@@ -327,6 +373,97 @@ void SAsceUnitModuleEditor::LoadConfigForRow()
 		ConfigDetails->SetObject(Config.Get());
 	}
 	RefreshPreview();
+}
+
+UAsceUnitModuleConfig* SAsceUnitModuleEditor::EnsureModuleConfigForRow(FAsceEntityDefRow& Row, const FName RowName)
+{
+	const UAsceUnitModuleEditorSettings* Settings = GetDefault<UAsceUnitModuleEditorSettings>();
+	FString Directory = Settings ? Settings->ModuleConfigDirectory.Path : FString();
+	if (Directory.IsEmpty())
+	{
+		Directory = TEXT("/Game/DataTables/UnitModules");
+	}
+
+	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
+	FString PackageName;
+	FString AssetName;
+	AssetTools.CreateUniqueAssetName(FPaths::Combine(Directory, RowName.ToString() + TEXT("_Modules")), TEXT(""), PackageName, AssetName);
+	UDataAssetFactory* Factory = NewObject<UDataAssetFactory>();
+	Factory->DataAssetClass = UAsceUnitModuleConfig::StaticClass();
+	UObject* Asset = AssetTools.CreateAsset(AssetName, Directory, UAsceUnitModuleConfig::StaticClass(), Factory);
+	UAsceUnitModuleConfig* NewConfig = Cast<UAsceUnitModuleConfig>(Asset);
+	if (!NewConfig)
+	{
+		LastErrors += FString::Printf(TEXT("无法创建 ModuleConfig：%s/%s\n"), *Directory, *AssetName);
+		return nullptr;
+	}
+
+#if WITH_EDITORONLY_DATA
+	Row.ModuleConfig = FSoftObjectPath(NewConfig);
+#endif
+	TouchedAssets.Add(NewConfig);
+	if (Session && Session->Table)
+	{
+		Session->Table->MarkPackageDirty();
+	}
+	return NewConfig;
+}
+
+UMassEntityConfigAsset* SAsceUnitModuleEditor::EnsureEntityTemplateForRow(FAsceEntityDefRow& Row, const FName RowName)
+{
+	if (UMassEntityConfigAsset* Existing = Row.EntityTemplate.LoadSynchronous())
+	{
+		TArray<FText> Errors;
+		AsceUnitModuleGenerator::EnsureDefaultTemplateTraits(Existing, RowName, Errors);
+		for (const FText& Error : Errors)
+		{
+			LastErrors += Error.ToString() + TEXT("\n");
+		}
+		TouchedAssets.Add(Existing);
+		return Existing;
+	}
+
+	const UAsceUnitModuleEditorSettings* Settings = GetDefault<UAsceUnitModuleEditorSettings>();
+	FString Directory = Settings ? Settings->EntityTemplateDirectory.Path : FString();
+	if (Directory.IsEmpty())
+	{
+		Directory = TEXT("/Game/DataTables/UnitTemplates");
+	}
+
+	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
+	FString PackageName;
+	FString AssetName;
+	AssetTools.CreateUniqueAssetName(FPaths::Combine(Directory, RowName.ToString() + TEXT("_Template")), TEXT(""), PackageName, AssetName);
+	UDataAssetFactory* Factory = NewObject<UDataAssetFactory>();
+	Factory->DataAssetClass = UMassEntityConfigAsset::StaticClass();
+	UObject* Asset = AssetTools.CreateAsset(AssetName, Directory, UMassEntityConfigAsset::StaticClass(), Factory);
+	UMassEntityConfigAsset* Template = Cast<UMassEntityConfigAsset>(Asset);
+	if (!Template)
+	{
+		LastErrors += FString::Printf(TEXT("无法创建 EntityTemplate：%s/%s\n"), *Directory, *AssetName);
+		return nullptr;
+	}
+
+	Template->Modify();
+	if (UAsceRTSEntityTrait* EntityTrait = Cast<UAsceRTSEntityTrait>(Template->AddTrait(UAsceRTSEntityTrait::StaticClass())))
+	{
+		EntityTrait->UniqueType.RowName = RowName;
+	}
+
+	TArray<FText> Errors;
+	AsceUnitModuleGenerator::WriteToTemplateAsset(Template, AsceUnitModuleGenerator::Build(TArray<FInstancedStruct>()), Errors);
+	for (const FText& Error : Errors)
+	{
+		LastErrors += Error.ToString() + TEXT("\n");
+	}
+
+	Row.EntityTemplate = Template;
+	TouchedAssets.Add(Template);
+	if (Session && Session->Table)
+	{
+		Session->Table->MarkPackageDirty();
+	}
+	return Template;
 }
 
 void SAsceUnitModuleEditor::RefreshPreview()
@@ -475,6 +612,16 @@ FReply SAsceUnitModuleEditor::OnApplyClicked()
 	}
 	else
 	{
+		const FScopedTransaction Transaction(LOCTEXT("ApplyUnitModules", "Apply Unit Modules"));
+		if (Session && Session->Table)
+		{
+			Session->Table->Modify();
+		}
+		if (Config)
+		{
+			Config->Modify();
+		}
+
 #if WITH_EDITORONLY_DATA
 		// 行里没配时，把当前配置写回行（editor-only 字段）
 		if (Row->ModuleConfig.IsNull())
@@ -483,16 +630,31 @@ FReply SAsceUnitModuleEditor::OnApplyClicked()
 		}
 #endif
 		TArray<FText> Errors;
-		if (!Config->ApplyToDef(*Row, Errors))
+		const bool bApplied = Config->ApplyToDef(*Row, Errors);
+		if (!bApplied)
 		{
 			for (const FText& Error : Errors)
 			{
 				LastErrors += Error.ToString() + TEXT("\n");
 			}
 		}
+		TouchedAssets.Add(Config);
+		if (UMassEntityConfigAsset* Template = Row->EntityTemplate.LoadSynchronous())
+		{
+			TouchedAssets.Add(Template);
+		}
+		if (bApplied && Session && Session->Table)
+		{
+			Session->Table->HandleDataTableChanged(Session->RowName);
+		}
 		if (Session && Session->Table)
 		{
-			Session->Table->MarkPackageDirty();   // def 行被写了（动画/攻击行/技能槽）
+			Session->Table->MarkPackageDirty();   // def 列表写了：血量/体积/视野/技能槽
+		}
+		if (!bApplied && !LastErrors.IsEmpty())
+		{
+			UE_LOG(LogTemp, Error, TEXT("[AsceUnitModule] Apply failed:\n%s"), *LastErrors);
+			FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(LastErrors), LOCTEXT("ApplyFailedTitle", "应用模块失败"));
 		}
 	}
 
@@ -500,15 +662,109 @@ FReply SAsceUnitModuleEditor::OnApplyClicked()
 	return FReply::Handled();
 }
 
+FReply SAsceUnitModuleEditor::OnApplyGlobalVisualizationClicked()
+{
+	if (!Session || !Session->Table)
+	{
+		LastErrors = TEXT("没有选择实体定义表");
+		return FReply::Handled();
+	}
+
+	const TArray<FName> RowNames = Session->Table->GetRowNames();
+	for (const FName RowName : RowNames)
+	{
+		FAsceEntityDefRow* Row = Session->Table->FindRow<FAsceEntityDefRow>(RowName, TEXT("ApplyGlobalVisualization"), false);
+		if (!Row || !Row->Def.GetPtr<FAsceRTSUnitDef>())
+		{
+			continue;
+		}
+
+		if (UMassEntityConfigAsset* Template = EnsureEntityTemplateForRow(*Row, RowName))
+		{
+			TArray<FText> Errors;
+			AsceUnitModuleGenerator::EnsureDefaultTemplateTraits(Template, RowName, Errors);
+			for (const FText& Error : Errors)
+			{
+				LastErrors += Error.ToString() + TEXT("\n");
+			}
+			TouchedAssets.Add(Template);
+		}
+	}
+
+	Session->Table->MarkPackageDirty();
+	Session->Table->HandleDataTableChanged();
+	LastErrors = LastErrors.IsEmpty() ? TEXT("已将全局 LOD 应用到所有单位模板（保存后生效）") : LastErrors;
+	return FReply::Handled();
+}
+
 FReply SAsceUnitModuleEditor::OnSaveClicked()
 {
+	LastErrors.Reset();
+	FAsceEntityDefRow* SelectedRow = GetSelectedRow();
+	if (SelectedRow && Config)
+	{
+		TArray<FText> Errors;
+		const bool bApplied = Config->ApplyToDef(*SelectedRow, Errors);
+		if (!bApplied)
+		{
+			for (const FText& Error : Errors)
+			{
+				LastErrors += Error.ToString() + TEXT("\n");
+			}
+			UE_LOG(LogTemp, Error, TEXT("[AsceUnitModule] Save/Apply failed:\n%s"), *LastErrors);
+			FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(LastErrors), LOCTEXT("SaveApplyFailedTitle", "应用模块失败，未保存"));
+			return FReply::Handled();
+		}
+		if (Session && Session->Table)
+		{
+			Session->Table->HandleDataTableChanged(Session->RowName);
+		}
+		TouchedAssets.Add(Config);
+		if (UMassEntityConfigAsset* Template = SelectedRow->EntityTemplate.LoadSynchronous())
+		{
+			TouchedAssets.Add(Template);
+		}
+	}
+
+	TSet<UPackage*> Packages;
 	if (Config)
 	{
-		UPackage* Package = Config->GetOutermost();
-		Package->MarkPackageDirty();
-		TArray<UPackage*> PackagesToSave;
-		PackagesToSave.Add(Package);
-		FEditorFileUtils::PromptForCheckoutAndSave(PackagesToSave, /*bCheckDirty*/ false, /*bPromptToSave*/ false);
+		Packages.Add(Config->GetOutermost());
+	}
+	if (Session && Session->Table)
+	{
+		Packages.Add(Session->Table->GetOutermost());
+	}
+	if (const FAsceEntityDefRow* Row = GetSelectedRow())
+	{
+		if (UMassEntityConfigAsset* Template = Row->EntityTemplate.LoadSynchronous())
+		{
+			Packages.Add(Template->GetOutermost());
+		}
+	}
+	for (const TWeakObjectPtr<UObject>& Touched : TouchedAssets)
+	{
+		if (UObject* Asset = Touched.Get())
+		{
+			Packages.Add(Asset->GetOutermost());
+		}
+	}
+
+	TArray<UPackage*> PackagesToSave;
+	for (UPackage* Package : Packages)
+	{
+		if (Package)
+		{
+			Package->MarkPackageDirty();
+			PackagesToSave.Add(Package);
+		}
+	}
+	if (PackagesToSave.Num() > 0)
+	{
+		if (FEditorFileUtils::PromptForCheckoutAndSave(PackagesToSave, /*bCheckDirty*/ false, /*bPromptToSave*/ false))
+		{
+			TouchedAssets.Reset();
+		}
 	}
 	return FReply::Handled();
 }
@@ -517,7 +773,7 @@ void SAsceUnitModuleEditor::OpenWindow()
 {
 	const TSharedRef<SWindow> Window = SNew(SWindow)
 		.Title(LOCTEXT("WindowTitle", "Asce：单位模块化编辑器"))
-		.ClientSize(FVector2D(760.f, 900.f))
+		.ClientSize(FVector2D(1280.f, 820.f))
 		.SupportsMinimize(true)
 		.SupportsMaximize(true);
 

@@ -21,15 +21,15 @@ struct FAsceUnitModuleMovement : public FAsceUnitModule
 
 	/** 普通移动（可多个变体；预览用，运行时由 cue/树读取后接入） */
 	UPROPERTY(EditAnywhere, Category = "Animation")
-	TArray<TSoftObjectPtr<UAnimSequence>> MoveAnims;
+	TSoftObjectPtr<UAnimSequence> MoveAnim;
 
 	/** 快速奔跑 */
 	UPROPERTY(EditAnywhere, Category = "Animation")
-	TArray<TSoftObjectPtr<UAnimSequence>> RunAnims;
+	TSoftObjectPtr<UAnimSequence> RunAnim;
 
 	/** 受伤后移动 */
 	UPROPERTY(EditAnywhere, Category = "Animation")
-	TArray<TSoftObjectPtr<UAnimSequence>> InjuredMoveAnims;
+	TSoftObjectPtr<UAnimSequence> InjuredMoveAnim;
 
 	virtual FName GetModuleId() const override;
 	virtual FText GetDisplayName() const override;

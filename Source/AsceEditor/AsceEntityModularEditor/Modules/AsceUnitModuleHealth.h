@@ -21,4 +21,5 @@ struct FAsceUnitModuleHealth : public FAsceUnitModule
 	virtual FText GetDisplayName() const override;
 	virtual void Contribute(const FAsceUnitModuleBuildContext& Context
 		, TArray<FInstancedStruct>& OutFragments, TArray<const UScriptStruct*>& OutTags) const override;
+	virtual void WriteDefRow(FAsceRTSUnitDef& Row) const override;
 };

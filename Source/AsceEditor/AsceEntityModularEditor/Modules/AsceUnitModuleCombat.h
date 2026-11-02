@@ -26,6 +26,18 @@ struct FAsceUnitModuleCombat : public FAsceUnitModule
 	UPROPERTY(EditAnywhere, Category = "Combat", meta = (ClampMin = "1.0"))
 	float AttackSpeed = 180.f;
 
+	/** 基础攻击速度（时间轴速率 = AttackSpeed / BaseAttackSpeed） */
+	UPROPERTY(EditAnywhere, Category = "Combat", meta = (ClampMin = "1.0"))
+	float BaseAttackSpeed = 180.f;
+
+	/** 基础攻击时间（秒；Asce Wait Attack Timeline 的基准时长） */
+	UPROPERTY(EditAnywhere, Category = "Combat", meta = (ClampMin = "0.01"))
+	float BaseAttackTime = 1.f;
+
+	/** 施法速度百分比加成（20 = +20%） */
+	UPROPERTY(EditAnywhere, Category = "Combat")
+	float CastSpeedPercent = 0.f;
+
 	/** 攻击动画（多个变体，随机/按条件选；预览用，运行时由 cue/树读取后接入） */
 	UPROPERTY(EditAnywhere, Category = "Animation")
 	TArray<TSoftObjectPtr<UAnimSequence>> AttackAnims;

@@ -24,11 +24,11 @@ void FAsceUnitModuleAnimation::Contribute(const FAsceUnitModuleBuildContext& Con
 void FAsceUnitModuleAnimation::WriteDefRow(FAsceRTSUnitDef& Row) const
 {
 	Row.AnimSet = AnimSet;
-	Row.IdleAnims = IdleAnims;
+	Row.IdleAnim = IdleAnim;
 	Row.IdleBreakAnims = IdleBreakAnims;
-	Row.DyingAnims = DyingAnims;
-	Row.ControlledAnims = ControlledAnims;
-	Row.StunnedAnims = StunnedAnims;
+	Row.DyingAnim = DyingAnim;
+	Row.ControlledAnim = ControlledAnim;
+	Row.StunnedAnim = StunnedAnim;
 }
 
 void FAsceUnitModuleAnimation::Validate(TArray<FText>& OutErrors) const
@@ -41,17 +41,12 @@ void FAsceUnitModuleAnimation::Validate(TArray<FText>& OutErrors) const
 
 void FAsceUnitModuleAnimation::CollectPreview(FAsceUnitModulePreviewActions& Actions) const
 {
-	int32 VariantIndex = 0;
-	for (const TSoftObjectPtr<UAnimSequence>& Animation : IdleAnims)
+	if (!IdleAnim.IsNull())
 	{
-		if (!Animation.IsNull())
-		{
-			Actions.AddAnimation(IdleAnims.Num() > 1
-				? FString::Printf(TEXT("Idle #%d"), ++VariantIndex) : FString(TEXT("Idle")), Animation);
-		}
+		Actions.AddAnimation(TEXT("Idle"), IdleAnim);
 	}
 
-	VariantIndex = 0;
+	int32 VariantIndex = 0;
 	for (const TSoftObjectPtr<UAnimSequence>& Animation : IdleBreakAnims)
 	{
 		if (!Animation.IsNull())
@@ -61,13 +56,16 @@ void FAsceUnitModuleAnimation::CollectPreview(FAsceUnitModulePreviewActions& Act
 		}
 	}
 
-	VariantIndex = 0;
-	for (const TSoftObjectPtr<UAnimSequence>& Animation : DyingAnims)
+	if (!DyingAnim.IsNull())
 	{
-		if (!Animation.IsNull())
-		{
-			Actions.AddAnimation(DyingAnims.Num() > 1
-				? FString::Printf(TEXT("Dying #%d"), ++VariantIndex) : FString(TEXT("Dying")), Animation);
-		}
+		Actions.AddAnimation(TEXT("Dying"), DyingAnim);
+	}
+	if (!ControlledAnim.IsNull())
+	{
+		Actions.AddAnimation(TEXT("Controlled"), ControlledAnim);
+	}
+	if (!StunnedAnim.IsNull())
+	{
+		Actions.AddAnimation(TEXT("Stunned"), StunnedAnim);
 	}
 }

@@ -1,4 +1,4 @@
-// Fill out your copyright notice in the Description page of Project Settings.
+﻿// Fill out your copyright notice in the Description page of Project Settings.
 
 #include "AsceEntityModularEditor/Modules/AsceUnitModuleCombat.h"
 
@@ -9,7 +9,7 @@
 namespace
 {
 	/** 行名 → `FAsceActionDef`（找不到返回 false） */
-	bool LookupActionDef(const FName RowName, FAsceActionDef& OutDef)
+	bool LookupCombatActionDef(const FName RowName, FAsceActionDef& OutDef)
 	{
 		OutDef = FAsceActionDef();
 		return !RowName.IsNone() && FAsceActionDefLibrary::GetActionDefByRowName(RowName, OutDef);
@@ -35,7 +35,7 @@ void FAsceUnitModuleCombat::Contribute(const FAsceUnitModuleBuildContext& Contex
 	Combat.AttackSpeed = AttackSpeed;
 
 	FAsceActionDef AttackDef;
-	if (LookupActionDef(AttackAction.RowName, AttackDef))
+	if (LookupCombatActionDef(AttackAction.RowName, AttackDef))
 	{
 		Combat.AttackActionId = AttackDef.ActionId;
 		Combat.RangeKind = AttackDef.RangeKind;
@@ -51,6 +51,12 @@ void FAsceUnitModuleCombat::Contribute(const FAsceUnitModuleBuildContext& Contex
 
 void FAsceUnitModuleCombat::WriteDefRow(FAsceRTSUnitDef& Row) const
 {
+	Row.AttackRange = AttackRange;
+	Row.AttackDamage = AttackDamage;
+	Row.AttackSpeed = AttackSpeed;
+	Row.BaseAttackSpeed = BaseAttackSpeed;
+	Row.BaseAttackTime = BaseAttackTime;
+	Row.CastSpeedPercent = CastSpeedPercent;
 	Row.AttackAction = AttackAction;
 	Row.AttackAnims = AttackAnims;
 }
@@ -63,7 +69,7 @@ void FAsceUnitModuleCombat::Validate(TArray<FText>& OutErrors) const
 	}
 
 	FAsceActionDef Def;
-	if (!LookupActionDef(AttackAction.RowName, Def))
+	if (!LookupCombatActionDef(AttackAction.RowName, Def))
 	{
 		OutErrors.Add(FText::FromString(FString::Printf(TEXT("普攻：动作行 [%s] 不存在"), *AttackAction.RowName.ToString())));
 		return;

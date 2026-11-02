@@ -20,25 +20,25 @@ struct FAsceUnitModuleAnimation : public FAsceUnitModule
 	UPROPERTY(EditAnywhere, Category = "Animation")
 	TSoftObjectPtr<UAsceAnimSet> AnimSet;
 
-	/** 待机（可多个变体） */
+	/** 待机（单条） */
 	UPROPERTY(EditAnywhere, Category = "Animation")
-	TArray<TSoftObjectPtr<UAnimSequence>> IdleAnims;
+	TSoftObjectPtr<UAnimSequence> IdleAnim;
 
-	/** 待机小动作（IdleBreak；Idle 状态里每隔一段随机时间播一个） */
+	/** 待机小动作（IdleBreak；数组，随机选） */
 	UPROPERTY(EditAnywhere, Category = "Animation")
 	TArray<TSoftObjectPtr<UAnimSequence>> IdleBreakAnims;
 
-	/** 死亡 */
+	/** 死亡（单条） */
 	UPROPERTY(EditAnywhere, Category = "Animation")
-	TArray<TSoftObjectPtr<UAnimSequence>> DyingAnims;
+	TSoftObjectPtr<UAnimSequence> DyingAnim;
 
-	/** 被控制（预留，运行时尚未接） */
+	/** 被控制（单条，预留，运行时尚未接） */
 	UPROPERTY(EditAnywhere, Category = "Animation")
-	TArray<TSoftObjectPtr<UAnimSequence>> ControlledAnims;
+	TSoftObjectPtr<UAnimSequence> ControlledAnim;
 
-	/** 眩晕（预留，运行时尚未接） */
+	/** 眩晕（单条，预留，运行时尚未接） */
 	UPROPERTY(EditAnywhere, Category = "Animation")
-	TArray<TSoftObjectPtr<UAnimSequence>> StunnedAnims;
+	TSoftObjectPtr<UAnimSequence> StunnedAnim;
 
 	virtual FName GetModuleId() const override;
 	virtual FText GetDisplayName() const override;

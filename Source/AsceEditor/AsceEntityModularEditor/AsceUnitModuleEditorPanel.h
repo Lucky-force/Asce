@@ -14,6 +14,7 @@ class IDetailsView;
 template<typename OptionType> class SComboBox;
 class STextBlock;
 class UAsceUnitModuleConfig;
+class UMassEntityConfigAsset;
 class SAsceUnitModulePreviewViewport;
 class UAnimSequence;
 class UAsceAnimSet;
@@ -35,9 +36,6 @@ public:
 	UPROPERTY(VisibleAnywhere, Category = "Target", meta = (DisplayName = "行"))
 	FName RowName = NAME_None;
 
-	/** 该行的模块配置资产（行里没配时可以在这里临时指定） */
-	UPROPERTY(EditAnywhere, Category = "Target", meta = (DisplayName = "模块配置"))
-	TObjectPtr<UAsceUnitModuleConfig> ModuleConfig = nullptr;
 };
 
 /**
@@ -67,8 +65,13 @@ private:
 	UAsceAnimSet* GetAnimSet() const;
 	FAsceEntityDefRow* GetSelectedRow() const;
 
+	/** 缺失时按编辑器设置目录创建 ModuleConfig / EntityTemplate，并写回行引用 */
+	UAsceUnitModuleConfig* EnsureModuleConfigForRow(FAsceEntityDefRow& Row, FName RowName);
+	UMassEntityConfigAsset* EnsureEntityTemplateForRow(FAsceEntityDefRow& Row, FName RowName);
+
 	FReply OnApplyClicked();
 	FReply OnSaveClicked();
+	FReply OnApplyGlobalVisualizationClicked();
 	FReply OnStatsClicked();
 	FText GetStatsText() const;
 	FText GetStatusText() const;
@@ -94,6 +97,9 @@ private:
 
 	/** 最近一次应用/加载的错误（显示在面板里） */
 	FString LastErrors;
+
+	/** 本次编辑会话里创建/Apply 过的资产，保存时一起落盘 */
+	TSet<TWeakObjectPtr<UObject>> TouchedAssets;
 
 	/** 重建行下拉时的重入保护（SetSelectedItem 会触发 OnSelectionChanged） */
 	bool bUpdatingRowCombo = false;

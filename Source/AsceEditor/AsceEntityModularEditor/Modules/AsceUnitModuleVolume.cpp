@@ -5,6 +5,7 @@
 #include "MassCommonFragments.h"
 
 #include "AsceMass/Fragments/AsceCoreFragments.h"
+#include "AsceMass/Data/AsceUnitDef.h"
 
 FName FAsceUnitModuleVolume::GetModuleId() const
 {
@@ -23,7 +24,15 @@ void FAsceUnitModuleVolume::Contribute(const FAsceUnitModuleBuildContext& Contex
 	AsceUnitModuleUtil::AddFragment<FAsceHeightFragment>(OutFragments).Height = Height;
 }
 
+void FAsceUnitModuleVolume::WriteDefRow(FAsceRTSUnitDef& Row) const
+{
+	Row.Radius = Radius;
+	Row.Height = Height;
+}
+
 void FAsceUnitModuleVolume::CollectPreview(FAsceUnitModulePreviewActions& Actions) const
 {
-	Actions.AddCapsule(Radius, FMath::Max(Height * 0.5f - Radius, 0.f), FLinearColor(1.f, 0.85f, 0.2f));
+	// DrawWireCapsule 的 HalfHeight 是“总高度的一半”（它内部再扣掉半径画圆柱段），
+	// 不是圆柱段的一半；之前传 Height/2 - Radius 会把胶囊画成退化的小点。
+	Actions.AddCapsule(Radius, Height * 0.5f, FLinearColor(1.f, 0.85f, 0.2f));
 }

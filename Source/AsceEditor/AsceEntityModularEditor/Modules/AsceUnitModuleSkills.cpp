@@ -1,4 +1,4 @@
-// Fill out your copyright notice in the Description page of Project Settings.
+﻿// Fill out your copyright notice in the Description page of Project Settings.
 
 #include "AsceEntityModularEditor/Modules/AsceUnitModuleSkills.h"
 
@@ -8,7 +8,7 @@
 
 namespace
 {
-	bool LookupActionDef(const FName RowName, FAsceActionDef& OutDef)
+	bool LookupSkillActionDef(const FName RowName, FAsceActionDef& OutDef)
 	{
 		OutDef = FAsceActionDef();
 		return !RowName.IsNone() && FAsceActionDefLibrary::GetActionDefByRowName(RowName, OutDef);
@@ -32,7 +32,7 @@ void FAsceUnitModuleSkills::Contribute(const FAsceUnitModuleBuildContext& Contex
 	for (int32 Index = 0; Index < FAsceSkillSlotsFragment::NumSkillSlots; ++Index)
 	{
 		FAsceActionDef SkillDef;
-		Slots.Slots[Index].ActionId = LookupActionDef(SkillSlots[Index].RowName, SkillDef) ? SkillDef.ActionId : 0;
+		Slots.Slots[Index].ActionId = LookupSkillActionDef(SkillSlots[Index].RowName, SkillDef) ? SkillDef.ActionId : 0;
 	}
 
 	FAsceManaFragment& Mana = AsceUnitModuleUtil::AddFragment<FAsceManaFragment>(OutFragments);
@@ -46,6 +46,7 @@ void FAsceUnitModuleSkills::Contribute(const FAsceUnitModuleBuildContext& Contex
 
 void FAsceUnitModuleSkills::WriteDefRow(FAsceRTSUnitDef& Row) const
 {
+	Row.MaxMana = MaxMana;
 	for (int32 Index = 0; Index < FAsceSkillSlotsFragment::NumSkillSlots; ++Index)
 	{
 		Row.SkillSlots[Index] = SkillSlots[Index];
@@ -62,7 +63,7 @@ void FAsceUnitModuleSkills::Validate(TArray<FText>& OutErrors) const
 			continue;
 		}
 		FAsceActionDef Def;
-		if (!LookupActionDef(RowName, Def))
+		if (!LookupSkillActionDef(RowName, Def))
 		{
 			OutErrors.Add(FText::FromString(FString::Printf(TEXT("技能槽 %d：动作行 [%s] 不存在"), Index + 1, *RowName.ToString())));
 			continue;
