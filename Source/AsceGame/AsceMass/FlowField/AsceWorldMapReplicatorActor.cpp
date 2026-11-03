@@ -1,4 +1,4 @@
-﻿// AsceWorldMapReplicatorActor.cpp
+// AsceWorldMapReplicatorActor.cpp
 #include "AsceWorldMapReplicatorActor.h"
 #include "AscePathFindingSubsystem.h"
 #include "AsceCostFieldChunkActor.h"
@@ -113,7 +113,7 @@ void AAsceWorldMapReplicatorActor::InitializeMapDimensions()
 		const bool bFlushChanged = LayeredCostField.FlushAll(WorldMapData);
 		ensureMsgf(!bFlushChanged, TEXT("BaseLand 快照后 FlushAll 不应产生任何变更（层组合结果必须等于当前 CostFields）"));
 
-		// 播种**贴墙代价**（地形墙也算）：半径 d 内 cost += (7 - d)，然后统一写回
+		// 播种贴墙代价（地形墙也算）：紧邻 8 格每个 block 格 +1，然后统一写回
 		LayeredCostField.RebuildProximityCost(WorldMapData);
 		LayeredCostField.FlushAll(WorldMapData);
 
