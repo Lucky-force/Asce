@@ -23,10 +23,10 @@ class ASCEEDITOR_API UAsceUnitModuleEditorSettings : public UDeveloperSettings
 public:
 	UAsceUnitModuleEditorSettings();
 
-	UPROPERTY(EditAnywhere, config, Category = "Directories", meta = (RelativeToGameContentDir))
+	UPROPERTY(EditAnywhere, config, Category = "Directories", meta = (ContentDir, ForceShowPluginContent))
 	FDirectoryPath ModuleConfigDirectory;
 
-	UPROPERTY(EditAnywhere, config, Category = "Directories", meta = (RelativeToGameContentDir))
+	UPROPERTY(EditAnywhere, config, Category = "Directories", meta = (ContentDir, ForceShowPluginContent))
 	FDirectoryPath EntityTemplateDirectory;
 
 	/** 表下拉只列**资产名以这个前缀开头**的 DataTable（默认 `SDT`）；留空 = 不按名字过滤 */

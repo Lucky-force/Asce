@@ -34,8 +34,10 @@
 #include "Widgets/Text/STextBlock.h"
 
 #include "AsceMass/Combat/AsceAnimDef.h"
+#include "AsceMass/Building/AsceBuildingDef.h"
 #include "AsceMass/Data/AsceEntityDefTypes.h"
 #include "AsceMass/Data/AsceUnitDef.h"
+#include "AsceMass/Ether/AsceEtherBuildingDef.h"
 #include "AsceMass/Traits/AsceRTSEntityTrait.h"
 
 #include "AsceEntityModularEditor/AsceUnitModuleConfig.h"
@@ -48,6 +50,80 @@
 #include "AsceEntityModularEditor/Modules/AsceUnitModuleMovement.h"
 
 #define LOCTEXT_NAMESPACE "AsceUnitModuleEditor"
+
+namespace
+{
+	constexpr int32 BuildingEntityIdMin = 1;
+	constexpr int32 BuildingEntityIdMax = 10000;
+	constexpr int32 UnitEntityIdMin = 10001;
+	constexpr int32 UnitEntityIdMax = 65535;
+
+	bool IsBuildingPreset(const FString& PresetName)
+	{
+		return PresetName == TEXT("建筑单位") || PresetName == TEXT("以太建筑");
+	}
+
+	bool IsEtherPreset(const FString& PresetName)
+	{
+		return PresetName == TEXT("以太建筑");
+	}
+
+	bool TryParseNumericId(const FString& Text, int32& OutId)
+	{
+		OutId = 0;
+		if (Text.IsEmpty() || Text.Len() > 5)
+		{
+			return false;
+		}
+		int32 Value = 0;
+		for (const TCHAR Ch : Text)
+		{
+			if (!FChar::IsDigit(Ch))
+			{
+				return false;
+			}
+			Value = Value * 10 + static_cast<int32>(Ch - TEXT('0'));
+			if (Value > 65535)
+			{
+				return false;
+			}
+		}
+		OutId = Value;
+		return OutId != 0;
+	}
+
+	bool ValidateNewRowId(const FString& NameText, const bool bBuildingPreset, FString& OutError)
+	{
+		int32 NumericId = 0;
+		if (!TryParseNumericId(NameText, NumericId))
+		{
+			OutError = FString::Printf(TEXT("行名 [%s] 不是有效的实体 ID（必须是 1..65535 的数字）"), *NameText);
+			return false;
+		}
+
+		// 防止 "00001" 和 "1" 指向同一个运行时 ID
+		if (NameText != FString::FromInt(NumericId))
+		{
+			OutError = FString::Printf(TEXT("行名 [%s] 不是规范的数字 ID，请使用 [%d]"), *NameText, NumericId);
+			return false;
+		}
+
+		if (bBuildingPreset)
+		{
+			if (NumericId < BuildingEntityIdMin || NumericId > BuildingEntityIdMax)
+			{
+				OutError = FString::Printf(TEXT("建筑单位 ID 必须在 %d..%d（普通单位从 %d 开始）"), BuildingEntityIdMin, BuildingEntityIdMax, UnitEntityIdMin);
+				return false;
+			}
+		}
+		else if (NumericId < UnitEntityIdMin || NumericId > UnitEntityIdMax)
+		{
+			OutError = FString::Printf(TEXT("普通单位 ID 必须在 %d..%d（建筑单位使用 %d..%d）"), UnitEntityIdMin, UnitEntityIdMax, BuildingEntityIdMin, BuildingEntityIdMax);
+			return false;
+		}
+		return true;
+	}
+}
 
 void SAsceUnitModuleEditor::Construct(const FArguments& InArgs)
 {
@@ -384,9 +460,15 @@ SAsceUnitModuleEditor::~SAsceUnitModuleEditor()
 	{
 		Session->RemoveFromRoot();
 	}
+	if (ConfigDetails.IsValid())
+	{
+		ConfigDetails->SetObject(nullptr);
+	}
+
 	if (Config)
 	{
 		Config->RemoveFromRoot();
+		Config = nullptr;
 	}
 }
 
@@ -528,6 +610,10 @@ void SAsceUnitModuleEditor::RebuildRowItems()
 
 void SAsceUnitModuleEditor::LoadConfigForRow()
 {
+	if (ConfigDetails.IsValid())
+	{
+		ConfigDetails->SetObject(nullptr);
+	}
 	if (Config)
 	{
 		Config->RemoveFromRoot();
@@ -536,7 +622,9 @@ void SAsceUnitModuleEditor::LoadConfigForRow()
 	LastErrors.Reset();
 
 	FAsceEntityDefRow* Row = GetSelectedRow();
-	if (!Row || !Row->Def.GetPtr<FAsceRTSUnitDef>())
+	const bool bSupportedDef = Row && (Row->Def.GetPtr<FAsceRTSUnitDef>()
+		|| (Row->Def.GetScriptStruct() && Row->Def.GetScriptStruct()->IsChildOf(FAsceBuildingDefBase::StaticStruct())));
+	if (!bSupportedDef)
 	{
 		if (ConfigDetails.IsValid())
 		{
@@ -986,7 +1074,9 @@ FReply SAsceUnitModuleEditor::OnApplyGlobalVisualizationClicked()
 	for (const FName RowName : RowNames)
 	{
 		FAsceEntityDefRow* Row = Session->Table->FindRow<FAsceEntityDefRow>(RowName, TEXT("ApplyGlobalVisualization"), false);
-		if (!Row || !Row->Def.GetPtr<FAsceRTSUnitDef>())
+		const bool bSupportedDef = Row && (Row->Def.GetPtr<FAsceRTSUnitDef>()
+			|| (Row->Def.GetScriptStruct() && Row->Def.GetScriptStruct()->IsChildOf(FAsceBuildingDefBase::StaticStruct())));
+		if (!bSupportedDef)
 		{
 			continue;
 		}
@@ -1025,6 +1115,15 @@ FReply SAsceUnitModuleEditor::OnNewRowClicked()
 		LastErrors = TEXT("请输入新单位的行名（ID）");
 		return FReply::Handled();
 	}
+
+	const FString PresetName = SelectedPreset.IsValid() ? *SelectedPreset : FString();
+	FString IdError;
+	if (!ValidateNewRowId(NameText, IsBuildingPreset(PresetName), IdError))
+	{
+		LastErrors = IdError;
+		return FReply::Handled();
+	}
+
 	const FName NewName(*NameText);
 	if (Session->Table->GetRowMap().Contains(NewName))
 	{
@@ -1036,7 +1135,18 @@ FReply SAsceUnitModuleEditor::OnNewRowClicked()
 	Session->Table->Modify();
 
 	FAsceEntityDefRow NewRow;
-	NewRow.Def = FInstancedStruct::Make<FAsceRTSUnitDef>();
+	if (IsEtherPreset(PresetName))
+	{
+		NewRow.Def = FInstancedStruct::Make<FAsceEtherBuildingDef>();
+	}
+	else if (IsBuildingPreset(PresetName))
+	{
+		NewRow.Def = FInstancedStruct::Make<FAsceBuildingDefBase>();
+	}
+	else
+	{
+		NewRow.Def = FInstancedStruct::Make<FAsceRTSUnitDef>();
+	}
 	NewRow.DisplayName = FText::FromString(NameText);
 	Session->Table->AddRow(NewName, NewRow);
 	FAsceEntityDefRow* Row = Session->Table->FindRow<FAsceEntityDefRow>(NewName, TEXT("NewUnitRow"), /*bWarnIfRowMissing*/ false);
@@ -1050,7 +1160,6 @@ FReply SAsceUnitModuleEditor::OnNewRowClicked()
 	EnsureEntityTemplateForRow(*Row, NewName);
 	if (UAsceUnitModuleConfig* NewConfig = EnsureModuleConfigForRow(*Row, NewName))
 	{
-		const FString PresetName = SelectedPreset.IsValid() ? *SelectedPreset : FString();
 		NewConfig->Modules = BuildPresetModules(PresetName);
 		NewConfig->MarkPackageDirty();
 	}
@@ -1131,6 +1240,11 @@ FReply SAsceUnitModuleEditor::OnDeleteRowClicked()
 			TouchedAssets.Remove(Template);
 			AssetsToDelete.Add(Template);
 		}
+	}
+
+	if (ConfigDetails.IsValid())
+	{
+		ConfigDetails->SetObject(nullptr);
 	}
 
 	if (Config)

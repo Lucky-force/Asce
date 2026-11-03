@@ -15,6 +15,7 @@
 
 #include "AsceMass/Data/AsceEntityDefTypes.h"
 #include "AsceMass/Data/AsceUnitDef.h"
+#include "AsceMass/Building/AsceBuildingDef.h"
 #include "AsceMass/Traits/AsceRTSEntityTrait.h"
 #include "AsceMass/Traits/AsceRTSUnitTrait.h"
 #include "GameModes/AsceGameplaySettings.h"
@@ -307,13 +308,6 @@ bool AsceUnitModuleGenerator::WriteToTemplateAsset(UMassEntityConfigAsset* Confi
 
 bool AsceUnitModuleGenerator::WriteToDefRow(const TArray<FInstancedStruct>& Modules, FAsceEntityDefRow& Row, TArray<FText>& OutErrors)
 {
-	FAsceRTSUnitDef* UnitDef = Row.Def.GetMutablePtr<FAsceRTSUnitDef>();
-	if (!UnitDef)
-	{
-		OutErrors.Add(INVTEXT("def 行的 Def 不是 FAsceRTSUnitDef"));
-		return false;
-	}
-
 	TArray<FText> ModuleErrors;
 	AsceUnitModuleRegistry::ValidateModules(Modules, ModuleErrors);
 	if (ModuleErrors.Num() > 0)
@@ -322,6 +316,19 @@ bool AsceUnitModuleGenerator::WriteToDefRow(const TArray<FInstancedStruct>& Modu
 		return false;
 	}
 
-	AsceUnitModuleRegistry::ApplyDefFields(Modules, *UnitDef);
-	return true;
+	if (FAsceRTSUnitDef* UnitDef = Row.Def.GetMutablePtr<FAsceRTSUnitDef>())
+	{
+		AsceUnitModuleRegistry::ApplyDefFields(Modules, *UnitDef);
+		return true;
+	}
+
+	// 建筑 / Ether 建筑没有单位属性字段；模块类型已经决定，保留 Def 上的建筑字段即可。
+	const UScriptStruct* DefType = Row.Def.GetScriptStruct();
+	if (DefType && DefType->IsChildOf(FAsceBuildingDefBase::StaticStruct()))
+	{
+		return true;
+	}
+
+	OutErrors.Add(INVTEXT("def 的 Def 必须是 FAsceRTSUnitDef 或 FAsceBuildingDefBase 的派生结构"));
+	return false;
 }

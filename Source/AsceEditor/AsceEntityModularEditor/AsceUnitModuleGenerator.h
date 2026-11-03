@@ -35,7 +35,6 @@ struct FAsceUnitModuleBuildResult
  *
  * - `Build`：并集 + 校验 + 哈希（纯内存）；
  * - `WriteToTemplateAsset`：写进 `UMassEntityConfigAsset`（复用/新增引擎自带的
- *   `UMassAssortedFragmentsTrait`，反射填 `Fragments` / `Tags`）；
  * - `WriteToDefRow`：把非 fragment 字段（`AnimSet` / `AttackAction` / `SkillSlots`）写进 def 行。
  *
  * 见 `AsceMass/Data/单位模块化设计.md` §5。
@@ -51,6 +50,6 @@ namespace AsceUnitModuleGenerator
 	/** 补齐模板默认 trait：AsceRTSEntityTrait / DistanceLODCollector / MovableVisualization + Assorted MassActor（不覆盖已有 Fragments） */
 	bool EnsureDefaultTemplateTraits(UMassEntityConfigAsset* ConfigAsset, FName RowName, TArray<FText>& OutErrors);
 
-	/** 把模块写进实体定义行（`Row.Def` 必须是 `FAsceRTSUnitDef`） */
+	/** 把模块写回实体定义：FAsceRTSUnitDef 写单位字段；建筑 Def 保留建筑字段。 */
 	bool WriteToDefRow(const TArray<FInstancedStruct>& Modules, FAsceEntityDefRow& Row, TArray<FText>& OutErrors);
 }
